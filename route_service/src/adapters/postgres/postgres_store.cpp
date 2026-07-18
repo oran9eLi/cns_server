@@ -7,16 +7,6 @@
 #include <sstream>
 #include <utility>
 
-// Ubuntu 的 libpqxx 7.10 共享库已显式提供这些模板变量；禁止消费端再次
-// 实例化可避免进程退出时重复析构同一 type_name 字符串。
-namespace pqxx {
-extern template const std::string type_name<bool>;
-extern template const std::string type_name<int>;
-extern template const std::string type_name<std::string>;
-extern template const std::string type_name<std::string_view>;
-extern template const std::string type_name<zview>;
-}  // namespace pqxx
-
 namespace cns::postgres {
 namespace {
 
@@ -86,7 +76,7 @@ PostgresStore::ReadAppliedMigrations() {
 
     std::vector<migration::AppliedMigration> migrations;
     const pqxx::result rows = transaction.exec(
-        "SELECT version, name FROM schema_migrations ORDER BY version");
+        "SELECT version, name FROM public.schema_migrations ORDER BY version");
     migrations.reserve(rows.size());
     for (const pqxx::row& row : rows) {
       migrations.push_back(
@@ -114,7 +104,7 @@ std::expected<void, std::string> PostgresStore::ApplyMigration(
     pqxx::work transaction{*connection_};
     transaction.exec(content.str());
     transaction.exec(
-        "INSERT INTO schema_migrations (version, name) VALUES ($1, $2)",
+        "INSERT INTO public.schema_migrations (version, name) VALUES ($1, $2)",
         pqxx::params{migration.version, migration.name});
     transaction.commit();
     logger_.Info("已执行" + MigrationContext(migration));

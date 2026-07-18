@@ -113,7 +113,8 @@ std::size_t FindClosingParenthesis(const std::string& sql, const std::size_t ope
 std::map<std::string, std::string> ParseTables(const std::string& source) {
   const auto scanned = ScanSupportedSql(source);
   const std::regex any_declaration{R"(\bcreate(?:\s+[a-z_][a-z0-9_]*)*\s+table\b)"};
-  const std::regex declaration{R"(\bcreate\s+table\s+([a-z_][a-z0-9_]*)\s*\()"};
+  const std::regex declaration{
+      R"(\bcreate\s+table\s+((?:public\.)?[a-z_][a-z0-9_]*)\s*\()"};
   std::map<std::string, std::string> tables;
   for (auto match = std::sregex_iterator{scanned.code.begin(), scanned.code.end(), any_declaration};
        match != std::sregex_iterator{}; ++match) {
@@ -226,8 +227,8 @@ void CheckExactDefinition(const std::string& table, const std::string& expected)
 
 TEST_CASE("001 只创建迁移版本表并约束全部字段") {
   const auto tables = ParseTables(ReadMigration("001_创建迁移版本表.sql"));
-  CheckTableNames(tables, {"schema_migrations"});
-  const auto& table = tables.at("schema_migrations");
+  CheckTableNames(tables, {"public.schema_migrations"});
+  const auto& table = tables.at("public.schema_migrations");
   CheckFieldNames(table, {"version", "name", "applied_at"});
 
   CheckParts(Column(table, "version", "integer"), {"primary key", "check", "version > 0"});
@@ -320,7 +321,7 @@ TEST_CASE("字符串中的建表文本不作为 DDL") {
 }
 
 TEST_CASE("拒绝允许子集之外的建表形式") {
-  CHECK_THROWS(ParseTables("CREATE TABLE public.extra (id INTEGER);"));
+  CHECK_THROWS(ParseTables("CREATE TABLE private.extra (id INTEGER);"));
   CHECK_THROWS(ParseTables("CREATE TEMP TABLE extra (id INTEGER);"));
   CHECK_THROWS(ParseTables("CREATE TEMPORARY TABLE extra (id INTEGER);"));
   CHECK_THROWS(ParseTables("CREATE UNLOGGED TABLE extra (id INTEGER);"));

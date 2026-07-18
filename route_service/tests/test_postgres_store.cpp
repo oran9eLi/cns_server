@@ -5,6 +5,8 @@
 #include "adapters/postgres/postgres_store.hpp"
 
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 namespace {
@@ -40,6 +42,19 @@ TEST_CASE("安全连接描述包含定位字段但不泄露密码") {
   CHECK(description.find("secret") == std::string::npos);
   CHECK(description.find("password") == std::string::npos);
   CHECK(description.find("connect_timeout") == std::string::npos);
+}
+
+TEST_CASE("迁移版本表的检查读取和写入都锁定 public schema") {
+  std::ifstream input{CNS_POSTGRES_STORE_SOURCE_FILE};
+  REQUIRE(input.is_open());
+  const std::string source{std::istreambuf_iterator<char>{input},
+                           std::istreambuf_iterator<char>{}};
+
+  CHECK(source.find("to_regclass('public.schema_migrations')") !=
+        std::string::npos);
+  CHECK(source.find("FROM public.schema_migrations") != std::string::npos);
+  CHECK(source.find("INSERT INTO public.schema_migrations") !=
+        std::string::npos);
 }
 
 }  // namespace
