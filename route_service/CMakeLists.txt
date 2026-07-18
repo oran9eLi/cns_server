@@ -11,6 +11,7 @@ pkg_check_modules(MOSQUITTO REQUIRED IMPORTED_TARGET libmosquitto)
 pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
 find_package(nlohmann_json REQUIRED)
 find_package(doctest REQUIRED)
+find_program(CNS_READELF NAMES readelf REQUIRED)
 
 if(NOT PQXX_VERSION MATCHES "^7\\.10\\.[0-9]+$")
   message(FATAL_ERROR "本工程要求系统 libpqxx 7.10.x，当前版本为 ${PQXX_VERSION}")
@@ -29,14 +30,18 @@ if(NOT CNS_PQXX_SHARED)
   message(FATAL_ERROR "libpqxx 7.10 兼容层要求 pkg-config 提供共享库")
 endif()
 execute_process(
-  COMMAND "${CMAKE_LINKER}" --version
-  RESULT_VARIABLE CNS_LINKER_VERSION_RESULT
-  OUTPUT_VARIABLE CNS_LINKER_VERSION_OUTPUT
-  ERROR_VARIABLE CNS_LINKER_VERSION_ERROR
+  COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
+          -fuse-ld=bfd -Wl,--version
+  RESULT_VARIABLE CNS_CXX_LINKER_PROBE_RESULT
+  OUTPUT_VARIABLE CNS_CXX_LINKER_PROBE_OUTPUT
+  ERROR_VARIABLE CNS_CXX_LINKER_PROBE_ERROR
 )
-if(NOT CNS_LINKER_VERSION_RESULT EQUAL 0 OR
-   NOT CNS_LINKER_VERSION_OUTPUT MATCHES "GNU ld")
-  message(FATAL_ERROR "libpqxx 7.10 兼容层要求 GNU ld version script 支持")
+if(NOT CNS_CXX_LINKER_PROBE_RESULT EQUAL 0 OR
+   NOT CNS_CXX_LINKER_PROBE_OUTPUT MATCHES "GNU ld")
+  message(FATAL_ERROR
+    "C++ 编译驱动无法选择支持 version script 的 GNU ld："
+    "${CNS_CXX_LINKER_PROBE_ERROR}"
+  )
 endif()
 
 # libpqxx 7.10 在新 GCC/glibc 上会因 type_name 模板变量抢占而重复析构。
@@ -44,6 +49,7 @@ endif()
 add_library(pqxx_compat INTERFACE)
 target_link_libraries(pqxx_compat INTERFACE PkgConfig::PQXX)
 target_link_options(pqxx_compat INTERFACE
+  -fuse-ld=bfd
   "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/pqxx-7-type-name.map"
 )
 
@@ -127,3 +133,11 @@ target_link_libraries(test_pqxx_compat PRIVATE pqxx_compat)
 target_compile_options(test_pqxx_compat PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME pqxx_compat COMMAND test_pqxx_compat)
+
+add_test(NAME pqxx_elf_symbols
+  COMMAND ${CMAKE_COMMAND}
+    -DREADELF=${CNS_READELF}
+    -DPQXX_COMPAT_BINARY=$<TARGET_FILE:test_pqxx_compat>
+    -DPOSTGRES_STORE_BINARY=$<TARGET_FILE:test_postgres_store>
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_pqxx_elf.cmake
+)
