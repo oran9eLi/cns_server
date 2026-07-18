@@ -4,27 +4,42 @@
 
 #include "core/migration/migration.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 namespace {
 
 class TempDirectory {
  public:
-  TempDirectory()
-      : path_(std::filesystem::temp_directory_path() /
-              ("cns_migration_test_" +
-               std::to_string(std::chrono::steady_clock::now()
-                                  .time_since_epoch()
-                                  .count()))) {
-    std::filesystem::create_directory(path_);
+  TempDirectory() {
+    static std::atomic<unsigned long long> sequence{0};
+    const auto base = std::filesystem::temp_directory_path();
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      const auto candidate =
+          base /
+          ("cns_migration_test_" +
+           std::to_string(std::chrono::steady_clock::now()
+                              .time_since_epoch()
+                              .count()) +
+           "_" + std::to_string(sequence.fetch_add(1)) + "_" +
+           std::to_string(attempt));
+      if (std::filesystem::create_directory(candidate)) {
+        path_ = candidate;
+        return;
+      }
+    }
+    throw std::runtime_error("无法独占创建测试临时目录");
   }
 
   ~TempDirectory() {
-    std::error_code error;
-    std::filesystem::remove_all(path_, error);
+    if (!path_.empty()) {
+      std::error_code error;
+      std::filesystem::remove_all(path_, error);
+    }
   }
 
   const std::filesystem::path& path() const { return path_; }
@@ -102,4 +117,12 @@ TEST_CASE("迁移目录不存在或不是目录时被拒绝") {
   directory.Touch("普通文件");
   CHECK_FALSE(
       cns::migration::DiscoverMigrations(directory.path() / "普通文件").has_value());
+}
+
+TEST_CASE("空迁移目录因缺少 001 迁移文件被拒绝") {
+  const TempDirectory directory;
+  const auto result = cns::migration::DiscoverMigrations(directory.path());
+  REQUIRE_FALSE(result.has_value());
+  CHECK((result.error().find("001") != std::string::npos ||
+         result.error().find("迁移文件") != std::string::npos));
 }

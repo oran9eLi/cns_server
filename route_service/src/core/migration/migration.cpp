@@ -62,6 +62,10 @@ std::expected<std::vector<Migration>, std::string> DiscoverMigrations(
       migrations.push_back(std::move(*migration));
     }
 
+    if (migrations.empty()) {
+      return std::unexpected("迁移目录中缺少 001 迁移文件");
+    }
+
     std::ranges::sort(migrations, {}, &Migration::version);
     for (std::size_t index = 0; index < migrations.size(); ++index) {
       const int expected_version = static_cast<int>(index) + 1;
