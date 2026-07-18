@@ -11,7 +11,8 @@ CNS（通信、导航、监视）实训箱的服务器端工程，与树莓派�
 ```text
 cns_server/
 ├── route_service/       # 设备数据库维护、权限校验、命令路由与 ACK 回程
-└── backend_service/     # 未来面向设备管理前端的服务端接口
+├── backend_service/     # 面向设备管理前端的服务端接口
+└── frontend/            # React 设备管理控制前端（实施时新增）
 ```
 
 ### route_service
@@ -22,9 +23,9 @@ cns_server/
 
 ### backend_service
 
-后续面向设备管理前端的服务。它读取 `route_service` 维护的设备数据，并作为受控命令来源向路由服务提交请求，不得绕过路由服务直接向设备命令 topic 发布。
+面向设备管理前端的服务。它只读 `route_service` 维护的设备数据，订阅规范化实时状态事件，并作为受控命令来源向路由服务提交请求，不得绕过路由服务直接向设备命令 topic 发布。
 
-前后端技术选型和实现细节暂未确定，详见 `backend_service/README.md`。
+V1 已确认使用 TypeScript、Fastify、React、Ant Design、REST 和标准原生 WebSocket。正式设计见 `backend_service/docs/2026-07-19-后端服务V1设计.md`。
 
 ## 开发流程
 
@@ -54,7 +55,7 @@ cns_server/
 1. 设计并实现 `route_service`。
 2. 完成设备注册、最新遥测状态、实时状态事件、配置与飞控命令路由及 ACK 回程；V1 不保存逐帧遥测历史。
 3. 完成服务器部署和 PostgreSQL/Mosquitto 集成验证。
-4. 之后再讨论并实施 `backend_service` 和设备管理前端。
+4. 按已确认设计实施 `backend_service` 和设备管理前端；实施必须基于包含最新 route_service 成果的 `main` 新建隔离工作树。
 
 ## 已确认的 Route Service V1 边界
 
