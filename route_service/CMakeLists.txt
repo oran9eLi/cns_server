@@ -103,6 +103,12 @@ set_tests_properties(bounded_queue PROPERTIES TIMEOUT 10)
 add_executable(test_rate_limiter tests/test_rate_limiter.cpp)
 target_link_libraries(test_rate_limiter PRIVATE route_adapters doctest::doctest)
 target_compile_options(test_rate_limiter PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_options(test_rate_limiter PRIVATE
+  LINKER:--wrap=mosquitto_connect_async
+  LINKER:--wrap=mosquitto_loop_start
+  LINKER:--wrap=mosquitto_disconnect
+  LINKER:--wrap=mosquitto_loop_stop
+)
 
 add_test(NAME rate_limiter COMMAND test_rate_limiter)
 

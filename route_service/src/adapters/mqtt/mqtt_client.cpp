@@ -79,7 +79,6 @@ std::expected<std::unique_ptr<MqttClient>, std::string> MqttClient::Create(
   mosquitto_connect_callback_set(instance->client_, &MqttClient::HandleConnect);
   mosquitto_disconnect_callback_set(instance->client_,
                                     &MqttClient::HandleDisconnect);
-  mosquitto_log_callback_set(instance->client_, &MqttClient::HandleLog);
 
   const int reconnect_result = mosquitto_reconnect_delay_set(
       instance->client_, static_cast<unsigned int>(config.reconnect_delay.count()),
@@ -110,8 +109,7 @@ std::expected<void, std::string> MqttClient::Start() {
   const int connect_result = mosquitto_connect_async(
       client_, config_.host.c_str(), static_cast<int>(config_.port),
       static_cast<int>(config_.keepalive.count()));
-  const bool initial_network_failure =
-      connect_result == MOSQ_ERR_ERRNO || connect_result == MOSQ_ERR_EAI;
+  const bool initial_network_failure = connect_result == MOSQ_ERR_ERRNO;
   if (connect_result != MOSQ_ERR_SUCCESS && !initial_network_failure) {
     return std::unexpected(MosquittoError("启动MQTT异步连接", connect_result));
   }
@@ -133,8 +131,16 @@ void MqttClient::Stop() {
     return;
   }
 
-  static_cast<void>(mosquitto_loop_stop(client_, true));
-  static_cast<void>(mosquitto_disconnect(client_));
+  const int disconnect_result = mosquitto_disconnect(client_);
+  if (disconnect_result != MOSQ_ERR_SUCCESS &&
+      disconnect_result != MOSQ_ERR_NO_CONN) {
+    logger_.Warn(MosquittoError("请求MQTT断开", disconnect_result));
+  }
+
+  const int loop_stop_result = mosquitto_loop_stop(client_, false);
+  if (loop_stop_result != MOSQ_ERR_SUCCESS) {
+    logger_.Warn(MosquittoError("停止MQTT网络线程", loop_stop_result));
+  }
   loop_started_ = false;
   connected_.store(false, std::memory_order_release);
 }
@@ -158,13 +164,6 @@ void MqttClient::HandleDisconnect(struct mosquitto*, void* context, int result) 
   auto& self = *static_cast<MqttClient*>(context);
   self.connected_.store(false, std::memory_order_release);
   if (result != MOSQ_ERR_SUCCESS) self.WarnDisconnected(result);
-}
-
-void MqttClient::HandleLog(struct mosquitto*, void* context, int level,
-                           const char* message) {
-  static_cast<void>(message);
-  auto& self = *static_cast<MqttClient*>(context);
-  self.logger_.Debug("MQTT库事件，级别=" + std::to_string(level));
 }
 
 void MqttClient::WarnDisconnected(int result) {

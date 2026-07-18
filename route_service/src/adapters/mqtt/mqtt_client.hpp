@@ -33,8 +33,6 @@ class MqttClient {
 
   static void HandleConnect(struct mosquitto*, void* context, int result);
   static void HandleDisconnect(struct mosquitto*, void* context, int result);
-  static void HandleLog(struct mosquitto*, void* context, int level,
-                        const char* message);
   void WarnDisconnected(int result);
 
   config::MqttConfig config_;
