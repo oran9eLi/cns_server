@@ -61,16 +61,18 @@ add_library(route_core STATIC
   src/core/logging/logger.cpp
   src/core/migration/migration.cpp
   src/core/migration/migration_plan.cpp
+  src/core/runtime/rate_limiter.cpp
 )
 target_include_directories(route_core PUBLIC src)
 target_link_libraries(route_core PUBLIC nlohmann_json::nlohmann_json)
 target_compile_options(route_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_library(route_adapters STATIC
+  src/adapters/mqtt/mqtt_client.cpp
   src/adapters/postgres/postgres_store.cpp
 )
 target_include_directories(route_adapters PUBLIC src)
-target_link_libraries(route_adapters PUBLIC route_core pqxx_compat)
+target_link_libraries(route_adapters PUBLIC route_core pqxx_compat PkgConfig::MOSQUITTO)
 target_compile_options(route_adapters PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(test_command_line tests/test_command_line.cpp)
@@ -97,6 +99,12 @@ target_compile_options(test_bounded_queue PRIVATE -Wall -Wextra -Wpedantic -Werr
 
 add_test(NAME bounded_queue COMMAND test_bounded_queue)
 set_tests_properties(bounded_queue PROPERTIES TIMEOUT 10)
+
+add_executable(test_rate_limiter tests/test_rate_limiter.cpp)
+target_link_libraries(test_rate_limiter PRIVATE route_adapters doctest::doctest)
+target_compile_options(test_rate_limiter PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME rate_limiter COMMAND test_rate_limiter)
 
 add_executable(test_migration tests/test_migration.cpp)
 target_link_libraries(test_migration PRIVATE route_core doctest::doctest)
