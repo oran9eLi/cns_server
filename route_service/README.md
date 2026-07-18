@@ -86,9 +86,9 @@ V1 阶段核心职责：
 - 项目边界已确认。
 - Route Service V1 设计已逐节确认，书面规格见 `docs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
-- 书面规格已复核，全局里程碑路线见 `docs/2026-07-18-路由服务V1实施计划.md`；当前不开始编码。
+- 书面规格已复核，全局里程碑路线见 `docs/2026-07-18-路由服务V1实施计划.md`；里程碑一设计和详细实施计划已经确认，下一步从最新 `main` 重建实施工作树并按 TDD 编码。
 
-本子项目全局设计和全局计划放在 `docs/` 根目录。每个里程碑从最新 `main` 重建工作树，再把该里程碑设计、详细计划和验收记录分别放在 `docs/superpowers/specs/`、`docs/superpowers/plans/` 和 `docs/change_history/`；完成验收并合入 `main` 后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。
+本子项目全局设计和全局计划放在 `docs/` 根目录。每个里程碑的设计和详细计划直接在 `main` 编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `main` 建立实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入 `main` 后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。
 
 ## 测试与部署约束
 
