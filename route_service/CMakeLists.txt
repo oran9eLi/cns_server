@@ -25,6 +25,13 @@ target_include_directories(route_core PUBLIC src)
 target_link_libraries(route_core PUBLIC nlohmann_json::nlohmann_json)
 target_compile_options(route_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+add_library(route_adapters STATIC
+  src/adapters/postgres/postgres_store.cpp
+)
+target_include_directories(route_adapters PUBLIC src)
+target_link_libraries(route_adapters PUBLIC route_core PkgConfig::PQXX)
+target_compile_options(route_adapters PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_executable(test_command_line tests/test_command_line.cpp)
 target_link_libraries(test_command_line PRIVATE route_core doctest::doctest)
 target_compile_options(test_command_line PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -70,3 +77,9 @@ target_compile_definitions(test_schema_sql PRIVATE
 )
 
 add_test(NAME schema_sql COMMAND test_schema_sql)
+
+add_executable(test_postgres_store tests/test_postgres_store.cpp)
+target_link_libraries(test_postgres_store PRIVATE route_adapters doctest::doctest)
+target_compile_options(test_postgres_store PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME postgres_store COMMAND test_postgres_store)
