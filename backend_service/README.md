@@ -7,6 +7,7 @@
 `backend_service` 位于浏览器与 `route_service` 之间，预期负责：
 
 - 向前端提供设备列表、设备详情和实时状态数据。
+- 启动时从 PostgreSQL 读取设备快照，随后订阅 `route_service` 输出的规范化 MQTT 状态事件；不直接把设备原始 telemetry 作为权威数据源。
 - 接收前端控制请求并生成来源侧 `request_id`。
 - 以固定、受控的命令来源身份向 `route_service` 提交请求。
 - 按 `request_id` 把路由或设备执行结果返回正确的前端会话。
@@ -24,6 +25,8 @@
 对 `route_service` 而言，整个 `backend_service` 是一个固定命令来源，例如 `web-console`。多个浏览器会话的区分、前端请求状态和会话级结果分发由 `backend_service` 自己维护，不扩散到设备端协议。
 
 设备注册、遥测身份补全、在线状态维护、目标寻址、服务器级权限、命令持久化和 ACK 回程均由 `route_service` 负责。
+
+`route_service` 把 `web-console` 视为可访问全部学校的固定 `host_app` 来源。未来“账号只能访问本校或可以访问全部学校”的权限必须由本服务在认证后执行，不能依赖前端页面过滤，也不扩展为 `route_service` 的账号模型。
 
 ## 当前状态
 

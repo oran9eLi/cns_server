@@ -1,0 +1,159 @@
+# Route Service V1 设计
+
+版本：2026-07-18
+
+状态：已逐节确认，待书面规格复核
+
+## 1. 目标与范围
+
+`route_service` 是设备状态与命令路由核心，也是 `schools`、`devices`、`device_latest_states`、`command_sources` 和 `commands` 的唯一写入者。V1 面向当前不足 10 台设备稳定运行，不以遥测历史、多实例高可用、复杂过载调度或 1000 台压力测试为目标。
+
+V1 通过 MQTT 发现设备、维护最新状态、输出实时状态事件，并完成配置与飞控命令的寻址、权限、幂等、持久化和 ACK 回程。backend_service 以后只读设备表、订阅规范化状态事件，并作为固定 `web-console` 来源提交命令。
+
+## 2. 技术方案与进程结构
+
+采用 C++23 单体 systemd 服务。依赖为 CMake、libmosquitto、libpqxx、nlohmann/json 和 doctest，不引入 Web 框架或独立任务中间件。
+
+```text
+Mosquitto
+  → MQTT网络线程（回调只复制消息）
+  → 有界入站队列
+  → 单业务线程（校验、内存状态、命令状态机、定时扫描）
+  → 数据库任务队列
+  → 单PostgreSQL工作线程（libpqxx同步事务）
+```
+
+回调不解析 JSON、不查询数据库。业务线程串行维护状态，数据库线程独占连接。V1 只运行一个活跃实例，由 systemd 管理。
+
+## 3. PostgreSQL 数据模型
+
+```text
+schools 1 ── N devices
+devices 1 ── 1 device_latest_states
+devices 1 ── 0..1 device类型command_sources
+command_sources 1 ── N commands
+devices 1 ── N commands（目标）
+```
+
+### 3.1 schools 与 devices
+
+`schools` 包含 `school_id`、唯一 `school_name` 和 `created_at`。学校只由合法 online registration 自动创建，部署配置不预建学校。
+
+`devices` 包含：
+
+- `vendor_id VARCHAR(20) PRIMARY KEY`
+- `school_id` 外键
+- 可空 `dcdw_label`
+- `model_version`
+- `provisioned_at`
+
+约束为 `UNIQUE(school_id, dcdw_label)`，NULL 之间不冲突。首次注册确定学校；后续学校不一致时保留原值并记录错误，不自动迁校。registration 可以更新 `dcdw_label`，但不得违反同校唯一约束；telemetry 只在该字段为空时补全。
+
+### 3.2 device_latest_states
+
+高频状态与稳定元数据分表：
+
+- `vendor_id`：主键及 `devices` 外键
+- `status`：仅 online/offline
+- `last_seen_at`
+- `latest_telemetry JSONB`
+- `telemetry_received_at`
+- `updated_at`
+
+时间在消息通过基础校验并进入内存时生成，不使用延后的落库时间。每台设备只保存最新遥测，不保存逐帧历史。
+
+### 3.3 command_sources
+
+字段为 `source_id`、`source_kind`、可空 `device_vendor_id`、`enabled`、`created_at` 和 `updated_at`。
+
+设备来源必须满足 `source_id=device_vendor_id`，一台设备最多对应一个来源；非设备来源的 `device_vendor_id` 必须为空。设备首次合法 online registration 时自动创建并默认启用，重复上线不得覆盖管理员设置的禁用状态。非设备来源由现场配置声明，从配置移除时禁用但不删除。
+
+不建立 `source_school_permissions`：
+
+- device：必须启用且在线，只能按同校 `dcdw_label` 寻址。
+- host_app、control_center：必须启用，可控制全部学校。
+- Web 用户级本校/全校权限以后由 backend_service 负责。
+
+### 3.4 commands
+
+字段为 `command_id`、`source_id`、`request_id`、`command_type`、`target_vendor_id`、`request_payload JSONB`、`status`、错误字段、`device_ack JSONB` 和生命周期时间。
+
+`UNIQUE(source_id, request_id)` 同时保证来源幂等，并保存 `(source_id, request_id) → command_id` 映射及 ACK 回程关系。终态默认保留 30 天后限量批次清理；非终态不得清理，幂等保证窗口与保留期一致。
+
+### 3.5 迁移
+
+迁移使用仓库内版本化 SQL 和迁移版本表。每版只执行一次，重复运行必须安全，不得清空已有数据；结构变更前必须在计划中写明恢复路径。
+
+## 4. MQTT 契约
+
+| Topic | QoS | Retain |
+|---|---:|---:|
+| `{namespace}/{vendor_id}/registration` | 2 | true |
+| `{namespace}/{vendor_id}/telemetry` | 0 | false |
+| `{namespace}/{vendor_id}/config/set`、`config/ack` | 2 | false |
+| `{namespace}/{vendor_id}/control/set`、`control/ack` | 2 | false |
+| `{namespace}/sources/{source_id}/config/request`、`config/ack` | 2 | false |
+| `{namespace}/sources/{source_id}/control/request`、`control/ack` | 2 | false |
+| `{namespace}/events/devices/{vendor_id}/state` | 0 | false |
+
+registration retained 状态用于设备发现，online、遗嘱 offline 和重新上线覆盖同一 topic。telemetry 改为非 retained，避免重订阅时把无统一产生时间的旧快照误判为新活动；该变更必须同步 `cns_rpi` 实现、配置、测试和文档。
+
+来源请求包含 `schema_version=1`、`request_id`、`target` 和 `parameters`，飞控请求另含 `command`。设备来源只能表达 `target.dcdw_label`；非设备来源可表达 `(school_name, dcdw_label)` 或 `vendor_id`，不得混用。route_service 从 topic 获取来源身份，生成全局 `command_id`，只向目标设备发送规范化命令。
+
+状态事件包含 schema 版本、事件类型、设备身份、状态、最后活跃时间、遥测接收时间、最新遥测和 `degraded` 布尔值。`degraded=true` 表示 PostgreSQL 暂时不可用、事件来自尚未持久化的内存状态。未来 backend_service 先读数据库快照，再接续事件并按时间戳丢弃旧消息。JSON 时间统一使用带毫秒的 UTC RFC 3339 `Z` 格式；数据库使用 TIMESTAMPTZ。
+
+## 5. 注册、遥测与在线状态
+
+online registration 必须包含学校，topic 与 payload 的 `vendor_id` 必须一致。首次合法注册创建学校、设备、最新状态和设备来源。offline 只更新状态，不清空元数据或遥测。启动和重连时正常处理 retained registration。
+
+telemetry 不能创建未知设备。合法实时遥测立即记录服务器接收时间、更新内存快照与活跃时间并发布状态事件。`telemetry.identity.dcdw_label` 只补空值。默认每 5 秒批量写库，同一设备周期内只写最后一份；实时事件不受落库周期限制。
+
+在线规则：
+
+- online registration 立即上线。
+- 有效实时 telemetry 刷新活跃时间，并可恢复因超时变为 offline 的设备。
+- 显式 offline 立即离线。
+- 默认 180 秒无有效 online registration 或 telemetry 时兜底离线；配置值必须长于当前 60 秒 MQTT keepalive 的遗嘱触发窗口。
+- offline 立即发布事件并持久化，不等待遥测批次。
+
+## 6. 命令路由、状态与恢复
+
+受理顺序为来源登记与启用检查、设备来源在线检查、协议校验、幂等查询、寻址、权限、目标在线检查、数据库提交、MQTT 发布。目标 offline 时返回 `target_offline`，V1 不排队。
+
+同一幂等键且规范化请求相同则返回已有状态；内容不同返回 `idempotency_conflict`。有合法幂等键但被拒绝的请求也保存终态结果。
+
+统一生命周期为：
+
+```text
+pending → dispatched → in_progress → succeeded/failed/timeout/delivery_uncertain
+```
+
+数据库保存统一状态和原始设备 ACK；来源回程保留配置 `applied`、飞控 `accepted` 等业务状态。配置默认超时 15 秒，飞控默认 30 秒；飞控 `in_progress` 刷新期限。超时为稳定终态，迟到 ACK 只记录日志。
+
+服务恢复时，配置命令可使用原 `command_id` 重发；飞控命令不自动重发，不确定结果标为 `delivery_uncertain`，优先避免重复执行。
+
+## 7. 有界资源与故障降级
+
+V1 使用一个有界 MQTT 入站队列，不实现优先级调度。入队前检查 payload 字节上限；队列满时限频记录严重错误并丢弃新消息，来源可用相同 `request_id` 重试。队列容量、payload 上限、5 秒刷新周期、180 秒离线阈值、命令超时和 30 天保留期均可配置。
+
+PostgreSQL 冷启动不可用时退出并由 systemd 重试。运行中不可用时停止命令，遥测继续更新每设备一份的有界内存状态并输出降级事件，registration 保留最新待写状态；恢复后补写。
+
+Mosquitto 断开时保持运行并自动重连，断开期间不受理命令，已派发命令按期限超时，设备按 180 秒规则离线。重连后处理 retained registration，并按已确认规则恢复命令。
+
+## 8. 配置、日志与安全
+
+使用 JSON 配置，仓库只提交示例。真实 Broker、数据库、密码和固定来源配置不提交；密码优先通过 systemd `EnvironmentFile` 或权限受限现场配置提供。文档、代码注释和运行日志使用中文，协议标识保留英文；外部 payload 只记录安全截断上下文。
+
+当前匿名 MQTT 1883 只适合联调。`command_sources` 只是应用层白名单，不能证明发布者身份；正式部署必须设计 MQTT 用户认证和 topic ACL，尤其保护设备来源及全校权限来源，但未经独立设计、计划和授权不得修改现场 Broker。
+
+## 9. 测试与验收
+
+本机单元测试覆盖 topic、payload、配置、注册、身份补全、学校不可迁移、角色号冲突、来源权限、寻址、幂等、命令状态机、超时、迟到 ACK、离线扫描、遥测合并和敏感日志。
+
+现场集成测试覆盖 PostgreSQL 安装初始化、迁移重复执行、Mosquitto 完整链路、retained registration 恢复、telemetry 非 retained、两类命令、服务恢复、依赖故障和 systemd。测试使用独立标识，不清空或覆盖已有数据；服务器状态变更必须在设计、计划和对应提交确认后另行授权。
+
+V1 验收标准：当前不足 10 台设备可稳定发现、上下线、更新最新状态和实时事件；数据库不保存遥测历史；身份优先级、来源权限、在线限制、命令幂等、ACK、超时和安全恢复生效；迁移可重复执行且不破坏已有数据。
+
+## 10. 跨仓库同步
+
+`cns_rpi` 必须同步 telemetry `retain=false`，并更新示例配置、发布实现、测试、`docs/V1设计文档.md`、注册/发现设计及其他相关文档。registration 继续使用 QoS 2、retained online/offline 和遗嘱。服务端身份规则统一为 registration 主更新、`telemetry.identity` 仅补空值。该变更需要独立提交和验证，不能让两仓库协议长期冲突。

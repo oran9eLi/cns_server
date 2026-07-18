@@ -52,6 +52,16 @@ cns_server/
 ## 当前优先级
 
 1. 设计并实现 `route_service`。
-2. 完成设备注册、遥测补全、数据库维护、配置与飞控命令路由及 ACK 回程。
+2. 完成设备注册、最新遥测状态、实时状态事件、配置与飞控命令路由及 ACK 回程；V1 不保存逐帧遥测历史。
 3. 完成服务器部署和 PostgreSQL/Mosquitto 集成验证。
 4. 之后再讨论并实施 `backend_service` 和设备管理前端。
+
+## 已确认的 Route Service V1 边界
+
+- 使用 C++23 单体 systemd 服务、libmosquitto、libpqxx、nlohmann/json 和 doctest。
+- PostgreSQL 将稳定设备元数据与高频最新状态分表，遥测以 JSONB 保存最新快照并默认每 5 秒合并写入。
+- route_service 通过 MQTT 发布 QoS 0、非 retained 的规范化实时状态事件，未来 backend_service 不直接把设备原始 telemetry 作为权威数据源。
+- 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
+- V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
+
+完整设计见 `docs/superpowers/specs/2026-07-18-route-service-design.md`。
