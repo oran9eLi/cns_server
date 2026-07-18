@@ -12,7 +12,7 @@ CNS（通信、导航、监视）实训箱的服务器端工程，与树莓派�
 cns_server/
 ├── route_service/       # 设备数据库维护、权限校验、命令路由与 ACK 回程
 ├── backend_service/     # 面向设备管理前端的服务端接口
-└── frontend/            # React 设备管理控制前端（实施时新增）
+└── frontend/            # React 设备管理控制前端
 ```
 
 ### route_service
@@ -26,6 +26,11 @@ cns_server/
 面向设备管理前端的服务。它只读 `route_service` 维护的设备数据，订阅规范化实时状态事件，并作为受控命令来源向路由服务提交请求，不得绕过路由服务直接向设备命令 topic 发布。
 
 V1 已确认使用 TypeScript、Fastify、React、Ant Design、REST 和标准原生 WebSocket。正式设计见 `backend_service/docs/2026-07-19-后端服务V1设计.md`。
+全局实施路线见 `backend_service/docs/2026-07-19-后端服务V1实施计划.md`。
+
+### frontend
+
+React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/WebSocket 协议。当前先在里程碑一完成可查看的页面骨架和开发数据适配，待后续里程碑接入真实设备快照、实时状态与命令链路。详细边界见 `frontend/README.md`。
 
 ## 开发流程
 
