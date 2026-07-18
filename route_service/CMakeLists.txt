@@ -18,6 +18,8 @@ add_library(route_core STATIC
   src/core/cli/command_line.cpp
   src/core/config/app_config.cpp
   src/core/logging/logger.cpp
+  src/core/migration/migration.cpp
+  src/core/migration/migration_plan.cpp
 )
 target_include_directories(route_core PUBLIC src)
 target_link_libraries(route_core PUBLIC nlohmann_json::nlohmann_json)
@@ -47,3 +49,15 @@ target_compile_options(test_bounded_queue PRIVATE -Wall -Wextra -Wpedantic -Werr
 
 add_test(NAME bounded_queue COMMAND test_bounded_queue)
 set_tests_properties(bounded_queue PROPERTIES TIMEOUT 10)
+
+add_executable(test_migration tests/test_migration.cpp)
+target_link_libraries(test_migration PRIVATE route_core doctest::doctest)
+target_compile_options(test_migration PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME migration COMMAND test_migration)
+
+add_executable(test_migration_plan tests/test_migration_plan.cpp)
+target_link_libraries(test_migration_plan PRIVATE route_core doctest::doctest)
+target_compile_options(test_migration_plan PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME migration_plan COMMAND test_migration_plan)
