@@ -61,3 +61,12 @@ target_link_libraries(test_migration_plan PRIVATE route_core doctest::doctest)
 target_compile_options(test_migration_plan PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME migration_plan COMMAND test_migration_plan)
+
+add_executable(test_schema_sql tests/test_schema_sql.cpp)
+target_link_libraries(test_schema_sql PRIVATE doctest::doctest)
+target_compile_options(test_schema_sql PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(test_schema_sql PRIVATE
+  CNS_MIGRATIONS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/migrations"
+)
+
+add_test(NAME schema_sql COMMAND test_schema_sql)
