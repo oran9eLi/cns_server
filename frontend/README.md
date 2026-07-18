@@ -25,7 +25,7 @@ V1 使用横向桌面管理后台布局，包含：
 - 实时设备状态和命令结果使用 backend_service 的标准 WebSocket。
 - 浏览器不连接 PostgreSQL、Mosquitto 或 route_service。
 - 浏览器不构造设备 MQTT topic，也不直接控制设备。
-- 浏览器与 backend_service 的共享 schema 位于顶层 `shared/protocol`，不得把 MQTT 内部协议暴露到前端。
+- 浏览器与 backend_service 的共享 schema 位于 `backend_service/protocol`，不得把 MQTT 内部协议暴露到前端。
 
 ## 开发数据
 
@@ -40,5 +40,7 @@ route_service 和 backend_service 真实链路尚未就绪时，里程碑一允�
 
 - Backend Service V1 全局设计和全局里程碑路线已经确认。
 - 前端尚未开始编码。
-- 下一步逐节确认“里程碑一：TypeScript 全栈工程基础”设计，优先形成可在浏览器查看的设备列表和详情控制页面，再编写本里程碑详细实施计划。
+- “里程碑一：TypeScript 全栈工程基础”设计已经逐节确认，采用独立 `frontend/dev-simulator` 通过正式 REST/WebSocket 契约驱动可点击页面。
+- 页面采用明亮、专业、现代的企业级风格，主色为 `#132B88`，使用公司现有透明 Logo；设备列表和独立详情控制页的布局基线已经确认，视觉细节在可运行页面中继续优化。
+- 下一步复核书面设计，再编写本里程碑详细实施计划；未经计划确认不开始编码。
 - 正式 V1 设计与全局计划位于 `backend_service/docs/`；各里程碑的设计、详细计划和验证记录也统一归档在 backend_service 文档目录。
