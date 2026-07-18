@@ -38,7 +38,7 @@ cns_server/
 6. 不提交真实密码、证书私钥、数据库数据目录或现场配置，只提交示例配置。
 7. 一旦技术选型、架构边界、协议、数据结构、部署方式或验收标准得到新确认，必须在同一工作阶段主动同步所有受影响文档，不等待功能完成，也不依赖用户再次提醒。代码、示例配置和测试若受影响，也必须在实施时保持一致；不得让已经确认的事实只停留在对话中。
 
-后续应在 `docs/` 中补充本仓库自己的协作规范、设计文档、实施计划和验证记录，不能长期依赖另一个仓库中的说明。
+后续应在各子项目自己的 `docs/` 中补充协作规范、设计文档、实施计划和验证记录，不能长期依赖另一个仓库中的说明。文档文件名统一使用“`YYYY-MM-DD-中文主题.md`”；例如 route_service 的设计与计划分别放在 `route_service/docs/superpowers/specs/` 和 `route_service/docs/superpowers/plans/`。
 
 ## 构建与验证原则
 
@@ -64,4 +64,4 @@ cns_server/
 - 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
 
-完整设计见 `docs/superpowers/specs/2026-07-18-route-service-design.md`。
+完整设计见 `route_service/docs/superpowers/specs/2026-07-18-路由服务V1设计.md`。

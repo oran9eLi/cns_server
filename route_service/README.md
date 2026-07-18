@@ -34,7 +34,7 @@ V1 阶段核心职责：
 | `{namespace}/{vendor_id}/control/ack` | RPi→本服务 | 返回 STM32 执行结果 |
 | `{namespace}/events/devices/{vendor_id}/state` | 本服务→后端 | QoS 0、非 retained 的规范化实时状态事件 |
 
-注册 payload 格式见 `cns_rpi` 仓库 `docs/superpowers/specs/2026-07-10-mqtt-registration-discovery-design.md`；设备侧配置与飞控协议见关联仓库文档。来源侧飞控请求、统一命令表和实时状态事件协议见本仓库 `docs/superpowers/specs/2026-07-18-route-service-design.md`。
+注册 payload 格式见 `cns_rpi` 仓库 `docs/superpowers/specs/2026-07-10-mqtt-registration-discovery-design.md`；设备侧配置与飞控协议见关联仓库文档。来源侧飞控请求、统一命令表和实时状态事件协议见 `docs/superpowers/specs/2026-07-18-路由服务V1设计.md`。
 
 ## 数据库
 
@@ -84,9 +84,11 @@ V1 阶段核心职责：
 ## 当前状态
 
 - 项目边界已确认。
-- Route Service V1 设计已逐节确认，书面规格见 `docs/superpowers/specs/2026-07-18-route-service-design.md`。
+- Route Service V1 设计已逐节确认，书面规格见 `docs/superpowers/specs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
 - 书面规格复核通过后再写实施计划，实施计划确认前不开始编码。
+
+本子项目后续设计与实施计划分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`，文件名统一使用“`YYYY-MM-DD-中文主题.md`”。
 
 ## 测试与部署约束
 
