@@ -2,10 +2,12 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <expected>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "core/config/app_config.hpp"
 #include "core/logging/logger.hpp"
@@ -29,20 +31,27 @@ class MqttClient {
   bool IsConnected() const noexcept;
 
  private:
+  struct CallbackState;
+
   MqttClient(config::MqttConfig config, logging::Logger& logger);
 
   static void HandleConnect(struct mosquitto*, void* context, int result);
   static void HandleDisconnect(struct mosquitto*, void* context, int result);
+  static void HandleLog(struct mosquitto*, void* context, int level,
+                        const char* message);
   void WarnDisconnected(int result);
+  void RetryConnection();
 
   config::MqttConfig config_;
-  logging::Logger& logger_;
-  runtime::RateLimiter warning_limiter_;
+  std::unique_ptr<CallbackState> callback_state_;
   struct mosquitto* client_ = nullptr;
   bool library_acquired_ = false;
-  bool loop_started_ = false;
+  std::atomic_bool loop_started_{false};
   mutable std::mutex lifecycle_mutex_;
-  std::atomic_bool connected_{false};
+  std::mutex retry_mutex_;
+  std::condition_variable retry_changed_;
+  bool retry_stop_requested_ = false;
+  std::thread retry_thread_;
 };
 
 }  // namespace cns::mqtt

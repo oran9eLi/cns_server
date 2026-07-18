@@ -13,6 +13,12 @@ find_package(nlohmann_json REQUIRED)
 find_package(doctest REQUIRED)
 find_program(CNS_READELF NAMES readelf REQUIRED)
 
+if(NOT MOSQUITTO_VERSION VERSION_EQUAL "2.0.22")
+  message(FATAL_ERROR
+    "本工程要求系统 libmosquitto 2.0.22，当前版本为 ${MOSQUITTO_VERSION}"
+  )
+endif()
+
 if(NOT PQXX_VERSION MATCHES "^7\\.10\\.[0-9]+$")
   message(FATAL_ERROR "本工程要求系统 libpqxx 7.10.x，当前版本为 ${PQXX_VERSION}")
 endif()
@@ -108,6 +114,12 @@ target_link_options(test_rate_limiter PRIVATE
   LINKER:--wrap=mosquitto_loop_start
   LINKER:--wrap=mosquitto_disconnect
   LINKER:--wrap=mosquitto_loop_stop
+  LINKER:--wrap=mosquitto_destroy
+  LINKER:--wrap=mosquitto_lib_cleanup
+  LINKER:--wrap=mosquitto_new
+  LINKER:--wrap=mosquitto_connect_callback_set
+  LINKER:--wrap=mosquitto_disconnect_callback_set
+  LINKER:--wrap=mosquitto_log_callback_set
 )
 
 add_test(NAME rate_limiter COMMAND test_rate_limiter)
