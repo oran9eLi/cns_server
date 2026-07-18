@@ -34,9 +34,11 @@ struct MosquittoInjection {
   void (*disconnect_callback)(struct mosquitto*, void*, int) = nullptr;
   void (*log_callback)(struct mosquitto*, void*, int, const char*) = nullptr;
   void* callback_context = nullptr;
+  bool use_real_retry_wait = false;
   std::mutex mutex;
   std::condition_variable changed;
   std::vector<std::string> calls;
+  std::vector<std::chrono::seconds> retry_delays;
 };
 
 MosquittoInjection* active_injection = nullptr;
@@ -60,7 +62,7 @@ cns::config::MqttConfig TestConfig() {
       .username = "",
       .password = "",
       .reconnect_delay = 1s,
-      .reconnect_delay_max = 30s,
+      .reconnect_delay_max = 4s,
   };
 }
 
@@ -80,6 +82,9 @@ extern "C" void __real_mosquitto_disconnect_callback_set(
     struct mosquitto*, void (*)(struct mosquitto*, void*, int));
 extern "C" void __real_mosquitto_log_callback_set(
     struct mosquitto*, void (*)(struct mosquitto*, void*, int, const char*));
+extern "C" bool __real_cns_runtime_wait_interruptibly(
+    std::condition_variable*, std::unique_lock<std::mutex>*,
+    std::chrono::seconds, const bool*);
 
 extern "C" int __wrap_mosquitto_connect_async(struct mosquitto* client,
                                                 const char* host, int port,
@@ -180,6 +185,36 @@ extern "C" void __wrap_mosquitto_log_callback_set(
   active_injection->log_callback = callback;
 }
 
+extern "C" bool __wrap_cns_runtime_wait_interruptibly(
+    std::condition_variable* changed, std::unique_lock<std::mutex>* lock,
+    std::chrono::seconds delay, const bool* stop_requested) {
+  if (active_injection == nullptr) {
+    return __real_cns_runtime_wait_interruptibly(changed, lock, delay,
+                                                 stop_requested);
+  }
+  {
+    std::lock_guard injection_lock{active_injection->mutex};
+    active_injection->retry_delays.push_back(delay);
+    active_injection->changed.notify_all();
+  }
+  if (active_injection->use_real_retry_wait) {
+    return __real_cns_runtime_wait_interruptibly(changed, lock, delay,
+                                                 stop_requested);
+  }
+  return false;
+}
+
+std::expected<void, std::string> WaitForRetryFailure(
+    cns::mqtt::MqttClient& client) {
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto result = client.Start();
+    if (!result.has_value()) return result;
+    std::this_thread::sleep_for(1ms);
+  }
+  return {};
+}
+
 TEST_CASE("同一键首次允许且窗口内拒绝并在到期点恢复") {
   cns::runtime::RateLimiter limiter(30s);
   const auto start = std::chrono::steady_clock::time_point{};
@@ -232,28 +267,8 @@ TEST_CASE("MQTT同步EAI多次后在后台恢复并启动网络循环") {
   std::ostringstream out;
   std::ostringstream err;
   cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
-  MosquittoInjection injection{
-      {MOSQ_ERR_EAI, MOSQ_ERR_EAI, MOSQ_ERR_SUCCESS}};
-  ScopedMosquittoInjection scoped{injection};
-
-  auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
-  REQUIRE(created.has_value());
-  REQUIRE((*created)->Start().has_value());
-  {
-    std::unique_lock lock{injection.mutex};
-    REQUIRE(injection.changed.wait_for(lock, 2s, [&] {
-      return std::ranges::count(injection.calls, "loop_start") == 1;
-    }));
-  }
-  (*created)->Stop();
-  CHECK(std::ranges::count(injection.calls, "connect_async") == 3);
-}
-
-TEST_CASE("MQTT停止可中断EAI重试等待") {
-  std::ostringstream out;
-  std::ostringstream err;
-  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
-  MosquittoInjection injection{{MOSQ_ERR_EAI}};
+  MosquittoInjection injection{{MOSQ_ERR_EAI, MOSQ_ERR_EAI, MOSQ_ERR_EAI,
+                                MOSQ_ERR_EAI, MOSQ_ERR_SUCCESS}};
   ScopedMosquittoInjection scoped{injection};
 
   auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
@@ -262,13 +277,69 @@ TEST_CASE("MQTT停止可中断EAI重试等待") {
   {
     std::unique_lock lock{injection.mutex};
     REQUIRE(injection.changed.wait_for(lock, 500ms, [&] {
-      return std::ranges::count(injection.calls, "connect_async") >= 2;
+      return std::ranges::count(injection.calls, "loop_start") == 1;
+    }));
+  }
+  (*created)->Stop();
+  CHECK(injection.retry_delays ==
+        std::vector<std::chrono::seconds>{1s, 2s, 4s, 4s});
+  CHECK(std::ranges::count(injection.calls, "connect_async") == 5);
+}
+
+TEST_CASE("MQTT停止可中断EAI重试等待") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  MosquittoInjection injection{{MOSQ_ERR_EAI}};
+  injection.use_real_retry_wait = true;
+  ScopedMosquittoInjection scoped{injection};
+
+  auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
+  REQUIRE(created.has_value());
+  REQUIRE((*created)->Start().has_value());
+  {
+    std::unique_lock lock{injection.mutex};
+    REQUIRE(injection.changed.wait_for(lock, 500ms, [&] {
+      return !injection.retry_delays.empty();
     }));
   }
   const auto before = std::chrono::steady_clock::now();
   (*created)->Stop();
   CHECK(std::chrono::steady_clock::now() - before < 200ms);
   CHECK(std::ranges::count(injection.calls, "loop_start") == 0);
+}
+
+TEST_CASE("MQTT重试遇到非网络错误后再次启动返回保存错误") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  MosquittoInjection injection{{MOSQ_ERR_EAI, MOSQ_ERR_INVAL}};
+  ScopedMosquittoInjection scoped{injection};
+
+  auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
+  REQUIRE(created.has_value());
+  REQUIRE((*created)->Start().has_value());
+  const auto restarted = WaitForRetryFailure(**created);
+
+  REQUIRE_FALSE(restarted.has_value());
+  CHECK(restarted.error().find("重试MQTT异步连接失败") != std::string::npos);
+}
+
+TEST_CASE("MQTT后台网络线程启动失败后再次启动返回保存错误") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  MosquittoInjection injection{{MOSQ_ERR_EAI, MOSQ_ERR_SUCCESS}};
+  injection.loop_start_result = MOSQ_ERR_NOT_SUPPORTED;
+  ScopedMosquittoInjection scoped{injection};
+
+  auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
+  REQUIRE(created.has_value());
+  REQUIRE((*created)->Start().has_value());
+  const auto restarted = WaitForRetryFailure(**created);
+
+  REQUIRE_FALSE(restarted.has_value());
+  CHECK(restarted.error().find("启动MQTT网络线程失败") != std::string::npos);
 }
 
 TEST_CASE("MQTT网络线程停止失败时析构不释放仍被引用的资源") {
@@ -289,6 +360,19 @@ TEST_CASE("MQTT网络线程停止失败时析构不释放仍被引用的资源")
   CHECK(std::ranges::count(injection.calls, "destroy") == 0);
   CHECK(std::ranges::count(injection.calls, "lib_cleanup") == 0);
   CHECK(err.str().find("停止MQTT网络线程失败") != std::string::npos);
+
+  const std::string out_before_callbacks = out.str();
+  const std::string err_before_callbacks = err.str();
+  REQUIRE(injection.connect_callback != nullptr);
+  REQUIRE(injection.disconnect_callback != nullptr);
+  REQUIRE(injection.log_callback != nullptr);
+  injection.connect_callback(nullptr, injection.callback_context, 0);
+  injection.disconnect_callback(nullptr, injection.callback_context,
+                                MOSQ_ERR_CONN_LOST);
+  injection.log_callback(nullptr, injection.callback_context, MOSQ_LOG_ERR,
+                         "析构后回调");
+  CHECK(out.str() == out_before_callbacks);
+  CHECK(err.str() == err_before_callbacks);
 }
 
 TEST_CASE("MQTT库错误日志按安全类别限频且不输出原始文本") {

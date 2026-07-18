@@ -120,6 +120,7 @@ target_link_options(test_rate_limiter PRIVATE
   LINKER:--wrap=mosquitto_connect_callback_set
   LINKER:--wrap=mosquitto_disconnect_callback_set
   LINKER:--wrap=mosquitto_log_callback_set
+  LINKER:--wrap=cns_runtime_wait_interruptibly
 )
 
 add_test(NAME rate_limiter COMMAND test_rate_limiter)

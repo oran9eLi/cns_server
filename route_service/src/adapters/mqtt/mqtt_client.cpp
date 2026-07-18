@@ -3,12 +3,17 @@
 
 #include <mosquitto.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <utility>
+
+extern "C" bool cns_runtime_wait_interruptibly(
+    std::condition_variable* changed, std::unique_lock<std::mutex>* lock,
+    std::chrono::seconds delay, const bool* stop_requested);
 
 namespace cns::mqtt {
 namespace {
@@ -162,9 +167,20 @@ MqttClient::~MqttClient() {
 
 std::expected<void, std::string> MqttClient::Start() {
   std::lock_guard lock{lifecycle_mutex_};
-  if (loop_started_.load(std::memory_order_acquire) || retry_thread_.joinable()) {
-    return {};
+  if (loop_started_.load(std::memory_order_acquire)) return {};
+
+  std::string completed_error;
+  {
+    std::lock_guard retry_lock{retry_mutex_};
+    if (retry_state_ == RetryState::kRunning) return {};
+    if (retry_state_ == RetryState::kFailed) {
+      completed_error = std::move(retry_error_);
+      retry_state_ = RetryState::kIdle;
+    }
   }
+  if (retry_thread_.joinable()) retry_thread_.join();
+  if (!completed_error.empty()) return std::unexpected(completed_error);
+
   {
     std::lock_guard retry_lock{retry_mutex_};
     retry_stop_requested_ = false;
@@ -181,9 +197,15 @@ std::expected<void, std::string> MqttClient::Start() {
   if (initial_network_failure) WarnDisconnected(connect_result);
 
   if (connect_result == MOSQ_ERR_EAI) {
+    {
+      std::lock_guard retry_lock{retry_mutex_};
+      retry_state_ = RetryState::kRunning;
+      retry_error_.clear();
+    }
     try {
       retry_thread_ = std::thread(&MqttClient::RetryConnection, this);
     } catch (const std::system_error& error) {
+      FinishRetry();
       return std::unexpected(std::string{"启动MQTT连接重试线程失败："} +
                              error.what());
     }
@@ -207,6 +229,11 @@ void MqttClient::Stop() {
   }
   retry_changed_.notify_all();
   if (retry_thread_.joinable()) retry_thread_.join();
+  {
+    std::lock_guard retry_lock{retry_mutex_};
+    retry_state_ = RetryState::kIdle;
+    retry_error_.clear();
+  }
 
   if (!loop_started_.load(std::memory_order_acquire)) {
     callback_state_->connected.store(false, std::memory_order_release);
@@ -265,45 +292,62 @@ void MqttClient::WarnDisconnected(int result) {
 }
 
 void MqttClient::RetryConnection() {
+  auto retry_delay = config_.reconnect_delay;
   while (true) {
-    {
-      std::lock_guard lock{retry_mutex_};
-      if (retry_stop_requested_) return;
+    std::unique_lock retry_lock{retry_mutex_};
+    if (cns_runtime_wait_interruptibly(&retry_changed_, &retry_lock, retry_delay,
+                                       &retry_stop_requested_)) {
+      retry_lock.unlock();
+      FinishRetry();
+      return;
     }
+    retry_lock.unlock();
 
     const int connect_result = mosquitto_connect_async(
         client_, config_.host.c_str(), static_cast<int>(config_.port),
         static_cast<int>(config_.keepalive.count()));
     if (connect_result == MOSQ_ERR_EAI) {
       WarnDisconnected(connect_result);
-      std::unique_lock lock{retry_mutex_};
-      if (retry_changed_.wait_for(lock, config_.reconnect_delay,
-                                  [this] { return retry_stop_requested_; })) {
-        return;
-      }
+      retry_delay = std::min(retry_delay * 2, config_.reconnect_delay_max);
       continue;
     }
     if (connect_result != MOSQ_ERR_SUCCESS && connect_result != MOSQ_ERR_ERRNO) {
-      callback_state_->Warn(
-          MosquittoError("重试MQTT异步连接", connect_result));
+      const std::string error =
+          MosquittoError("重试MQTT异步连接", connect_result);
+      callback_state_->Warn(error);
+      FinishRetry(error);
       return;
     }
     if (connect_result == MOSQ_ERR_ERRNO) WarnDisconnected(connect_result);
 
+    bool stop_requested = false;
     {
       std::lock_guard lock{retry_mutex_};
-      if (retry_stop_requested_) return;
+      stop_requested = retry_stop_requested_;
+    }
+    if (stop_requested) {
+      FinishRetry();
+      return;
     }
     const int loop_result = mosquitto_loop_start(client_);
     if (loop_result != MOSQ_ERR_SUCCESS) {
-      callback_state_->Warn(
-          MosquittoError("启动MQTT网络线程", loop_result));
+      const std::string error = MosquittoError("启动MQTT网络线程", loop_result);
+      callback_state_->Warn(error);
       static_cast<void>(mosquitto_disconnect(client_));
+      FinishRetry(error);
       return;
     }
     loop_started_.store(true, std::memory_order_release);
+    FinishRetry();
     return;
   }
+}
+
+void MqttClient::FinishRetry(std::string error) {
+  std::lock_guard lock{retry_mutex_};
+  retry_error_ = std::move(error);
+  retry_state_ = retry_error_.empty() ? RetryState::kIdle : RetryState::kFailed;
+  retry_changed_.notify_all();
 }
 
 }  // namespace cns::mqtt
