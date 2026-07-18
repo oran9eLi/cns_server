@@ -1,0 +1,26 @@
+{
+  "database": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "name": "cns",
+    "user": "cns_route",
+    "password": "请替换为现场随机强密码",
+    "connect_timeout_seconds": 5
+  },
+  "mqtt": {
+    "host": "127.0.0.1",
+    "port": 1883,
+    "keepalive_seconds": 60,
+    "client_id": "cns-route-service",
+    "username": "",
+    "password": "",
+    "reconnect_delay_seconds": 1,
+    "reconnect_delay_max_seconds": 30
+  },
+  "logging": {
+    "level": "info"
+  },
+  "queues": {
+    "mqtt_inbound_capacity": 256
+  }
+}
