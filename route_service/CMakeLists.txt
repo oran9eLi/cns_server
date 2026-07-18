@@ -40,3 +40,10 @@ target_link_libraries(test_logger PRIVATE route_core doctest::doctest)
 target_compile_options(test_logger PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME logger COMMAND test_logger)
+
+add_executable(test_bounded_queue tests/test_bounded_queue.cpp)
+target_link_libraries(test_bounded_queue PRIVATE route_core doctest::doctest)
+target_compile_options(test_bounded_queue PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME bounded_queue COMMAND test_bounded_queue)
+set_tests_properties(bounded_queue PROPERTIES TIMEOUT 10)
