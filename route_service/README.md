@@ -86,7 +86,7 @@ V1 阶段核心职责：
 - 项目边界已确认。
 - Route Service V1 设计已逐节确认，书面规格见 `docs/superpowers/specs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
-- 书面规格复核通过后再写实施计划，实施计划确认前不开始编码。
+- 书面规格已复核，详细步骤见 `docs/superpowers/plans/2026-07-18-路由服务V1实施计划.md`；实施计划确认前不开始编码。
 
 本子项目后续设计与实施计划分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`，文件名统一使用“`YYYY-MM-DD-中文主题.md`”。
 

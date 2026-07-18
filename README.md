@@ -65,3 +65,4 @@ cns_server/
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
 
 完整设计见 `route_service/docs/superpowers/specs/2026-07-18-路由服务V1设计.md`。
+详细实施步骤见 `route_service/docs/superpowers/plans/2026-07-18-路由服务V1实施计划.md`。
