@@ -8,8 +8,6 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
-#include <limits>
-#include <set>
 #include <string_view>
 
 namespace cns::config {
@@ -160,11 +158,11 @@ std::expected<LoggingConfig, std::string> ParseLogging(const Json& root) {
   if (!object) return std::unexpected(object.error());
   const auto level = ReadString(**object, "level", "logging.level");
   if (!level) return std::unexpected(level.error());
-  constexpr std::array levels{"debug"sv, "info"sv, "warn"sv, "error"sv};
-  if (std::ranges::find(levels, *level) == levels.end()) {
+  const auto parsed = logging::ParseLevel(*level);
+  if (!parsed) {
     return Error("logging.level", "只接受 debug、info、warn 或 error");
   }
-  return LoggingConfig{*level};
+  return LoggingConfig{*parsed};
 }
 
 std::expected<QueueConfig, std::string> ParseQueues(const Json& root) {

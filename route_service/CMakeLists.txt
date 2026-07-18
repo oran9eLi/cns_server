@@ -17,6 +17,7 @@ enable_testing()
 add_library(route_core STATIC
   src/core/cli/command_line.cpp
   src/core/config/app_config.cpp
+  src/core/logging/logger.cpp
 )
 target_include_directories(route_core PUBLIC src)
 target_link_libraries(route_core PUBLIC nlohmann_json::nlohmann_json)
@@ -33,3 +34,9 @@ target_link_libraries(test_app_config PRIVATE route_core doctest::doctest)
 target_compile_options(test_app_config PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME app_config COMMAND test_app_config)
+
+add_executable(test_logger tests/test_logger.cpp)
+target_link_libraries(test_logger PRIVATE route_core doctest::doctest)
+target_compile_options(test_logger PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME logger COMMAND test_logger)

@@ -74,7 +74,7 @@ TEST_CASE("完整配置准确解析为强类型结构") {
   CHECK(result->mqtt.password.empty());
   CHECK(result->mqtt.reconnect_delay == std::chrono::seconds{1});
   CHECK(result->mqtt.reconnect_delay_max == std::chrono::seconds{30});
-  CHECK(result->logging.level == "info");
+  CHECK(result->logging.level == cns::logging::Level::kInfo);
   CHECK(result->queues.mqtt_inbound_capacity == 256);
 }
 

@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <string>
 
+#include "core/logging/logger.hpp"
+
 namespace cns::config {
 
 struct DatabaseConfig {
@@ -31,7 +33,7 @@ struct MqttConfig {
 };
 
 struct LoggingConfig {
-  std::string level;
+  logging::Level level;
 };
 
 struct QueueConfig {
