@@ -50,6 +50,9 @@ class FakeOperations final : public cns::runtime::ServiceOperations {
   std::expected<void, std::string> LoadDeviceSnapshot() override {
     return Call("加载设备快照");
   }
+  std::expected<void, std::string> LoadCommandState() override {
+    return Call("加载命令状态");
+  }
   std::expected<void, std::string> StartDeviceRuntime() override {
     return Call("启动设备运行时");
   }
@@ -427,16 +430,19 @@ TEST_CASE("正常启动按迁移检查快照信号设备运行时和MQTT排序")
   CHECK(RunService(RunMode::kNormal, operations) == 0);
   const auto migration = std::ranges::find(operations.calls, "规划检查");
   const auto snapshot = std::ranges::find(operations.calls, "加载设备快照");
+  const auto commands = std::ranges::find(operations.calls, "加载命令状态");
   const auto signal = std::ranges::find(operations.calls, "安装信号");
   const auto runtime = std::ranges::find(operations.calls, "启动设备运行时");
   const auto mqtt = std::ranges::find(operations.calls, "启动MQTT");
   REQUIRE(migration != operations.calls.end());
   REQUIRE(snapshot != operations.calls.end());
+  REQUIRE(commands != operations.calls.end());
   REQUIRE(signal != operations.calls.end());
   REQUIRE(runtime != operations.calls.end());
   REQUIRE(mqtt != operations.calls.end());
   CHECK(migration < snapshot);
-  CHECK(snapshot < signal);
+  CHECK(snapshot < commands);
+  CHECK(commands < signal);
   CHECK(signal < runtime);
   CHECK(runtime < mqtt);
 }

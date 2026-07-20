@@ -26,6 +26,7 @@ class ServiceEnvironment final : public runtime::ServiceOperations {
   std::size_t PendingMigrationCount() const override;
   std::expected<void, std::string> ApplyMigration(std::size_t index) override;
   std::expected<void, std::string> LoadDeviceSnapshot() override;
+  std::expected<void, std::string> LoadCommandState() override;
   std::expected<void, std::string> InstallSignalHandlers() override;
   std::expected<void, std::string> StartDeviceRuntime() override;
   void StopAcceptingDeviceMessages() override;

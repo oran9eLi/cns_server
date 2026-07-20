@@ -10,10 +10,13 @@
 #include "core/mqtt_topic/device_topic.hpp"
 #include "core/runtime/device_service.hpp"
 #include "core/runtime/device_ingress.hpp"
+#include "core/runtime/command_service.hpp"
+#include "core/runtime/command_ingress.hpp"
 #include "core/runtime/postgres_worker.hpp"
 #include "core/runtime/shutdown_flag.hpp"
 #include "core/state_event/state_event.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <iostream>
@@ -183,10 +186,14 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
   config::AppConfig config;
   device::DeviceRegistry registry;
   std::vector<persistence::DesiredDeviceWrite> startup_writes;
+  command::SourceCatalog command_sources;
+  std::vector<command::CommandRecord> active_commands;
   std::unique_ptr<RuntimePostgresBridge> store;
   std::unique_ptr<runtime::PostgresWorker> worker;
   std::unique_ptr<runtime::DeviceService> service;
+  std::unique_ptr<runtime::CommandService> command_service;
   std::shared_ptr<runtime::DeviceIngress> ingress;
+  std::shared_ptr<runtime::CommandIngress> command_ingress;
   std::weak_ptr<RuntimeExternalBridge> external;
   runtime::SelfOwnedRuntimeThread database_thread;
   runtime::SelfOwnedRuntimeThread business_thread;
@@ -217,7 +224,12 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         [weak = external](std::string message) {
           if (const auto bridge = weak.lock()) bridge->Diagnose(message);
         },
-        config.database.reconnect_interval, [](runtime::CommandDatabaseResult) {},
+        config.database.reconnect_interval,
+        [weak_self](runtime::CommandDatabaseResult result) {
+          if (const auto self = weak_self.lock(); self && self->command_service) {
+            self->command_service->PushDatabaseResult(std::move(result));
+          }
+        },
         config.command.max_inflight_commands);
     service = std::make_unique<runtime::DeviceService>(
         registry,
@@ -232,7 +244,13 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
           return self && self->worker &&
                  self->worker->SubmitWrite(std::move(write));
         },
-        [weak = external](runtime::PublishedState published) {
+        [weak_self, weak = external](runtime::PublishedState published) {
+          if (published.record.status == device::Status::kOnline) {
+            if (const auto self = weak_self.lock(); self && self->command_service) {
+              self->command_service->OnTargetOnline(
+                  published.record.vendor_id, std::chrono::system_clock::now());
+            }
+          }
           if (const auto bridge = weak.lock()) bridge->Publish(std::move(published));
         },
         [] { return std::chrono::steady_clock::now(); },
@@ -251,6 +269,41 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         [weak = external](std::string message) {
           if (const auto bridge = weak.lock()) bridge->Diagnose(message);
         });
+    command_service = std::make_unique<runtime::CommandService>(
+        command_sources, registry,
+        [weak_self](std::uint64_t id, runtime::CommandDatabaseTask task) {
+          const auto self = weak_self.lock();
+          return self && self->worker &&
+                 self->worker->SubmitCommand(id, std::move(task));
+        },
+        [weak = external](std::uint64_t token, std::string topic,
+                          std::string payload) -> std::expected<void, std::string> {
+          const auto bridge = weak.lock();
+          if (!bridge) return std::unexpected("MQTT桥已失效");
+          std::lock_guard lock(bridge->mutex);
+          if (!bridge->enabled || bridge->mqtt == nullptr)
+            return std::unexpected("MQTT桥已失效");
+          return bridge->mqtt->PublishConfigSet(token, topic, payload);
+        },
+        [weak = external](std::string topic, std::string payload) {
+          const auto bridge = weak.lock();
+          if (!bridge) return;
+          std::lock_guard lock(bridge->mutex);
+          if (bridge->enabled && bridge->mqtt != nullptr) {
+            static_cast<void>(bridge->mqtt->PublishSourceConfigAck(topic, payload));
+          }
+        },
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Diagnose(message);
+        }, config.command.max_inflight_commands, config.mqtt.topic_namespace,
+        config.command.config_timeout, config.command.terminal_retention,
+        config.command.cleanup_interval, config.command.cleanup_batch_size);
+    command_service->LoadActive(std::move(active_commands));
+    command_ingress = std::make_shared<runtime::CommandIngress>(
+        *command_service, config.mqtt.topic_namespace,
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Diagnose(message);
+        });
   }
 
   std::expected<void, std::string> StartDatabaseThread() {
@@ -264,7 +317,9 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
   std::expected<void, std::string> StartBusinessThread() {
     const auto self = shared_from_this();
     business_thread.Start(self, [this](std::stop_token stop) {
-      service->Run(stop);
+      service->Run(stop, [this](runtime::TimePoint now) {
+        command_service->ProcessReady(now);
+      });
     });
     for (auto& write : startup_writes) {
       static_cast<void>(worker->SubmitWrite(std::move(write)));
@@ -277,6 +332,7 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
     business_thread.RequestStop();
     database_thread.RequestStop();
     if (service) service->CancelOutstandingDatabaseWork();
+    if (command_service) command_service->CancelOutstandingWork();
   }
 
   void Join() {
@@ -309,6 +365,8 @@ struct ServiceEnvironment::State {
   std::unique_ptr<mqtt::MqttClient> mqtt;
   device::DeviceRegistry registry;
   std::vector<persistence::DesiredDeviceWrite> startup_writes;
+  command::SourceCatalog command_sources;
+  std::vector<command::CommandRecord> active_commands;
   std::shared_ptr<RuntimeExternalBridge> external_bridge;
   std::shared_ptr<RuntimeBundle> runtime_bundle;
   bool accepting_device_messages = false;
@@ -400,6 +458,23 @@ std::expected<void, std::string> ServiceEnvironment::LoadDeviceSnapshot() {
   return {};
 }
 
+std::expected<void, std::string> ServiceEnvironment::LoadCommandState() {
+  auto sources = state_->store->SyncAndLoadCommandSources(
+      state_->config->command.fixed_sources);
+  if (!sources) return std::unexpected(sources.error());
+  if (auto loaded = state_->command_sources.Load(std::move(*sources)); !loaded) {
+    return std::unexpected(loaded.error());
+  }
+  auto commands = state_->store->LoadActiveConfigCommands(
+      state_->config->command.max_inflight_commands + 1);
+  if (!commands) return std::unexpected(commands.error());
+  if (commands->size() > state_->config->command.max_inflight_commands) {
+    return std::unexpected("活动配置命令数量超过配置上限");
+  }
+  state_->active_commands = std::move(*commands);
+  return {};
+}
+
 std::expected<void, std::string> ServiceEnvironment::InstallSignalHandlers() {
   runtime::ShutdownFlag::ResetForTesting();
   if (std::signal(SIGINT, HandleShutdownSignal) == SIG_ERR ||
@@ -428,6 +503,8 @@ std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
     bundle->config = *state_->config;
     bundle->registry = std::move(state_->registry);
     bundle->startup_writes = std::move(state_->startup_writes);
+    bundle->command_sources = std::move(state_->command_sources);
+    bundle->active_commands = std::move(state_->active_commands);
     bundle->external = state_->external_bridge;
     const postgres::PostgresStore::InfoSink postgres_info =
         [weak = std::weak_ptr<RuntimeExternalBridge>{state_->external_bridge}](
@@ -445,16 +522,32 @@ std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
 
     runtime::DeviceRuntimeStartOperations start_operations{
         .configure_handler = [this,
-            weak = std::weak_ptr<runtime::DeviceIngress>{bundle->ingress}]()
+            weak = std::weak_ptr<runtime::DeviceIngress>{bundle->ingress},
+            command_weak = std::weak_ptr<runtime::CommandIngress>{bundle->command_ingress},
+            bundle_weak = std::weak_ptr<RuntimeBundle>{bundle}]()
             -> std::expected<void, std::string> {
           auto configured = state_->mqtt->ConfigureBusinessMessages(
-              [weak](mqtt::InboundMessage message) {
+              [weak, command_weak](mqtt::InboundMessage message) {
+                if (const auto command_ingress = command_weak.lock())
+                  command_ingress->TryPush(message);
                 if (const auto ingress = weak.lock())
                   ingress->Handle(std::move(message));
               },
               state_->config->mqtt.max_payload_bytes);
           if (!configured) return std::unexpected(configured.error());
-          return state_->mqtt->SubscribeDeviceMessages(
+          auto publishing = state_->mqtt->ConfigureCommandPublishing(
+              [bundle_weak](mqtt::PublishCompletion completion) {
+                if (const auto runtime = bundle_weak.lock();
+                    runtime && runtime->command_service) {
+                  runtime->command_service->PushPublishCompletion(
+                      std::move(completion));
+                }
+              }, state_->config->command.max_inflight_commands);
+          if (!publishing) return std::unexpected(publishing.error());
+          auto devices = state_->mqtt->SubscribeDeviceMessages(
+              state_->config->mqtt.topic_namespace);
+          if (!devices) return std::unexpected(devices.error());
+          return state_->mqtt->SubscribeCommandMessages(
               state_->config->mqtt.topic_namespace);
         },
         .start_postgres_thread = [bundle]() {
@@ -502,6 +595,9 @@ void ServiceEnvironment::StopAcceptingDeviceMessages() {
   if (state_->runtime_bundle && state_->runtime_bundle->ingress) {
     state_->runtime_bundle->ingress->Disable();
   }
+  if (state_->runtime_bundle && state_->runtime_bundle->command_ingress) {
+    state_->runtime_bundle->command_ingress->Disable();
+  }
   if (state_->mqtt) {
     auto result = state_->mqtt->ConfigureBusinessMessages(
         {}, state_->config->mqtt.max_payload_bytes);
@@ -509,6 +605,9 @@ void ServiceEnvironment::StopAcceptingDeviceMessages() {
   }
   if (state_->runtime_bundle && state_->runtime_bundle->service) {
     state_->runtime_bundle->service->Close();
+  }
+  if (state_->runtime_bundle && state_->runtime_bundle->command_service) {
+    state_->runtime_bundle->command_service->Close();
   }
 }
 
@@ -522,7 +621,13 @@ bool ServiceEnvironment::StopDeviceRuntime(std::chrono::milliseconds timeout) {
         return bundle->service->WaitForInputDrained(wait);
       },
       .wait_database_idle = [bundle](std::chrono::milliseconds wait) {
-        return bundle->service->WaitForDatabaseIdle(wait);
+        const auto deadline = std::chrono::steady_clock::now() + wait;
+        if (!bundle->service->WaitForDatabaseIdle(wait)) return false;
+        const auto remaining = std::max(
+            std::chrono::milliseconds{0},
+            std::chrono::ceil<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()));
+        return bundle->command_service->WaitForDatabaseIdle(remaining);
       },
       .flush_database = [bundle](std::chrono::milliseconds wait) {
         return bundle->worker->FlushAndStop(wait);
@@ -563,6 +668,11 @@ bool ServiceEnvironment::ShutdownRequested() const {
 }
 
 void ServiceEnvironment::WaitForNextCheck() {
+  if (state_->runtime_bundle && state_->runtime_bundle->command_service &&
+      state_->mqtt) {
+    state_->runtime_bundle->command_service->SetMqttAvailable(
+        state_->mqtt->IsConnected());
+  }
   std::this_thread::sleep_for(std::chrono::milliseconds{100});
 }
 

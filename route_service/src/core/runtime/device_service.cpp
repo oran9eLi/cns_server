@@ -57,11 +57,12 @@ void DeviceService::PushDatabaseResult(DatabaseResult result) {
   Notify();
 }
 
-void DeviceService::Run(std::stop_token stop) {
+void DeviceService::Run(std::stop_token stop, CycleHook cycle_hook) {
   std::stop_callback callback(stop, [this] { Notify(); });
   try {
     while (!stop.stop_requested()) {
       ProcessReady();
+      if (cycle_hook) cycle_hook(std::chrono::system_clock::now());
       bool no_results;
       {
         std::lock_guard results_lock(results_mutex_);
@@ -70,6 +71,7 @@ void DeviceService::Run(std::stop_token stop) {
       if (IsClosed() && mqtt_queue_.Size() == 0) {
         SetInputDrained();
         ProcessReady();
+        if (cycle_hook) cycle_hook(std::chrono::system_clock::now());
       }
       if (IsInputDrained() && no_results && !HasOutstandingDatabaseWork()) break;
       std::unique_lock lock(wake_mutex_);
@@ -80,6 +82,7 @@ void DeviceService::Run(std::stop_token stop) {
       });
     }
     ProcessReady();
+    if (cycle_hook) cycle_hook(std::chrono::system_clock::now());
   } catch (const std::exception&) {
     Diagnose("设备业务线程端口异常，已安全停止");
   } catch (...) {

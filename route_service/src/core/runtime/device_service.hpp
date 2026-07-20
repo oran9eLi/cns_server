@@ -46,6 +46,7 @@ class DeviceService {
   using EventSink = std::function<void(PublishedState)>;
   using SteadyNow = std::function<std::chrono::steady_clock::time_point()>;
   using DiagnosticSink = std::function<void(std::string)>;
+  using CycleHook = std::function<void(TimePoint)>;
 
   DeviceService(device::DeviceRegistry& registry, ProvisionSubmitter provision,
                 WriteSubmitter write, EventSink events, SteadyNow steady_now,
@@ -57,7 +58,7 @@ class DeviceService {
 
   bool TryPush(mqtt::InboundMessage message);
   void PushDatabaseResult(DatabaseResult result);
-  void Run(std::stop_token stop);
+  void Run(std::stop_token stop, CycleHook cycle_hook = {});
   void Close();
   /** 等待已关闭 MQTT 输入被业务线程消费完。 */
   bool WaitForInputDrained(std::chrono::milliseconds timeout);

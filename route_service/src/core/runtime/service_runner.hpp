@@ -74,6 +74,7 @@ class ServiceOperations {
   virtual std::size_t PendingMigrationCount() const = 0;
   virtual std::expected<void, std::string> ApplyMigration(std::size_t index) = 0;
   virtual std::expected<void, std::string> LoadDeviceSnapshot() = 0;
+  virtual std::expected<void, std::string> LoadCommandState() = 0;
   virtual std::expected<void, std::string> InstallSignalHandlers() = 0;
   virtual std::expected<void, std::string> StartDeviceRuntime() = 0;
   virtual void StopAcceptingDeviceMessages() = 0;

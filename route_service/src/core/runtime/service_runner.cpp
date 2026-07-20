@@ -137,6 +137,7 @@ int RunService(const RunMode mode, ServiceOperations& operations) {
   }
 
   if (Failed(operations.LoadDeviceSnapshot(), operations)) return 1;
+  if (Failed(operations.LoadCommandState(), operations)) return 1;
   if (Failed(operations.InstallSignalHandlers(), operations)) return 1;
   if (Failed(operations.CreateMqtt(), operations)) return 1;
   if (Failed(operations.StartDeviceRuntime(), operations)) {

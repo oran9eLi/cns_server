@@ -267,6 +267,11 @@ target_compile_options(test_service_runner PRIVATE -Wall -Wextra -Wpedantic -Wer
 
 add_test(NAME service_runner COMMAND test_service_runner)
 
+add_executable(test_command_runtime tests/test_command_runtime.cpp)
+target_link_libraries(test_command_runtime PRIVATE route_core doctest::doctest)
+target_compile_options(test_command_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME command_runtime COMMAND test_command_runtime)
+
 add_executable(test_migration tests/test_migration.cpp)
 target_link_libraries(test_migration PRIVATE route_core doctest::doctest)
 target_compile_options(test_migration PRIVATE -Wall -Wextra -Wpedantic -Werror)
