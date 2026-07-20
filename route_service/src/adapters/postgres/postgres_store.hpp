@@ -2,6 +2,7 @@
 #pragma once
 
 #include "core/config/app_config.hpp"
+#include "core/command/command_state.hpp"
 #include "core/device/device_registry.hpp"
 #include "core/logging/logger.hpp"
 #include "core/migration/migration_plan.hpp"
@@ -81,6 +82,20 @@ class PostgresStore {
       const ProvisionRequest& request);
   std::expected<void, std::string> WriteDeviceState(
       const persistence::DesiredDeviceWrite& write);
+  std::expected<std::vector<command::CommandSource>, std::string>
+  SyncAndLoadCommandSources(
+      const std::vector<config::FixedSourceConfig>& configured_sources);
+  std::expected<std::vector<command::CommandRecord>, std::string>
+  LoadActiveConfigCommands(std::size_t limit);
+  std::expected<std::optional<command::CommandRecord>, std::string> FindCommand(
+      std::string_view source_id, std::string_view request_id);
+  std::expected<command::CommandRecord, std::string> InsertCommand(
+      const command::CommandRecord& command);
+  std::expected<command::CommandRecord, std::string> TransitionCommand(
+      std::string_view command_id, command::CommandStatus expected,
+      command::CommandStatus desired, const command::CommandUpdate& update);
+  std::expected<std::size_t, std::string> DeleteExpiredTerminalCommands(
+      command::TimePoint before, std::size_t batch_size);
   bool IsOpen() const noexcept;
   /** 最近一次设备或迁移读取失败属于连接不可用还是永久数据错误。 */
   OperationFailureKind LastOperationFailureKind() const noexcept;

@@ -4,8 +4,11 @@
 #include <pqxx/pqxx>
 
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace cns::postgres {
@@ -82,6 +85,91 @@ std::expected<device::DeviceRecord, std::string> DeviceFromRow(
       .revision = 0,
   };
 }
+
+const char* CommandStatusText(command::CommandStatus status) {
+  switch (status) {
+    case command::CommandStatus::kPending: return "pending";
+    case command::CommandStatus::kDispatched: return "dispatched";
+    case command::CommandStatus::kSucceeded: return "succeeded";
+    case command::CommandStatus::kFailed: return "failed";
+    case command::CommandStatus::kTimeout: return "timeout";
+  }
+  return "";
+}
+
+std::expected<command::CommandStatus, std::string> ParseCommandStatus(
+    std::string_view status) {
+  if (status == "pending") return command::CommandStatus::kPending;
+  if (status == "dispatched") return command::CommandStatus::kDispatched;
+  if (status == "succeeded") return command::CommandStatus::kSucceeded;
+  if (status == "failed") return command::CommandStatus::kFailed;
+  if (status == "timeout") return command::CommandStatus::kTimeout;
+  return std::unexpected("读取 PostgreSQL 命令失败：状态不受支持");
+}
+
+std::expected<nlohmann::json, std::string> ParseCommandJson(
+    const pqxx::field& field) {
+  try {
+    return nlohmann::json::parse(field.as<std::string>());
+  } catch (const nlohmann::json::exception&) {
+    return std::unexpected("读取 PostgreSQL 命令失败：JSON 无效");
+  }
+}
+
+std::expected<command::CommandRecord, std::string> CommandFromRow(
+    const pqxx::row& row) {
+  auto status = ParseCommandStatus(row[5].as<std::string>());
+  if (!status) return std::unexpected(status.error());
+  auto request = ParseCommandJson(row[4]);
+  if (!request) return std::unexpected(request.error());
+  std::optional<nlohmann::json> device_ack;
+  if (!row[8].is_null()) {
+    auto parsed = ParseCommandJson(row[8]);
+    if (!parsed) return std::unexpected(parsed.error());
+    device_ack = std::move(*parsed);
+  }
+  auto time = [&row](std::size_t index)
+      -> std::expected<command::TimePoint, std::string> {
+    auto parsed = FromUnixMicroseconds(row[index].as<std::int64_t>());
+    if (!parsed) return std::unexpected(parsed.error());
+    return *parsed;
+  };
+  auto created = time(9);
+  auto updated = time(11);
+  if (!created || !updated) {
+    return std::unexpected("读取 PostgreSQL 命令失败：时间无效");
+  }
+  std::optional<command::TimePoint> dispatched;
+  std::optional<command::TimePoint> completed;
+  if (!row[10].is_null()) {
+    auto parsed = time(10);
+    if (!parsed) return std::unexpected(parsed.error());
+    dispatched = *parsed;
+  }
+  if (!row[12].is_null()) {
+    auto parsed = time(12);
+    if (!parsed) return std::unexpected(parsed.error());
+    completed = *parsed;
+  }
+  return command::CommandRecord{
+      row[0].as<std::string>(), row[1].as<std::string>(),
+      row[2].as<std::string>(),
+      row[3].is_null() ? std::nullopt
+                       : std::optional{row[3].as<std::string>()},
+      std::move(*request), *status,
+      row[6].is_null() ? std::nullopt : std::optional{row[6].as<std::string>()},
+      row[7].is_null() ? std::nullopt : std::optional{row[7].as<std::string>()},
+      std::move(device_ack), *created, dispatched, *updated, completed};
+}
+
+constexpr std::string_view kCommandColumns = R"sql(
+  command_id::text, source_id, request_id, target_vendor_id,
+  request_payload::text, status, error_code, error_message, device_ack::text,
+  (extract(epoch FROM created_at)::numeric * 1000000)::bigint,
+  (extract(epoch FROM dispatched_at)::numeric * 1000000)::bigint,
+  (extract(epoch FROM updated_at)::numeric * 1000000)::bigint,
+  (extract(epoch FROM completed_at)::numeric * 1000000)::bigint
+)sql";
 
 }  // namespace
 
@@ -395,6 +483,266 @@ std::expected<void, std::string> PostgresStore::WriteDeviceState(
   } catch (const std::exception&) {
     last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
     return std::unexpected("写入 PostgreSQL 设备状态失败");
+  }
+}
+
+std::expected<std::vector<command::CommandSource>, std::string>
+PostgresStore::SyncAndLoadCommandSources(
+    const std::vector<config::FixedSourceConfig>& configured_sources) {
+  try {
+    pqxx::work transaction{*connection_};
+    const auto existing = transaction.exec(
+        "SELECT source_id, source_kind, device_vendor_id, enabled "
+        "FROM command_sources");
+    std::unordered_map<std::string, std::string> kinds;
+    for (const auto& row : existing) {
+      kinds.emplace(row[0].as<std::string>(), row[1].as<std::string>());
+    }
+    std::unordered_set<std::string> configured_ids;
+    for (const auto& source : configured_sources) {
+      const std::string kind =
+          source.source_kind == config::FixedSourceKind::kHostApp
+              ? "host_app"
+              : "control_center";
+      const auto found = kinds.find(source.source_id);
+      if (found != kinds.end() && found->second != kind) {
+        last_failure_kind_ = OperationFailureKind::kPermanent;
+        return std::unexpected("同步 PostgreSQL 命令来源失败：来源类型冲突");
+      }
+      configured_ids.insert(source.source_id);
+    }
+    for (const auto& row : existing) {
+      const auto source_id = row[0].as<std::string>();
+      if (row[1].as<std::string>() != "device" &&
+          !configured_ids.contains(source_id)) {
+        transaction.exec(
+            "UPDATE command_sources SET enabled = false, "
+            "updated_at = CURRENT_TIMESTAMP WHERE source_id = $1",
+            pqxx::params{source_id});
+      }
+    }
+    for (const auto& source : configured_sources) {
+      const char* kind =
+          source.source_kind == config::FixedSourceKind::kHostApp
+              ? "host_app"
+              : "control_center";
+      transaction.exec(R"sql(
+        INSERT INTO command_sources (source_id, source_kind, enabled)
+        VALUES ($1, $2, true)
+        ON CONFLICT (source_id) DO UPDATE SET
+          enabled = true, updated_at = CURRENT_TIMESTAMP
+      )sql", pqxx::params{source.source_id, kind});
+    }
+    const auto rows = transaction.exec(
+        "SELECT source_id, source_kind, device_vendor_id, enabled "
+        "FROM command_sources ORDER BY source_id");
+    std::vector<command::CommandSource> sources;
+    sources.reserve(rows.size());
+    for (const auto& row : rows) {
+      const auto kind = row[1].as<std::string>();
+      command::SourceKind parsed_kind;
+      if (kind == "device") parsed_kind = command::SourceKind::kDevice;
+      else if (kind == "host_app") parsed_kind = command::SourceKind::kHostApp;
+      else if (kind == "control_center") {
+        parsed_kind = command::SourceKind::kControlCenter;
+      } else {
+        last_failure_kind_ = OperationFailureKind::kPermanent;
+        return std::unexpected("读取 PostgreSQL 命令来源失败：来源类型无效");
+      }
+      sources.push_back({
+          row[0].as<std::string>(), parsed_kind,
+          row[2].is_null() ? std::nullopt
+                           : std::optional{row[2].as<std::string>()},
+          row[3].as<bool>()});
+    }
+    transaction.commit();
+    return sources;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("同步 PostgreSQL 命令来源失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("同步 PostgreSQL 命令来源失败");
+  }
+}
+
+std::expected<std::vector<command::CommandRecord>, std::string>
+PostgresStore::LoadActiveConfigCommands(std::size_t limit) {
+  if (limit > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+    return std::unexpected("读取 PostgreSQL 活动命令失败：数量超出范围");
+  }
+  try {
+    pqxx::read_transaction transaction{*connection_};
+    const auto rows = transaction.exec(
+        "SELECT " + std::string{kCommandColumns} +
+            " FROM commands WHERE command_type = 'config' "
+            "AND status IN ('pending', 'dispatched') "
+            "ORDER BY updated_at, command_id LIMIT $1",
+        pqxx::params{static_cast<std::int64_t>(limit)});
+    std::vector<command::CommandRecord> commands;
+    commands.reserve(rows.size());
+    for (const auto& row : rows) {
+      auto command = CommandFromRow(row);
+      if (!command) return std::unexpected(command.error());
+      commands.push_back(std::move(*command));
+    }
+    return commands;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("读取 PostgreSQL 活动命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("读取 PostgreSQL 活动命令失败");
+  }
+}
+
+std::expected<std::optional<command::CommandRecord>, std::string>
+PostgresStore::FindCommand(std::string_view source_id,
+                           std::string_view request_id) {
+  try {
+    pqxx::read_transaction transaction{*connection_};
+    const auto rows = transaction.exec(
+        "SELECT " + std::string{kCommandColumns} +
+            " FROM commands WHERE source_id = $1 AND request_id = $2",
+        pqxx::params{source_id, request_id});
+    if (rows.empty()) return std::optional<command::CommandRecord>{};
+    auto command = CommandFromRow(rows.front());
+    if (!command) return std::unexpected(command.error());
+    return std::optional<command::CommandRecord>{std::move(*command)};
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("读取 PostgreSQL 命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("读取 PostgreSQL 命令失败");
+  }
+}
+
+std::expected<command::CommandRecord, std::string>
+PostgresStore::InsertCommand(const command::CommandRecord& command) {
+  try {
+    pqxx::work transaction{*connection_};
+    const auto row = transaction.exec(
+        "INSERT INTO commands (command_id, source_id, request_id, "
+        "command_type, target_vendor_id, request_payload, status, error_code, "
+        "error_message, device_ack, created_at, dispatched_at, updated_at, "
+        "completed_at) VALUES ($1::uuid, $2, $3, 'config', $4, $5::jsonb, "
+        "$6, $7, $8, $9::jsonb, "
+        "TIMESTAMPTZ 'epoch' + $10::bigint * INTERVAL '1 microsecond', "
+        "TIMESTAMPTZ 'epoch' + $11::bigint * INTERVAL '1 microsecond', "
+        "TIMESTAMPTZ 'epoch' + $12::bigint * INTERVAL '1 microsecond', "
+        "TIMESTAMPTZ 'epoch' + $13::bigint * INTERVAL '1 microsecond') "
+        "ON CONFLICT (source_id, request_id) DO UPDATE "
+        "SET request_id = EXCLUDED.request_id RETURNING " +
+            std::string{kCommandColumns},
+        pqxx::params{
+            command.command_id, command.source_id, command.request_id,
+            command.target_vendor_id, command.request_payload.dump(),
+            CommandStatusText(command.status), command.error_code,
+            command.error_message,
+            command.device_ack
+                ? std::optional<std::string>{command.device_ack->dump()}
+                : std::nullopt,
+            ToUnixMicroseconds(command.created_at),
+            command.dispatched_at
+                ? std::optional{ToUnixMicroseconds(*command.dispatched_at)}
+                : std::nullopt,
+            ToUnixMicroseconds(command.updated_at),
+            command.completed_at
+                ? std::optional{ToUnixMicroseconds(*command.completed_at)}
+                : std::nullopt})
+                         .one_row();
+    auto inserted = CommandFromRow(row);
+    if (!inserted) return std::unexpected(inserted.error());
+    transaction.commit();
+    return inserted;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("写入 PostgreSQL 命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("写入 PostgreSQL 命令失败");
+  }
+}
+
+std::expected<command::CommandRecord, std::string>
+PostgresStore::TransitionCommand(std::string_view command_id,
+    command::CommandStatus expected, command::CommandStatus desired,
+    const command::CommandUpdate& update) {
+  if (!command::CanTransition(expected, desired)) {
+    last_failure_kind_ = OperationFailureKind::kPermanent;
+    return std::unexpected("转换 PostgreSQL 命令状态失败：状态迁移非法");
+  }
+  try {
+    pqxx::work transaction{*connection_};
+    const auto rows = transaction.exec(
+        "UPDATE commands SET status = $3, error_code = $4, "
+        "error_message = $5, device_ack = $6::jsonb, "
+        "dispatched_at = TIMESTAMPTZ 'epoch' + $7::bigint * INTERVAL '1 microsecond', "
+        "completed_at = TIMESTAMPTZ 'epoch' + $8::bigint * INTERVAL '1 microsecond', "
+        "updated_at = TIMESTAMPTZ 'epoch' + $9::bigint * INTERVAL '1 microsecond' "
+        "WHERE command_id = $1::uuid AND status = $2 RETURNING " +
+            std::string{kCommandColumns},
+        pqxx::params{
+            command_id, CommandStatusText(expected), CommandStatusText(desired),
+            update.error_code, update.error_message,
+            update.device_ack
+                ? std::optional<std::string>{update.device_ack->dump()}
+                : std::nullopt,
+            update.dispatched_at
+                ? std::optional{ToUnixMicroseconds(*update.dispatched_at)}
+                : std::nullopt,
+            update.completed_at
+                ? std::optional{ToUnixMicroseconds(*update.completed_at)}
+                : std::nullopt,
+            ToUnixMicroseconds(update.updated_at)});
+    if (rows.empty()) {
+      return std::unexpected("转换 PostgreSQL 命令状态失败：状态已变化");
+    }
+    auto changed = CommandFromRow(rows.front());
+    if (!changed) return std::unexpected(changed.error());
+    transaction.commit();
+    return changed;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("转换 PostgreSQL 命令状态失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("转换 PostgreSQL 命令状态失败");
+  }
+}
+
+std::expected<std::size_t, std::string>
+PostgresStore::DeleteExpiredTerminalCommands(command::TimePoint before,
+                                               std::size_t batch_size) {
+  if (batch_size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+    return std::unexpected("清理 PostgreSQL 命令失败：数量超出范围");
+  }
+  try {
+    pqxx::work transaction{*connection_};
+    const auto rows = transaction.exec(R"sql(
+      WITH expired AS (
+        SELECT command_id FROM commands
+        WHERE status IN ('succeeded', 'failed', 'timeout')
+          AND completed_at IS NOT NULL
+          AND completed_at < TIMESTAMPTZ 'epoch'
+              + $1::bigint * INTERVAL '1 microsecond'
+        ORDER BY completed_at, command_id
+        LIMIT $2
+      )
+      DELETE FROM commands USING expired
+      WHERE commands.command_id = expired.command_id
+      RETURNING commands.command_id
+    )sql", pqxx::params{ToUnixMicroseconds(before),
+                         static_cast<std::int64_t>(batch_size)});
+    transaction.commit();
+    return rows.size();
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("清理 PostgreSQL 命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("清理 PostgreSQL 命令失败");
   }
 }
 

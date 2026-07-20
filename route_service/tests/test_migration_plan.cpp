@@ -16,6 +16,7 @@ using cns::migration::Migration;
 const std::vector<Migration> kAvailable{
     {1, "创建迁移版本表", std::filesystem::path{"001.sql"}},
     {2, "创建核心业务表", std::filesystem::path{"002.sql"}},
+    {3, "增加命令扫描索引", std::filesystem::path{"003.sql"}},
 };
 
 }  // namespace
@@ -31,14 +32,16 @@ TEST_CASE("数据库为空时执行模式返回全部迁移") {
   const auto result = cns::migration::BuildMigrationPlan(
       kAvailable, {}, cns::migration::Mode::kApply);
   REQUIRE(result.has_value());
-  REQUIRE(result->pending.size() == 2);
+  REQUIRE(result->pending.size() == 3);
   CHECK(result->pending[0].version == 1);
   CHECK(result->pending[1].version == 2);
+  CHECK(result->pending[2].version == 3);
 }
 
 TEST_CASE("数据库与目录一致时两种模式都返回空计划") {
   const std::vector<AppliedMigration> applied{{1, "创建迁移版本表"},
-                                               {2, "创建核心业务表"}};
+                                               {2, "创建核心业务表"},
+                                               {3, "增加命令扫描索引"}};
   for (const auto mode : {cns::migration::Mode::kCheckOnly,
                           cns::migration::Mode::kApply}) {
     const auto result = cns::migration::BuildMigrationPlan(kAvailable, applied, mode);
@@ -48,23 +51,25 @@ TEST_CASE("数据库与目录一致时两种模式都返回空计划") {
 }
 
 TEST_CASE("数据库缺少末尾版本时检查拒绝而执行只返回末尾版本") {
-  const std::vector<AppliedMigration> applied{{1, "创建迁移版本表"}};
+  const std::vector<AppliedMigration> applied{{1, "创建迁移版本表"},
+                                               {2, "创建核心业务表"}};
   const auto check = cns::migration::BuildMigrationPlan(
       kAvailable, applied, cns::migration::Mode::kCheckOnly);
   REQUIRE_FALSE(check.has_value());
-  CHECK(check.error().find("002") != std::string::npos);
+  CHECK(check.error().find("003") != std::string::npos);
 
   const auto apply = cns::migration::BuildMigrationPlan(
       kAvailable, applied, cns::migration::Mode::kApply);
   REQUIRE(apply.has_value());
   REQUIRE(apply->pending.size() == 1);
-  CHECK(apply->pending[0].version == 2);
+  CHECK(apply->pending[0].version == 3);
 }
 
 TEST_CASE("数据库存在程序未知版本时两种模式都拒绝") {
   const std::vector<AppliedMigration> applied{{1, "创建迁移版本表"},
                                                {2, "创建核心业务表"},
-                                               {3, "未来迁移"}};
+                                               {3, "增加命令扫描索引"},
+                                               {4, "未来迁移"}};
   CHECK_FALSE(cns::migration::BuildMigrationPlan(
                   kAvailable, applied, cns::migration::Mode::kCheckOnly)
                   .has_value());

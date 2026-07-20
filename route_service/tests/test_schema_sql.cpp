@@ -241,6 +241,19 @@ TEST_CASE("002 只按设计创建五张核心业务表") {
   CheckTableNames(tables, {"schools", "devices", "device_latest_states", "command_sources", "commands"});
 }
 
+TEST_CASE("003 只增加命令恢复与清理部分索引") {
+  const auto sql = Normalize(ReadMigration("003_增加命令扫描索引.sql"));
+  CHECK(sql.find("create index commands_active_updated_idx on commands "
+                 "(updated_at, command_id) where status in ('pending', "
+                 "'dispatched', 'in_progress', 'delivery_uncertain')") !=
+        std::string::npos);
+  CHECK(sql.find("create index commands_terminal_completed_idx on commands "
+                 "(completed_at, command_id) where status in ('succeeded', "
+                 "'failed', 'timeout') and completed_at is not null") !=
+        std::string::npos);
+  CHECK(ParseTables(ReadMigration("003_增加命令扫描索引.sql")).empty());
+}
+
 TEST_CASE("schools 字段和约束完整") {
   const auto table = ParseTables(ReadMigration("002_创建核心业务表.sql")).at("schools");
   CheckFieldNames(table, {"school_id", "school_name", "created_at"});
