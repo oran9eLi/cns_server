@@ -10,6 +10,7 @@
 #include <chrono>
 #include <atomic>
 #include <condition_variable>
+#include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -37,6 +38,11 @@ struct Injection {
   std::mutex stop_mutex;
   std::condition_variable stop_changed;
   std::vector<std::thread::id> loop_stop_threads;
+  int connect_result = MOSQ_ERR_SUCCESS;
+  std::mutex retry_wait_mutex;
+  std::condition_variable retry_wait_changed;
+  bool retry_wait_entered = false;
+  bool retry_wait_exited = false;
 };
 
 Injection* active = nullptr;
@@ -84,6 +90,9 @@ extern "C" int __real_mosquitto_connect_async(struct mosquitto*, const char*,
 extern "C" int __real_mosquitto_loop_start(struct mosquitto*);
 extern "C" int __real_mosquitto_disconnect(struct mosquitto*);
 extern "C" int __real_mosquitto_loop_stop(struct mosquitto*, bool);
+extern "C" bool __real_cns_runtime_wait_interruptibly(
+    std::condition_variable*, std::unique_lock<std::mutex>*,
+    std::chrono::seconds, const bool*);
 
 extern "C" struct mosquitto* __wrap_mosquitto_new(const char* id,
                                                      bool clean_session,
@@ -136,7 +145,7 @@ extern "C" int __wrap_mosquitto_publish(struct mosquitto*, int*,
 
 extern "C" int __wrap_mosquitto_connect_async(struct mosquitto*, const char*,
                                                 int, int) {
-  return MOSQ_ERR_SUCCESS;
+  return active->connect_result;
 }
 
 extern "C" int __wrap_mosquitto_loop_start(struct mosquitto*) {
@@ -154,6 +163,24 @@ extern "C" int __wrap_mosquitto_loop_stop(struct mosquitto*, bool) {
   }
   active->stop_changed.notify_all();
   return MOSQ_ERR_SUCCESS;
+}
+
+extern "C" bool __wrap_cns_runtime_wait_interruptibly(
+    std::condition_variable* changed, std::unique_lock<std::mutex>* lock,
+    std::chrono::seconds delay, const bool* stop_requested) {
+  {
+    std::lock_guard wait_lock{active->retry_wait_mutex};
+    active->retry_wait_entered = true;
+  }
+  active->retry_wait_changed.notify_all();
+  const bool result = __real_cns_runtime_wait_interruptibly(
+      changed, lock, delay, stop_requested);
+  {
+    std::lock_guard wait_lock{active->retry_wait_mutex};
+    active->retry_wait_exited = true;
+  }
+  active->retry_wait_changed.notify_all();
+  return result;
 }
 
 TEST_CASE("连接成功后订阅registration QoS2和telemetry QoS0") {
@@ -485,6 +512,54 @@ TEST_CASE("handler内释放最后client owner安全保活并禁用后续handler"
   CHECK(handler_calls == 1);
   injection.message_callback(nullptr, injection.context, &message);
   CHECK(handler_calls == 1);
+}
+
+TEST_CASE("EAI重试等待期间回调内析构先中断并回收重试线程") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  injection.connect_result = MOSQ_ERR_EAI;
+  ScopedInjection scoped{injection};
+  std::shared_ptr<cns::mqtt::MqttClient> client = MakeClient(logger, injection);
+  std::weak_ptr<cns::mqtt::MqttClient> weak_client = client;
+  auto last_owner =
+      std::make_shared<std::shared_ptr<cns::mqtt::MqttClient>>(client);
+  REQUIRE(client->ConfigureBusinessMessages(
+                    [last_owner](cns::mqtt::InboundMessage) {
+                      last_owner->reset();
+                    },
+                    64)
+              .has_value());
+  REQUIRE(client->Start().has_value());
+  {
+    std::unique_lock lock{injection.retry_wait_mutex};
+    REQUIRE(injection.retry_wait_changed.wait_for(lock, 500ms, [&] {
+      return injection.retry_wait_entered;
+    }));
+  }
+  client.reset();
+  std::string payload = "{}";
+  mosquitto_message message{.mid = 1,
+                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .payload = payload.data(),
+                            .payloadlen = 2,
+                            .qos = 0,
+                            .retain = false};
+
+  injection.message_callback(nullptr, injection.context, &message);
+
+  CHECK(weak_client.expired());
+  CHECK(injection.retry_wait_exited);
+}
+
+TEST_CASE("回调内放弃路径catch不无锁写logger") {
+  std::ifstream source{CNS_MQTT_CLIENT_SOURCE_FILE};
+  REQUIRE(source.good());
+  const std::string text{std::istreambuf_iterator<char>{source},
+                         std::istreambuf_iterator<char>{}};
+  CHECK(text.find("catch (...) {\n      logger = nullptr;") ==
+        std::string::npos);
 }
 
 TEST_CASE("状态事件使用QoS0且retain为false") {

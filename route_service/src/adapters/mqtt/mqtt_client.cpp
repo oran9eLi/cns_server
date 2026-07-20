@@ -200,7 +200,7 @@ struct MqttClient::CallbackState {
       handler.swap(retired_handler);
       topic_namespace_.clear();
     } catch (...) {
-      logger = nullptr;
+      return;
     }
   }
 
@@ -278,6 +278,11 @@ std::expected<std::unique_ptr<MqttClient>, std::string> MqttClient::Create(
 
 MqttClient::~MqttClient() {
   if (callback_state_ != nullptr && callback_state_->IsCurrentCallback()) {
+    {
+      std::lock_guard retry_lock{retry_mutex_};
+      retry_stop_requested_ = true;
+    }
+    retry_changed_.notify_all();
     callback_state_->AbandonFromCallback();
     if (retry_thread_.joinable() &&
         retry_thread_.get_id() != std::this_thread::get_id()) {

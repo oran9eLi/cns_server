@@ -183,6 +183,9 @@ add_test(NAME rate_limiter COMMAND test_rate_limiter)
 add_executable(test_mqtt_business tests/test_mqtt_business.cpp)
 target_link_libraries(test_mqtt_business PRIVATE route_adapters doctest::doctest)
 target_compile_options(test_mqtt_business PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(test_mqtt_business PRIVATE
+  CNS_MQTT_CLIENT_SOURCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/src/adapters/mqtt/mqtt_client.cpp"
+)
 target_link_options(test_mqtt_business PRIVATE
   LINKER:--wrap=mosquitto_new
   LINKER:--wrap=mosquitto_connect_callback_set
@@ -195,6 +198,7 @@ target_link_options(test_mqtt_business PRIVATE
   LINKER:--wrap=mosquitto_loop_start
   LINKER:--wrap=mosquitto_disconnect
   LINKER:--wrap=mosquitto_loop_stop
+  LINKER:--wrap=cns_runtime_wait_interruptibly
 )
 add_test(NAME mqtt_business COMMAND test_mqtt_business)
 
