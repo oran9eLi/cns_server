@@ -77,6 +77,7 @@ add_library(route_core STATIC
   src/core/state_event/state_event.cpp
   src/core/migration/migration.cpp
   src/core/migration/migration_plan.cpp
+  src/core/persistence/dirty_state.cpp
   src/core/runtime/rate_limiter.cpp
   src/core/runtime/service_runner.cpp
 )
@@ -136,6 +137,11 @@ add_executable(test_device_registry tests/test_device_registry.cpp)
 target_link_libraries(test_device_registry PRIVATE route_core doctest::doctest)
 target_compile_options(test_device_registry PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME device_registry COMMAND test_device_registry)
+
+add_executable(test_dirty_state tests/test_dirty_state.cpp)
+target_link_libraries(test_dirty_state PRIVATE route_core doctest::doctest)
+target_compile_options(test_dirty_state PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME dirty_state COMMAND test_dirty_state)
 
 add_executable(test_state_event tests/test_state_event.cpp)
 target_link_libraries(test_state_event PRIVATE route_core doctest::doctest)
