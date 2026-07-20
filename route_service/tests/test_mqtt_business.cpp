@@ -377,6 +377,30 @@ TEST_CASE("超限payload在复制前拒绝且不调用handler") {
   CHECK(err.str().find("MQTT消息payload超过大小限制") != std::string::npos);
 }
 
+TEST_CASE("空handler用于原子停止接收设备消息") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  int calls = 0;
+  REQUIRE(client->ConfigureBusinessMessages(
+                    [&](cns::mqtt::InboundMessage) { ++calls; }, 64)
+              .has_value());
+  REQUIRE(client->ConfigureBusinessMessages({}, 64).has_value());
+  std::string payload = "{}";
+  mosquitto_message message{.mid = 1,
+                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .payload = payload.data(),
+                            .payloadlen = 2,
+                            .qos = 0,
+                            .retain = false};
+
+  injection.message_callback(nullptr, injection.context, &message);
+  CHECK(calls == 0);
+}
+
 TEST_CASE("handler异常不穿越C回调且中文错误限频") {
   std::ostringstream out;
   std::ostringstream err;

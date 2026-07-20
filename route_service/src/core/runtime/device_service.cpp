@@ -17,7 +17,7 @@ persistence::DesiredDeviceWrite WriteFor(device::Mutation mutation,
   return {.record = std::move(mutation.record),
           .revision = revision,
           .write_metadata = true,
-          .write_status = !telemetry,
+          .write_status = !telemetry || mutation.status_changed,
           .write_telemetry = telemetry,
           .urgency = urgency};
 }

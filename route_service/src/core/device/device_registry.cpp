@@ -91,6 +91,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
       new_record,
       online ? state_event::ChangeReason::kRegistrationOnline
              : state_event::ChangeReason::kRegistrationOffline,
+      record.status != new_record.status,
       std::move(diagnostic)};
   if (new_role) roles_.emplace(*new_role, record.vendor_id);
   using std::swap;
@@ -127,6 +128,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
   new_record.status = Status::kOnline;
   ++new_record.revision;
   Mutation mutation{new_record, state_event::ChangeReason::kTelemetry,
+                    record.status != new_record.status,
                     std::move(diagnostic)};
   if (new_role) roles_.emplace(*new_role, record.vendor_id);
   using std::swap;
@@ -155,7 +157,7 @@ std::vector<Mutation> DeviceRegistry::ExpireInactive(
     ++replacement.revision;
     mutations.push_back(
         Mutation{replacement, state_event::ChangeReason::kActivityTimeout,
-                 std::nullopt});
+                 true, std::nullopt});
     replacements.push_back(std::move(replacement));
   }
   using std::swap;

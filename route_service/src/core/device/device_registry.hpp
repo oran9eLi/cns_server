@@ -36,6 +36,7 @@ struct DeviceRecord {
 struct Mutation {
   DeviceRecord record;
   state_event::ChangeReason reason;
+  bool status_changed;
   std::optional<std::string> diagnostic;
 };
 

@@ -88,15 +88,16 @@ V1 阶段核心职责：
 - 里程碑一“工程基础与数据库骨架”已实现并完成本机验收；现场 PostgreSQL、Mosquitto、迁移重复执行和信号退出尚未验证，等待用户授权。
 - Route Service V1 设计已逐节确认，书面规格见 `docs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
-- 书面规格已复核，全局里程碑路线见 `docs/2026-07-18-路由服务V1实施计划.md`；当前尚未实现 registration、telemetry、ACK、业务 topic、设备在线状态、遥测合并写库、实时状态事件及配置/飞控命令路由。
-- 里程碑二“设备注册与最新状态”正在设计，书面设计见 `docs/superpowers/specs/2026-07-20-里程碑二设备注册与最新状态设计.md`。
+- 里程碑二“设备注册与最新状态”已完成代码实现，包含 registration、telemetry、设备在线状态、最新值合并写库、数据库降级恢复和规范化状态事件；书面设计见 `docs/superpowers/specs/2026-07-20-里程碑二设备注册与最新状态设计.md`。
+- 干净构建、本机单元测试和一次性临时 PostgreSQL/Mosquitto 真实链路已通过，结果记录在 `docs/change_history/2026-07-20-里程碑二设备注册与最新状态验收.md`。树莓派和现场服务器验证仍延期，不得由本机结果推定通过。
+- ACK、配置命令和飞控命令路由仍属于后续里程碑。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。
 
 ## 测试与部署约束
 
 - 日常开发在开发机进行；数据库无关的单元测试可在开发机运行。
-- PostgreSQL 数据库、Mosquitto 和 systemd 的集成测试必须在硬件部服务器拉取对应提交后执行。
+- PostgreSQL 与 Mosquitto 可在本机独立测试环境执行非破坏性联调；现场 PostgreSQL、Mosquitto 和 systemd 集成测试仍必须在硬件部服务器拉取对应提交且获得用户授权后执行。
 - 数据库迁移必须版本化、幂等且可重复执行，不得依赖手工修改生产表。
 - 测试数据必须使用独立标识并可清理，不得破坏服务器已有设备与命令记录。
 - 最终数据库保留在服务器，数据库数据目录、密码和现场配置不进入 Git。
@@ -118,6 +119,19 @@ cmake -S route_service -B route_service/build-fresh -DCMAKE_BUILD_TYPE=Debug
 cmake --build route_service/build-fresh -j2
 ctest --test-dir route_service/build-fresh --output-on-failure
 ```
+
+里程碑二真实依赖联调脚本要求显式传入测试配置、迁移目录和 Broker，不启动或停止系统服务。测试配置必须指向允许创建独立测试标识的数据库：
+
+```bash
+route_service/tests/integration/里程碑二本机联调.sh \
+  --config /仓库外/route_service.test.json \
+  --migrations "$(pwd)/route_service/migrations" \
+  --broker-host 127.0.0.1 \
+  --broker-port 18884 \
+  --binary "$(pwd)/route_service/build-fresh-m2/route_service"
+```
+
+脚本定向清理自身创建的设备、来源、最新状态及其命令，仅在学校已无设备时删除测试学校；不会执行 `TRUNCATE`、删除数据库或停止 Broker/PostgreSQL。数据库断线恢复测试需使用另行确认的可控代理环境，不得通过停止共享系统服务制造故障。
 
 ## 配置与运行
 
@@ -150,4 +164,4 @@ sudo -u "$service_user" route_service/build-fresh/route_service \
   --migrations "$(pwd)/route_service/migrations"
 ```
 
-里程碑一当前能力包括严格配置与命令行解析、中文单行日志、有界队列、PostgreSQL 只向前迁移、正常/仅迁移模式、MQTT 自动重连骨架和信号有序退出。它不包含任何设备 registration、telemetry、ACK、业务订阅/发布、在线状态、遥测写库或命令路由功能。
+当前能力包括里程碑一工程骨架以及里程碑二设备注册、最新遥测、在线状态、异步合并持久化和状态事件。ACK 与命令路由尚未实现。

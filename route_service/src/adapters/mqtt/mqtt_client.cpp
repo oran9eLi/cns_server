@@ -438,7 +438,6 @@ mqtt::RuntimeStatus MqttClient::GetRuntimeStatus() const noexcept {
 
 std::expected<void, std::string> MqttClient::ConfigureBusinessMessages(
     MessageHandler handler, std::size_t max_payload_bytes) {
-  if (!handler) return std::unexpected("MQTT业务消息处理器不能为空");
   if (max_payload_bytes == 0) {
     return std::unexpected("MQTT payload大小限制必须大于零");
   }

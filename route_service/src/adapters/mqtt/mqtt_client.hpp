@@ -51,6 +51,7 @@ class MqttClient {
   bool CallbackStopRequested() const noexcept;
   bool IsConnected() const noexcept;
   RuntimeStatus GetRuntimeStatus() const noexcept;
+  /** 原子替换业务处理器；传入空处理器表示停止接收后续业务消息。 */
   std::expected<void, std::string> ConfigureBusinessMessages(
       MessageHandler handler, std::size_t max_payload_bytes);
   std::expected<void, std::string> SubscribeDeviceMessages(

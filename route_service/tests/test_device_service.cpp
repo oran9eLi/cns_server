@@ -245,18 +245,49 @@ TEST_CASE("database results are never dropped by MQTT queue capacity") {
 
 TEST_CASE("existing device updates immediately and telemetry waits five seconds") {
   Harness h;
-  REQUIRE(h.registry.Load({Record(kKnown)}));
+  auto online = Record(kKnown);
+  online.status = Status::kOnline;
+  REQUIRE(h.registry.Load({online}));
   auto service = h.Make();
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
                           R"({"temperature":20})"));
-  service.ProcessReady();
+  service.ProcessReady(cns::runtime::TimePoint{} + 1s);
   CHECK(h.writes.empty());
   CHECK_FALSE(h.events.empty());
   CHECK_FALSE(h.events.back().degraded);
   h.steady += 5s;
-  service.ProcessReady();
+  service.ProcessReady(cns::runtime::TimePoint{} + 2s);
   REQUIRE(h.writes.size() == 1);
   CHECK(h.writes[0].write_telemetry);
+  CHECK_FALSE(h.writes[0].write_status);
+}
+
+TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
+  Harness h;
+  auto online = Record(kKnown);
+  online.status = Status::kOnline;
+  REQUIRE(h.registry.Load({online}));
+  auto service = h.Make();
+  const auto offline = nlohmann::json{{"schema_version", 1},
+                                      {"vendor_id", kKnown},
+                                      {"status", "offline"}}.dump();
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/registration",
+                          offline));
+  service.ProcessReady(cns::runtime::TimePoint{} + 1s);
+  REQUIRE(h.writes.size() == 1);
+  service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kKnown, 2,
+                              std::nullopt, {}});
+  service.ProcessReady(cns::runtime::TimePoint{} + 1s);
+
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+                          R"({"temperature":20})"));
+  service.ProcessReady(cns::runtime::TimePoint{} + 2s);
+  h.steady += 5s;
+  service.ProcessReady(cns::runtime::TimePoint{} + 3s);
+
+  REQUIRE(h.writes.size() == 2);
+  CHECK(h.writes.back().write_telemetry);
+  CHECK(h.writes.back().write_status);
 }
 
 TEST_CASE("offline scan runs each second and writes status immediately") {

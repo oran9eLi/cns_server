@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# 本脚本只创建并清理带有独立测试标识的数据，不得用于生产配置。
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+用法：里程碑二本机联调.sh --config <测试配置> --migrations <迁移目录> \
+  --broker-host <地址> --broker-port <端口> [--binary <route_service>] [--vendor-id <20字符编号>]
+
+要求：测试配置必须指向允许写入测试标识的本机数据库；脚本不会启动、停止或修改系统服务。
+EOF
+}
+
+config_file=''
+migrations_dir=''
+broker_host=''
+broker_port=''
+binary=''
+vendor_id=''
+while (($# > 0)); do
+  case "$1" in
+    --config) config_file=${2-}; shift 2 ;;
+    --migrations) migrations_dir=${2-}; shift 2 ;;
+    --broker-host) broker_host=${2-}; shift 2 ;;
+    --broker-port) broker_port=${2-}; shift 2 ;;
+    --binary) binary=${2-}; shift 2 ;;
+    --vendor-id) vendor_id=${2-}; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[[ -n $config_file && -n $migrations_dir && -n $broker_host && -n $broker_port ]] || {
+  echo '错误：必须显式传入测试配置、迁移目录和 Broker。' >&2
+  usage >&2
+  exit 2
+}
+[[ -r $config_file && -d $migrations_dir ]] || { echo '错误：配置或迁移目录不可读。' >&2; exit 2; }
+for tool in jq psql pg_isready mosquitto_pub mosquitto_sub sha256sum; do
+  command -v "$tool" >/dev/null || { echo "错误：缺少工具 $tool。" >&2; exit 2; }
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_dir=$(cd -- "$script_dir/../../.." && pwd)
+binary=${binary:-$repo_dir/build-fresh-m2/route_service}
+[[ -x $binary ]] || { echo "错误：程序不可执行：$binary" >&2; exit 2; }
+
+if [[ -z $vendor_id ]]; then
+  digest=$(printf '%s' "$$-$(date +%s%N)" | sha256sum)
+  vendor_id="M2${digest:0:18}"
+  vendor_id=${vendor_id^^}
+fi
+[[ $vendor_id =~ ^[A-Za-z0-9]{20}$ ]] || { echo '错误：vendor_id 必须是 20 个 ASCII 字母或数字。' >&2; exit 2; }
+unknown_vendor="U${vendor_id:1}"
+school_name="CNS_M2_LOCAL_${vendor_id}"
+dcdw_label="DCDW-M2-${vendor_id: -6}"
+topic_namespace=$(jq -er '.mqtt.topic_namespace' "$config_file")
+offline_seconds=$(jq -er '.device_state.offline_timeout_seconds' "$config_file")
+
+database_host=$(jq -er '.database.host' "$config_file")
+database_port=$(jq -er '.database.port' "$config_file")
+database_name=$(jq -er '.database.name' "$config_file")
+database_user=$(jq -er '.database.user' "$config_file")
+export PGPASSWORD
+PGPASSWORD=$(jq -er '.database.password' "$config_file")
+PSQL=(psql -X -v ON_ERROR_STOP=1 -h "$database_host" -p "$database_port" -U "$database_user" -d "$database_name")
+MQTT=(-h "$broker_host" -p "$broker_port")
+
+service_pid=''
+event_pid=''
+temp_dir=$(mktemp -d)
+service_log="$temp_dir/route_service.log"
+event_log="$temp_dir/events.jsonl"
+
+cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  [[ -z $event_pid ]] || kill "$event_pid" 2>/dev/null || true
+  [[ -z $service_pid ]] || kill -TERM "$service_pid" 2>/dev/null || true
+  [[ -z $service_pid ]] || wait "$service_pid" 2>/dev/null || true
+  mosquitto_pub "${MQTT[@]}" -q 2 -r -t "$topic_namespace/$vendor_id/registration" -n 2>/dev/null || true
+  mosquitto_pub "${MQTT[@]}" -q 2 -r -t "$topic_namespace/$unknown_vendor/registration" -n 2>/dev/null || true
+  "${PSQL[@]}" -v vendor="$vendor_id" -v school="$school_name" >/dev/null 2>&1 <<'SQL' || true
+DELETE FROM commands WHERE source_id = :'vendor' OR target_vendor_id = :'vendor';
+DELETE FROM command_sources WHERE source_id = :'vendor' OR device_vendor_id = :'vendor';
+DELETE FROM device_latest_states WHERE vendor_id = :'vendor';
+DELETE FROM devices WHERE vendor_id = :'vendor';
+DELETE FROM schools s WHERE s.school_name = :'school'
+  AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.school_id = s.school_id);
+SQL
+  if ((exit_code != 0)); then
+    echo '联调失败，route_service 安全诊断如下：' >&2
+    sed -n '1,240p' "$service_log" >&2 2>/dev/null || true
+  fi
+  rm -rf -- "$temp_dir"
+  unset PGPASSWORD
+  exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+
+wait_for_sql() {
+  local query=$1 expected=$2 deadline=$((SECONDS + 15)) actual=''
+  while ((SECONDS < deadline)); do
+    actual=$("${PSQL[@]}" -Atqc "$query" 2>/dev/null || true)
+    [[ $actual == "$expected" ]] && return 0
+    sleep 0.2
+  done
+  echo "错误：等待数据库条件超时，实际值=$actual" >&2
+  return 1
+}
+
+wait_for_event() {
+  local reason=$1 deadline=$((SECONDS + 15))
+  while ((SECONDS < deadline)); do
+    jq -e --arg vendor "$vendor_id" --arg reason "$reason" \
+      'select(.vendor_id == $vendor and .change_reason == $reason)' "$event_log" >/dev/null 2>&1 && return 0
+    sleep 0.2
+  done
+  echo "错误：等待状态事件超时：$reason" >&2
+  return 1
+}
+
+pg_isready -h "$database_host" -p "$database_port" -d "$database_name" -U "$database_user" >/dev/null || {
+  echo '错误：测试 PostgreSQL 不可用；脚本不会修改系统服务。' >&2
+  exit 1
+}
+mosquitto_pub "${MQTT[@]}" -t "$topic_namespace/integration/probe" -n >/dev/null || {
+  echo '错误：测试 Broker 不可用；脚本不会修改系统服务。' >&2
+  exit 1
+}
+
+echo '验证迁移首次执行及重复执行幂等……'
+"$binary" --config "$config_file" --migrations "$migrations_dir" --migrate-only
+"$binary" --config "$config_file" --migrations "$migrations_dir" --migrate-only
+
+mosquitto_sub "${MQTT[@]}" -q 0 -t "$topic_namespace/events/devices/+/state" >"$event_log" &
+event_pid=$!
+
+echo '验证 retained registration 建档重放与四表记录……'
+mosquitto_pub "${MQTT[@]}" -q 2 -r -t "$topic_namespace/$vendor_id/registration" \
+  -m "{\"schema_version\":1,\"vendor_id\":\"$vendor_id\",\"school_name\":\"$school_name\",\"dcdw_label\":\"$dcdw_label\",\"status\":\"online\"}"
+"$binary" --config "$config_file" --migrations "$migrations_dir" >"$service_log" 2>&1 &
+service_pid=$!
+wait_for_sql "SELECT count(*) FROM schools s JOIN devices d USING (school_id) JOIN device_latest_states l USING (vendor_id) JOIN command_sources c ON c.device_vendor_id=d.vendor_id WHERE d.vendor_id='$vendor_id' AND c.source_kind='device'" 1
+wait_for_event registration_online
+
+echo '验证未知设备 telemetry 被拒绝……'
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$unknown_vendor/telemetry" -m '{"value":"unknown"}'
+sleep 1
+[[ $("${PSQL[@]}" -Atqc "SELECT count(*) FROM devices WHERE vendor_id='$unknown_vendor'") == 0 ]]
+
+echo '验证即时事件、5 秒最后值与 telemetry 非 retained……'
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$vendor_id/telemetry" -m '{"sequence":1}'
+wait_for_event telemetry
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$vendor_id/telemetry" -m '{"sequence":2}'
+sleep 7
+wait_for_sql "SELECT latest_telemetry->>'sequence' FROM device_latest_states WHERE vendor_id='$vendor_id'" 2
+if mosquitto_sub "${MQTT[@]}" -q 0 -t "$topic_namespace/$vendor_id/telemetry" -C 1 -W 2 >"$temp_dir/replayed-telemetry" 2>/dev/null; then
+  echo '错误：新订阅者收到旧 telemetry，设备 topic 仍为 retained。' >&2
+  exit 1
+fi
+
+echo '验证显式离线及活动恢复……'
+mosquitto_pub "${MQTT[@]}" -q 2 -r -t "$topic_namespace/$vendor_id/registration" \
+  -m "{\"schema_version\":1,\"vendor_id\":\"$vendor_id\",\"status\":\"offline\"}"
+wait_for_event registration_offline
+wait_for_sql "SELECT status FROM device_latest_states WHERE vendor_id='$vendor_id'" offline
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$vendor_id/telemetry" -m '{"sequence":3}'
+wait_for_sql "SELECT status FROM device_latest_states WHERE vendor_id='$vendor_id'" online
+
+echo "验证 ${offline_seconds} 秒活动超时离线……"
+sleep "$((offline_seconds + 2))"
+wait_for_event activity_timeout
+wait_for_sql "SELECT status FROM device_latest_states WHERE vendor_id='$vendor_id'" offline
+
+echo '通过：迁移、建档、状态事件、最后值、显式/超时离线、活动恢复、未知设备拒绝和非 retained telemetry。'
+echo '说明：数据库断线 degraded、恢复补写及恢复后的 retained 重放需在可控数据库代理环境中另行执行。'
