@@ -377,7 +377,7 @@ TEST_CASE("handler异常不穿越C回调且中文错误限频") {
         err.str().rfind("MQTT业务消息处理器异常"));
 }
 
-TEST_CASE("handler内Stop由非回调线程在回调返回后执行一次") {
+TEST_CASE("handler内Stop仅请求且由后续外部Stop实际执行") {
   std::ostringstream out;
   std::ostringstream err;
   cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
@@ -385,7 +385,6 @@ TEST_CASE("handler内Stop由非回调线程在回调返回后执行一次") {
   ScopedInjection scoped{injection};
   auto client = MakeClient(logger, injection);
   REQUIRE(client->Start().has_value());
-  const auto handler_thread = std::this_thread::get_id();
   REQUIRE(client->ConfigureBusinessMessages(
                     [&](cns::mqtt::InboundMessage) { client->Stop(); }, 64)
               .has_value());
@@ -398,17 +397,22 @@ TEST_CASE("handler内Stop由非回调线程在回调返回后执行一次") {
                             .retain = false};
 
   injection.message_callback(nullptr, injection.context, &message);
+  CHECK(client->CallbackStopRequested());
   {
     std::unique_lock lock{injection.stop_mutex};
-    REQUIRE(injection.stop_changed.wait_for(lock, 500ms, [&] {
+    CHECK_FALSE(injection.stop_changed.wait_for(lock, 100ms, [&] {
       return !injection.loop_stop_threads.empty();
     }));
-    CHECK(injection.loop_stop_threads.size() == 1);
-    CHECK(injection.loop_stop_threads.front() != handler_thread);
   }
+  const auto restarted = client->Start();
+  REQUIRE_FALSE(restarted.has_value());
+  CHECK(restarted.error().find("请先由外部线程调用Stop") != std::string::npos);
+  client->Stop();
+  CHECK_FALSE(client->CallbackStopRequested());
+  CHECK(injection.loop_stop_threads.size() == 1);
 }
 
-TEST_CASE("并发回调重复Stop只调度一次且不死锁") {
+TEST_CASE("并发回调重复Stop仅合并请求且外部Stop执行一次") {
   std::ostringstream out;
   std::ostringstream err;
   cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
@@ -435,13 +439,52 @@ TEST_CASE("并发回调重复Stop只调度一次且不死锁") {
   });
   first.join();
   second.join();
+  CHECK(client->CallbackStopRequested());
   {
     std::unique_lock lock{injection.stop_mutex};
-    REQUIRE(injection.stop_changed.wait_for(lock, 500ms, [&] {
+    CHECK_FALSE(injection.stop_changed.wait_for(lock, 100ms, [&] {
       return !injection.loop_stop_threads.empty();
     }));
-    CHECK(injection.loop_stop_threads.size() == 1);
   }
+  client->Stop();
+  client->Stop();
+  CHECK_FALSE(client->CallbackStopRequested());
+  CHECK(injection.loop_stop_threads.size() == 1);
+}
+
+TEST_CASE("handler内释放最后client owner安全保活并禁用后续handler") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  std::shared_ptr<cns::mqtt::MqttClient> client = MakeClient(logger, injection);
+  std::weak_ptr<cns::mqtt::MqttClient> weak_client = client;
+  auto last_owner =
+      std::make_shared<std::shared_ptr<cns::mqtt::MqttClient>>(client);
+  int handler_calls = 0;
+  REQUIRE(client->ConfigureBusinessMessages(
+                    [last_owner, &handler_calls](cns::mqtt::InboundMessage) {
+                      ++handler_calls;
+                      last_owner->reset();
+                    },
+                    64)
+              .has_value());
+  client.reset();
+  std::string payload = "{}";
+  mosquitto_message message{.mid = 1,
+                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .payload = payload.data(),
+                            .payloadlen = 2,
+                            .qos = 0,
+                            .retain = false};
+
+  injection.message_callback(nullptr, injection.context, &message);
+
+  CHECK(weak_client.expired());
+  CHECK(handler_calls == 1);
+  injection.message_callback(nullptr, injection.context, &message);
+  CHECK(handler_calls == 1);
 }
 
 TEST_CASE("状态事件使用QoS0且retain为false") {

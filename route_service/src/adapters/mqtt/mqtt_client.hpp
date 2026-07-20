@@ -42,7 +42,13 @@ class MqttClient {
   MqttClient& operator=(const MqttClient&) = delete;
 
   std::expected<void, std::string> Start();
+  /**
+   * 外部生命周期线程调用时同步停止；在本客户端 C 回调内调用时仅设置
+   * 异步停止请求并立即返回，外部编排应轮询 CallbackStopRequested() 后调用 Stop。
+   */
   void Stop();
+  /** 返回 MQTT 回调是否请求外部生命周期线程执行 Stop。 */
+  bool CallbackStopRequested() const noexcept;
   bool IsConnected() const noexcept;
   RuntimeStatus GetRuntimeStatus() const noexcept;
   std::expected<void, std::string> ConfigureBusinessMessages(
@@ -61,18 +67,18 @@ class MqttClient {
 
   MqttClient(config::MqttConfig config, logging::Logger& logger);
 
-  static void HandleConnect(struct mosquitto*, void* context, int result);
-  static void HandleDisconnect(struct mosquitto*, void* context, int result);
+  static void HandleConnect(struct mosquitto*, void* context,
+                            int result) noexcept;
+  static void HandleDisconnect(struct mosquitto*, void* context,
+                               int result) noexcept;
   static void HandleLog(struct mosquitto*, void* context, int level,
-                        const char* message);
+                        const char* message) noexcept;
   static void HandleMessage(struct mosquitto*, void* context,
-                            const struct mosquitto_message* message);
+                            const struct mosquitto_message* message) noexcept;
   void WarnDisconnected(int result);
   void RetryConnection();
   void FinishRetry(std::string error = {});
   void StopNow();
-  void RequestDeferredStop();
-  void JoinDeferredStop();
 
   config::MqttConfig config_;
   std::unique_ptr<CallbackState> callback_state_;
@@ -86,9 +92,7 @@ class MqttClient {
   RetryState retry_state_ = RetryState::kIdle;
   std::string retry_error_;
   std::thread retry_thread_;
-  std::mutex callback_stop_mutex_;
-  bool callback_stop_scheduled_ = false;
-  std::thread callback_stop_thread_;
+  std::atomic_bool callback_stop_requested_{false};
 };
 
 }  // namespace cns::mqtt
