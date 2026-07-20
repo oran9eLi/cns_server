@@ -25,10 +25,15 @@ class ServiceEnvironment final : public runtime::ServiceOperations {
   std::expected<void, std::string> PlanMigrations(bool apply) override;
   std::size_t PendingMigrationCount() const override;
   std::expected<void, std::string> ApplyMigration(std::size_t index) override;
+  std::expected<void, std::string> LoadDeviceSnapshot() override;
   std::expected<void, std::string> InstallSignalHandlers() override;
+  std::expected<void, std::string> StartDeviceRuntime() override;
+  void StopAcceptingDeviceMessages() override;
+  void StopDeviceRuntime() override;
   std::expected<void, std::string> CreateMqtt() override;
   std::expected<void, std::string> StartMqtt() override;
   bool MqttHasTerminalFailure() const override;
+  bool MqttCallbackStopRequested() const override;
   bool ShutdownRequested() const override;
   void WaitForNextCheck() override;
   void StopMqtt() override;

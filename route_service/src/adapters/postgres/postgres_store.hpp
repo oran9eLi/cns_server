@@ -20,6 +20,8 @@ class connection;
 
 namespace cns::postgres {
 
+enum class OperationFailureKind { kUnavailable, kPermanent };
+
 struct ProvisionRequest {
   protocol::Registration registration;
   std::chrono::system_clock::time_point received_at;
@@ -73,6 +75,7 @@ class PostgresStore {
   std::expected<void, std::string> WriteDeviceState(
       const persistence::DesiredDeviceWrite& write);
   bool IsOpen() const noexcept;
+  OperationFailureKind LastOperationFailureKind() const noexcept;
 
  private:
   explicit PostgresStore(std::unique_ptr<pqxx::connection> connection,
@@ -80,6 +83,7 @@ class PostgresStore {
 
   std::unique_ptr<pqxx::connection> connection_;
   logging::Logger& logger_;
+  OperationFailureKind last_failure_kind_ = OperationFailureKind::kPermanent;
 };
 
 }  // namespace cns::postgres

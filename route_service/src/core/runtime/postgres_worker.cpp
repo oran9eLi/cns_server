@@ -6,7 +6,6 @@
 
 namespace cns::runtime {
 namespace {
-constexpr auto kReconnectDelay = std::chrono::seconds{5};
 constexpr auto kReconnectUnavailable = "数据库重连暂不可用";
 constexpr auto kMigrationPermanent = "数据库迁移版本校验永久失败";
 constexpr auto kProvisionUnavailable = "数据库建档暂不可用";
@@ -16,9 +15,11 @@ constexpr auto kWritePermanent = "数据库写入永久失败";
 }  // namespace
 
 PostgresWorker::PostgresWorker(StorePort& store, ResultSink results,
-    ReplayRequest replay, SteadyNow steady_now, DiagnosticSink diagnostic)
+    ReplayRequest replay, SteadyNow steady_now, DiagnosticSink diagnostic,
+    std::chrono::seconds reconnect_interval)
     : store_(store), results_(std::move(results)), replay_(std::move(replay)),
-      steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)) {}
+      steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)),
+      reconnect_interval_(reconnect_interval) {}
 
 bool PostgresWorker::SubmitProvision(protocol::Registration registration,
                                      TimePoint at) {
@@ -90,7 +91,7 @@ void PostgresWorker::Run(std::stop_token stop) {
           if (result.error().kind == DatabaseError::Kind::kUnavailable) {
             {
               std::lock_guard lock(mutex_);
-              reconnect_at_ = steady_now_() + kReconnectDelay;
+              reconnect_at_ = steady_now_() + reconnect_interval_;
             }
             Diagnose(kReconnectUnavailable);
             continue;
@@ -145,7 +146,7 @@ void PostgresWorker::Run(std::stop_token stop) {
           if (result.error().kind == DatabaseError::Kind::kUnavailable) {
             std::lock_guard lock(mutex_);
             unavailable_ = true;
-            reconnect_at_ = steady_now_() + kReconnectDelay;
+            reconnect_at_ = steady_now_() + reconnect_interval_;
             // 故障前尚未执行的新设备建档全部作废；恢复只依赖 retained replay。
             provisions_.clear();
           }
@@ -178,7 +179,7 @@ void PostgresWorker::Run(std::stop_token stop) {
         if (result.error().kind == DatabaseError::Kind::kUnavailable) {
           std::lock_guard lock(mutex_);
           unavailable_ = true;
-          reconnect_at_ = steady_now_() + kReconnectDelay;
+          reconnect_at_ = steady_now_() + reconnect_interval_;
           MergeWrite(*write);
           // 任一运行中连接故障都会使故障前新设备候选失效。
           provisions_.clear();
@@ -215,6 +216,21 @@ bool PostgresWorker::FlushAndStop(std::chrono::milliseconds timeout) {
   changed_.notify_all();
   return changed_.wait_until(lock, std::chrono::steady_clock::now() + timeout,
                              [this] { return worker_stopped_; });
+}
+
+std::size_t PostgresWorker::PendingDeviceCount() const {
+  std::lock_guard lock(mutex_);
+  std::unordered_set<std::string> vendors;
+  for (const auto& [vendor, task] : provisions_) {
+    static_cast<void>(task);
+    vendors.insert(vendor);
+  }
+  for (const auto& [vendor, write] : writes_) {
+    static_cast<void>(write);
+    vendors.insert(vendor);
+  }
+  vendors.insert(provisioning_.begin(), provisioning_.end());
+  return vendors.size();
 }
 
 void PostgresWorker::Emit(DatabaseResult result) noexcept {

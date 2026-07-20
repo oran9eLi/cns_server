@@ -150,6 +150,10 @@ bool PostgresStore::IsOpen() const noexcept {
   return connection_ != nullptr && connection_->is_open();
 }
 
+OperationFailureKind PostgresStore::LastOperationFailureKind() const noexcept {
+  return last_failure_kind_;
+}
+
 std::expected<std::unique_ptr<PostgresStore>, std::string> PostgresStore::Connect(
     const config::DatabaseConfig& config, logging::Logger& logger) {
   const std::string safe_description = BuildSafeConnectionDescription(config);
@@ -245,6 +249,7 @@ PostgresStore::LoadDevices() {
 std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
     const ProvisionRequest& request) {
   if (!request.registration.school_name) {
+    last_failure_kind_ = OperationFailureKind::kPermanent;
     return std::unexpected("建档设备缺少学校");
   }
 
@@ -297,14 +302,22 @@ std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
     if (!record) return std::unexpected(record.error());
     transaction.commit();
     return record;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = OperationFailureKind::kUnavailable;
+    return std::unexpected("PostgreSQL 设备建档失败");
   } catch (const std::exception&) {
+    last_failure_kind_ = IsOpen() ? OperationFailureKind::kPermanent
+                                  : OperationFailureKind::kUnavailable;
     return std::unexpected("PostgreSQL 设备建档失败");
   }
 }
 
 std::expected<void, std::string> PostgresStore::WriteDeviceState(
     const persistence::DesiredDeviceWrite& write) {
-  if (auto validation = ValidateDeviceWrite(write); !validation) return validation;
+  if (auto validation = ValidateDeviceWrite(write); !validation) {
+    last_failure_kind_ = OperationFailureKind::kPermanent;
+    return validation;
+  }
   const DeviceWritePlan plan = PlanDeviceWrite(
       write.write_metadata, write.write_status, write.write_telemetry);
   if (!plan.update_metadata && !plan.update_latest_state) return {};
@@ -354,7 +367,12 @@ std::expected<void, std::string> PostgresStore::WriteDeviceState(
     }
     transaction.commit();
     return {};
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = OperationFailureKind::kUnavailable;
+    return std::unexpected("写入 PostgreSQL 设备状态失败");
   } catch (const std::exception&) {
+    last_failure_kind_ = IsOpen() ? OperationFailureKind::kPermanent
+                                  : OperationFailureKind::kUnavailable;
     return std::unexpected("写入 PostgreSQL 设备状态失败");
   }
 }

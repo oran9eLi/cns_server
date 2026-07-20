@@ -7,9 +7,7 @@
 
 namespace cns::runtime {
 namespace {
-constexpr auto kTelemetryInterval = std::chrono::seconds{5};
 constexpr auto kOfflineScan = std::chrono::seconds{1};
-constexpr auto kOfflineTimeout = std::chrono::seconds{60};
 
 persistence::DesiredDeviceWrite WriteFor(device::Mutation mutation,
                                          persistence::Urgency urgency) {
@@ -26,11 +24,14 @@ persistence::DesiredDeviceWrite WriteFor(device::Mutation mutation,
 
 DeviceService::DeviceService(device::DeviceRegistry& registry,
     ProvisionSubmitter provision, WriteSubmitter write, EventSink events,
-    SteadyNow steady_now, DiagnosticSink diagnostic, std::size_t queue_capacity)
+    SteadyNow steady_now, DiagnosticSink diagnostic, std::size_t queue_capacity,
+    std::string topic_namespace, std::chrono::seconds telemetry_interval,
+    std::chrono::seconds offline_timeout)
     : registry_(registry), provision_(std::move(provision)),
       write_(std::move(write)), events_(std::move(events)),
       steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)),
-      mqtt_queue_(queue_capacity) {
+      mqtt_queue_(queue_capacity), topic_namespace_(std::move(topic_namespace)),
+      telemetry_interval_(telemetry_interval), offline_timeout_(offline_timeout) {
   try {
     next_scan_ = steady_now_() + kOfflineScan;
     scan_initialized_ = true;
@@ -124,7 +125,7 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     scan_initialized_ = true;
   }
   if (now >= next_scan_) {
-    for (auto& mutation : registry_.ExpireInactive(system_now, kOfflineTimeout)) {
+    for (auto& mutation : registry_.ExpireInactive(system_now, offline_timeout_)) {
       Mark(std::move(mutation));
     }
     next_scan_ = now + kOfflineScan;
@@ -206,7 +207,7 @@ void DeviceService::Handle(DatabaseResult result) {
 }
 
 void DeviceService::Handle(mqtt::InboundMessage message) {
-  const auto topic = mqtt_topic::ParseDeviceTopic("cns", message.topic);
+  const auto topic = mqtt_topic::ParseDeviceTopic(topic_namespace_, message.topic);
   if (!topic) return;
   if (topic->kind == mqtt_topic::DeviceMessageKind::kRegistration) {
     auto registration = protocol::ParseRegistration(message.payload, topic->vendor_id);
@@ -260,7 +261,7 @@ void DeviceService::DispatchWrites() {
     }
   };
   send(dirty_.TakeImmediate());
-  send(dirty_.TakeTelemetryDue(steady_now_(), kTelemetryInterval));
+  send(dirty_.TakeTelemetryDue(steady_now_(), telemetry_interval_));
 }
 
 bool DeviceService::SubmitWrite(persistence::DesiredDeviceWrite write) {

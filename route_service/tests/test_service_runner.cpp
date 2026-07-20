@@ -41,6 +41,16 @@ class FakeOperations final : public cns::runtime::ServiceOperations {
   std::expected<void, std::string> InstallSignalHandlers() override {
     return Call("安装信号");
   }
+  std::expected<void, std::string> LoadDeviceSnapshot() override {
+    return Call("加载设备快照");
+  }
+  std::expected<void, std::string> StartDeviceRuntime() override {
+    return Call("启动设备运行时");
+  }
+  void StopAcceptingDeviceMessages() override {
+    calls.emplace_back("停止接收设备消息");
+  }
+  void StopDeviceRuntime() override { calls.emplace_back("排空设备运行时5秒"); }
   std::expected<void, std::string> CreateMqtt() override {
     return Call("创建MQTT");
   }
@@ -48,6 +58,9 @@ class FakeOperations final : public cns::runtime::ServiceOperations {
     return Call("启动MQTT");
   }
   bool MqttHasTerminalFailure() const override { return terminal_failure; }
+  bool MqttCallbackStopRequested() const override {
+    return callback_stop_requested;
+  }
   bool ShutdownRequested() const override { return shutdown_requested; }
   void WaitForNextCheck() override {
     calls.emplace_back("等待");
@@ -76,6 +89,7 @@ class FakeOperations final : public cns::runtime::ServiceOperations {
   mutable bool shutdown_requested = true;
   bool fail_in_wait = false;
   bool shutdown_in_wait = false;
+  bool callback_stop_requested = false;
 };
 
 using cns::runtime::RunMode;
@@ -104,6 +118,10 @@ TEST_CASE("迁移模式逐项执行并在首错停止且绝不创建MQTT") {
   CHECK(std::ranges::find(operations.calls, "执行迁移1") != operations.calls.end());
   CHECK(std::ranges::find(operations.calls, "执行迁移2") == operations.calls.end());
   CHECK(std::ranges::find(operations.calls, "创建MQTT") == operations.calls.end());
+  CHECK(std::ranges::find(operations.calls, "加载设备快照") ==
+        operations.calls.end());
+  CHECK(std::ranges::find(operations.calls, "启动设备运行时") ==
+        operations.calls.end());
 }
 
 TEST_CASE("正常模式只检查迁移且绝不执行迁移") {
@@ -132,14 +150,32 @@ TEST_CASE("MQTT创建或同步启动失败返回非零") {
   }
 }
 
+TEST_CASE("MQTT启动失败仍按设备运行时顺序清理") {
+  FakeOperations operations;
+  operations.fail_at = "启动MQTT";
+
+  CHECK(RunService(RunMode::kNormal, operations) == 1);
+  const auto stop_accepting = std::ranges::find(
+      operations.calls, "停止接收设备消息");
+  const auto stop_runtime = std::ranges::find(
+      operations.calls, "排空设备运行时5秒");
+  const auto stop_mqtt = std::ranges::find(operations.calls, "停止MQTT");
+  REQUIRE(stop_accepting != operations.calls.end());
+  REQUIRE(stop_runtime != operations.calls.end());
+  REQUIRE(stop_mqtt != operations.calls.end());
+  CHECK(stop_accepting < stop_runtime);
+  CHECK(stop_runtime < stop_mqtt);
+}
+
 TEST_CASE("MQTT后台终止失败停止客户端并返回非零") {
   FakeOperations operations;
   operations.shutdown_requested = false;
   operations.fail_in_wait = true;
 
   CHECK(RunService(RunMode::kNormal, operations) == 1);
-  CHECK(operations.calls[operations.calls.size() - 2].starts_with(
-      "错误:MQTT后台运行发生终止性失败"));
+  CHECK(std::ranges::find(operations.calls,
+                          "错误:MQTT后台运行发生终止性失败") !=
+        operations.calls.end());
   CHECK(operations.calls.back() == "停止MQTT");
 }
 
@@ -147,8 +183,48 @@ TEST_CASE("正常退出先停止MQTT再记录停止并返回零") {
   FakeOperations operations;
 
   CHECK(RunService(RunMode::kNormal, operations) == 0);
-  CHECK(operations.calls[operations.calls.size() - 2] == "停止MQTT");
+  const auto stop_accepting = std::ranges::find(
+      operations.calls, "停止接收设备消息");
+  const auto stop_runtime = std::ranges::find(
+      operations.calls, "排空设备运行时5秒");
+  const auto stop_mqtt = std::ranges::find(operations.calls, "停止MQTT");
+  REQUIRE(stop_accepting != operations.calls.end());
+  REQUIRE(stop_runtime != operations.calls.end());
+  REQUIRE(stop_mqtt != operations.calls.end());
+  CHECK(stop_accepting < stop_runtime);
+  CHECK(stop_runtime < stop_mqtt);
   CHECK(operations.calls.back() == "信息:路由服务已停止");
+}
+
+TEST_CASE("正常启动按迁移检查快照信号设备运行时和MQTT排序") {
+  FakeOperations operations;
+
+  CHECK(RunService(RunMode::kNormal, operations) == 0);
+  const auto migration = std::ranges::find(operations.calls, "规划检查");
+  const auto snapshot = std::ranges::find(operations.calls, "加载设备快照");
+  const auto signal = std::ranges::find(operations.calls, "安装信号");
+  const auto runtime = std::ranges::find(operations.calls, "启动设备运行时");
+  const auto mqtt = std::ranges::find(operations.calls, "启动MQTT");
+  REQUIRE(migration != operations.calls.end());
+  REQUIRE(snapshot != operations.calls.end());
+  REQUIRE(signal != operations.calls.end());
+  REQUIRE(runtime != operations.calls.end());
+  REQUIRE(mqtt != operations.calls.end());
+  CHECK(migration < snapshot);
+  CHECK(snapshot < signal);
+  CHECK(signal < runtime);
+  CHECK(runtime < mqtt);
+}
+
+TEST_CASE("MQTT回调停止请求由外部循环执行完整停止") {
+  FakeOperations operations;
+  operations.shutdown_requested = false;
+  operations.callback_stop_requested = true;
+
+  CHECK(RunService(RunMode::kNormal, operations) == 0);
+  CHECK(std::ranges::count(operations.calls, "停止MQTT") == 1);
+  CHECK(std::ranges::find(operations.calls, "停止接收设备消息") !=
+        operations.calls.end());
 }
 
 }  // namespace

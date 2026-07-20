@@ -22,10 +22,15 @@ class ServiceOperations {
   virtual std::expected<void, std::string> PlanMigrations(bool apply) = 0;
   virtual std::size_t PendingMigrationCount() const = 0;
   virtual std::expected<void, std::string> ApplyMigration(std::size_t index) = 0;
+  virtual std::expected<void, std::string> LoadDeviceSnapshot() = 0;
   virtual std::expected<void, std::string> InstallSignalHandlers() = 0;
+  virtual std::expected<void, std::string> StartDeviceRuntime() = 0;
+  virtual void StopAcceptingDeviceMessages() = 0;
+  virtual void StopDeviceRuntime() = 0;
   virtual std::expected<void, std::string> CreateMqtt() = 0;
   virtual std::expected<void, std::string> StartMqtt() = 0;
   virtual bool MqttHasTerminalFailure() const = 0;
+  virtual bool MqttCallbackStopRequested() const = 0;
   virtual bool ShutdownRequested() const = 0;
   virtual void WaitForNextCheck() = 0;
   virtual void StopMqtt() = 0;

@@ -31,19 +31,29 @@ int RunService(const RunMode mode, ServiceOperations& operations) {
     return 0;
   }
 
+  if (Failed(operations.LoadDeviceSnapshot(), operations)) return 1;
   if (Failed(operations.InstallSignalHandlers(), operations)) return 1;
   if (Failed(operations.CreateMqtt(), operations)) return 1;
-  if (Failed(operations.StartMqtt(), operations)) return 1;
+  if (Failed(operations.StartDeviceRuntime(), operations)) return 1;
+  if (Failed(operations.StartMqtt(), operations)) {
+    operations.StopAcceptingDeviceMessages();
+    operations.StopDeviceRuntime();
+    operations.StopMqtt();
+    return 1;
+  }
   operations.Info("路由服务已启动");
 
   while (true) {
-    if (operations.MqttHasTerminalFailure()) {
+    const bool mqtt_failure = operations.MqttHasTerminalFailure();
+    const bool callback_stop = operations.MqttCallbackStopRequested();
+    if (mqtt_failure) {
       operations.Error("MQTT后台运行发生终止性失败");
-      operations.StopMqtt();
-      return 1;
     }
-    if (operations.ShutdownRequested()) {
+    if (mqtt_failure || callback_stop || operations.ShutdownRequested()) {
+      operations.StopAcceptingDeviceMessages();
+      operations.StopDeviceRuntime();
       operations.StopMqtt();
+      if (mqtt_failure) return 1;
       operations.Info("路由服务已停止");
       return 0;
     }

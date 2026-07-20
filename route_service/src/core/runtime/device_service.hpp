@@ -50,7 +50,10 @@ class DeviceService {
   DeviceService(device::DeviceRegistry& registry, ProvisionSubmitter provision,
                 WriteSubmitter write, EventSink events, SteadyNow steady_now,
                 DiagnosticSink diagnostic = {},
-                std::size_t queue_capacity = 1024);
+                std::size_t queue_capacity = 1024,
+                std::string topic_namespace = "cns",
+                std::chrono::seconds telemetry_interval = std::chrono::seconds{5},
+                std::chrono::seconds offline_timeout = std::chrono::seconds{60});
 
   bool TryPush(mqtt::InboundMessage message);
   void PushDatabaseResult(DatabaseResult result);
@@ -97,6 +100,9 @@ class DeviceService {
   bool scan_initialized_ = false;
   bool database_unavailable_ = false;
   std::atomic_bool closed_{false};
+  std::string topic_namespace_;
+  std::chrono::seconds telemetry_interval_;
+  std::chrono::seconds offline_timeout_;
   mutable std::mutex wake_mutex_;
   std::condition_variable_any wake_;
 };
