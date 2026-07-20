@@ -42,7 +42,8 @@ class PostgresWorker {
   PostgresWorker(StorePort& store, ResultSink results, ReplayRequest replay,
                  SteadyNow steady_now, DiagnosticSink diagnostic = {});
 
-  // 按 vendor 接纳并合并最终期望；停止接纳后明确返回 false。
+  // 接纳尚未在途的 vendor；关闭、数据库不可用或同 vendor 已在途时返回 false。
+  // latest registration 只由 DeviceService 的 pending 状态合并和持有。
   bool SubmitProvision(protocol::Registration registration, TimePoint at);
   bool SubmitWrite(persistence::DesiredDeviceWrite write);
   // 唯一允许调用 StorePort 的入口。

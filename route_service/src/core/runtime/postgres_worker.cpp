@@ -23,8 +23,9 @@ PostgresWorker::PostgresWorker(StorePort& store, ResultSink results,
 bool PostgresWorker::SubmitProvision(protocol::Registration registration,
                                      TimePoint at) {
   std::lock_guard lock(mutex_);
-  if (!accepting_) return false;
+  if (!accepting_ || unavailable_) return false;
   const auto vendor = registration.vendor_id;
+  if (provisioning_.contains(vendor)) return false;
   provisions_.insert_or_assign(vendor,
                                ProvisionTask{std::move(registration), at});
   changed_.notify_one();
@@ -134,8 +135,6 @@ void PostgresWorker::Run(std::stop_token stop) {
         {
           std::lock_guard lock(mutex_);
           provisioning_.erase(provision->registration.vendor_id);
-          // 在途期间接纳的同 vendor 最新候选由 DeviceService 保留并在
-          // kProvisioned 后应用；不能再次调用建档 store。
           provisions_.erase(provision->registration.vendor_id);
         }
         if (result) {

@@ -503,11 +503,104 @@ TEST_CASE("worker permits only one provision in flight per vendor") {
   REQUIRE(worker.SubmitProvision(
       {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-001"}, {}));
   REQUIRE(WaitUntil([&] { return store.entered.load(); }));
-  REQUIRE(worker.SubmitProvision(
+  CHECK_FALSE(worker.SubmitProvision(
       {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-002"}, {}));
   store.release = true;
   CHECK(worker.FlushAndStop(500ms));
   CHECK(store.Calls() == std::vector<std::string>{"provision"});
+}
+
+TEST_CASE("provision submission is rejected while unavailable and accepted after recovery") {
+  struct OnceUnavailableStore final : FakeStore {
+    std::atomic_int writes{0};
+    std::expected<void, cns::runtime::DatabaseError> Write(
+        const DesiredDeviceWrite&) override {
+      Called("write");
+      if (++writes == 1) {
+        return std::unexpected(cns::runtime::DatabaseError{
+            cns::runtime::DatabaseError::Kind::kUnavailable,
+            "连接详情不可泄露"});
+      }
+      return {};
+    }
+  } store;
+  std::atomic<std::int64_t> now_ms{0};
+  std::vector<DatabaseResult> results;
+  std::mutex observed;
+  PostgresWorker worker(store, [&](DatabaseResult result) {
+    std::lock_guard lock(observed); results.push_back(std::move(result));
+  }, [] {}, [&] {
+    return std::chrono::steady_clock::time_point{std::chrono::milliseconds{now_ms.load()}};
+  });
+  std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });
+  REQUIRE(worker.SubmitWrite({Record(kKnown, 2), 2, false, true, false,
+                              cns::persistence::Urgency::kImmediate}));
+  REQUIRE(WaitUntil([&] {
+    std::lock_guard lock(observed);
+    return !results.empty() &&
+           results.back().kind == DatabaseResult::Kind::kUnavailable;
+  }));
+  CHECK_FALSE(worker.SubmitProvision(
+      {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-001"}, {}));
+  now_ms = 5000;
+  REQUIRE(WaitUntil([&] {
+    std::lock_guard lock(observed);
+    return std::ranges::any_of(results, [](const DatabaseResult& result) {
+      return result.kind == DatabaseResult::Kind::kRecovered;
+    });
+  }));
+  REQUIRE(worker.SubmitProvision(
+      {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-001"}, {}));
+  REQUIRE(WaitUntil([&] {
+    const auto calls = store.Calls();
+    return std::ranges::count(calls, "provision") == 1;
+  }));
+  CHECK(worker.FlushAndStop(500ms));
+}
+
+TEST_CASE("DeviceService alone merges latest registration while worker provisions once") {
+  struct BlockingProvisionStore final : FakeStore {
+    std::atomic_bool entered{false};
+    std::atomic_bool release{false};
+    std::expected<DeviceRecord, cns::runtime::DatabaseError> Provision(
+        const Registration& registration, cns::runtime::TimePoint) override {
+      Called("provision");
+      entered = true;
+      while (!release) std::this_thread::yield();
+      return Record(registration.vendor_id);
+    }
+  } store;
+  cns::device::DeviceRegistry registry;
+  DeviceService* service_pointer = nullptr;
+  PostgresWorker worker(store, [&](DatabaseResult result) {
+    service_pointer->PushDatabaseResult(std::move(result));
+  }, [] {}, [] { return std::chrono::steady_clock::time_point{}; });
+  DeviceService service(registry,
+      [&](Registration registration, cns::runtime::TimePoint at) {
+        return worker.SubmitProvision(std::move(registration), at);
+      }, [&](DesiredDeviceWrite write) {
+        return worker.SubmitWrite(std::move(write));
+      }, [](cns::runtime::PublishedState) {},
+      [] { return std::chrono::steady_clock::time_point{}; });
+  service_pointer = &service;
+  std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });
+  service.TryPush(Message(std::string{"cns/"} + kNew + "/registration",
+                          RegistrationJson(kNew, "SEU", "DCDW-001")));
+  service.ProcessReady(cns::runtime::TimePoint{});
+  REQUIRE(WaitUntil([&] { return store.entered.load(); }));
+  service.TryPush(Message(std::string{"cns/"} + kNew + "/registration",
+                          RegistrationJson(kNew, "SEU", "DCDW-002")));
+  service.ProcessReady(cns::runtime::TimePoint{});
+  store.release = true;
+  REQUIRE(WaitUntil([&] { return store.Calls().size() == 1; }));
+  REQUIRE(WaitUntil([&] {
+    service.ProcessReady(cns::runtime::TimePoint{});
+    return registry.Find(kNew) != nullptr;
+  }));
+  CHECK(store.Calls() == std::vector<std::string>{"provision"});
+  REQUIRE(registry.Find(kNew));
+  CHECK(registry.Find(kNew)->dcdw_label == "DCDW-002");
+  CHECK(worker.FlushAndStop(500ms));
 }
 
 TEST_CASE("permanent migration mismatch stops without replay or reconnect loop") {
@@ -642,7 +735,7 @@ TEST_CASE("provision unavailable clears other vendors and merged latest candidat
   REQUIRE(worker.SubmitProvision(
       {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-001"}, {}));
   REQUIRE(WaitUntil([&] { return store.entered.load(); }));
-  REQUIRE(worker.SubmitProvision(
+  CHECK_FALSE(worker.SubmitProvision(
       {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-009"}, {}));
   REQUIRE(worker.SubmitProvision(
       {kOther, RegistrationStatus::kOnline, "SEU", "DCDW-002"}, {}));
