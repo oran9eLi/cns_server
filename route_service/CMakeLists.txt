@@ -180,6 +180,19 @@ target_link_options(test_rate_limiter PRIVATE
 
 add_test(NAME rate_limiter COMMAND test_rate_limiter)
 
+add_executable(test_mqtt_business tests/test_mqtt_business.cpp)
+target_link_libraries(test_mqtt_business PRIVATE route_adapters doctest::doctest)
+target_compile_options(test_mqtt_business PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_options(test_mqtt_business PRIVATE
+  LINKER:--wrap=mosquitto_new
+  LINKER:--wrap=mosquitto_connect_callback_set
+  LINKER:--wrap=mosquitto_message_callback_set
+  LINKER:--wrap=mosquitto_subscribe
+  LINKER:--wrap=mosquitto_unsubscribe
+  LINKER:--wrap=mosquitto_publish
+)
+add_test(NAME mqtt_business COMMAND test_mqtt_business)
+
 add_executable(test_shutdown_flag tests/test_shutdown_flag.cpp)
 target_link_libraries(test_shutdown_flag PRIVATE route_core doctest::doctest)
 target_compile_options(test_shutdown_flag PRIVATE -Wall -Wextra -Wpedantic -Werror)

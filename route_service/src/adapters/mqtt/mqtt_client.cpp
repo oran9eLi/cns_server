@@ -6,10 +6,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <utility>
+
+#include "core/mqtt_topic/device_topic.hpp"
 
 extern "C" bool cns_runtime_wait_interruptibly(
     std::condition_variable* changed, std::unique_lock<std::mutex>* lock,
@@ -58,7 +61,8 @@ struct MqttClient::CallbackState {
   explicit CallbackState(logging::Logger& logger_value)
       : logger(&logger_value),
         disconnect_warnings(std::chrono::seconds{30}),
-        library_logs(std::chrono::seconds{30}) {}
+        library_logs(std::chrono::seconds{30}),
+        business_warnings(std::chrono::seconds{30}) {}
 
   void DisableLogger() {
     std::lock_guard lock{mutex};
@@ -96,11 +100,76 @@ struct MqttClient::CallbackState {
     if (logger != nullptr) logger->Info("MQTT连接已恢复");
   }
 
+  void SubscribeConfigured(struct mosquitto* client) {
+    std::string topic_namespace;
+    {
+      std::lock_guard lock{mutex};
+      topic_namespace = topic_namespace_;
+    }
+    if (topic_namespace.empty()) return;
+    const auto registration = mqtt_topic::RegistrationFilter(topic_namespace);
+    const auto telemetry = mqtt_topic::TelemetryFilter(topic_namespace);
+    const int registration_result =
+        mosquitto_subscribe(client, nullptr, registration.c_str(), 2);
+    const int telemetry_result =
+        mosquitto_subscribe(client, nullptr, telemetry.c_str(), 0);
+    if (registration_result != MOSQ_ERR_SUCCESS ||
+        telemetry_result != MOSQ_ERR_SUCCESS) {
+      WarnBusiness("mqtt_business_subscribe", "MQTT设备消息订阅失败");
+    }
+  }
+
+  void Dispatch(const struct mosquitto_message* message,
+                std::chrono::system_clock::time_point received_at) {
+    MessageHandler configured_handler;
+    std::size_t configured_limit = 0;
+    {
+      std::lock_guard lock{mutex};
+      configured_handler = handler;
+      configured_limit = max_payload_bytes;
+    }
+    if (!configured_handler || message == nullptr || message->topic == nullptr ||
+        message->payloadlen < 0) {
+      return;
+    }
+    const auto payload_size = static_cast<std::size_t>(message->payloadlen);
+    if (payload_size > configured_limit) {
+      WarnBusiness("mqtt_payload_too_large",
+                   "MQTT消息payload超过大小限制，已拒绝");
+      return;
+    }
+    if (payload_size != 0 && message->payload == nullptr) return;
+    std::string payload;
+    if (payload_size != 0) {
+      payload.assign(static_cast<const char*>(message->payload), payload_size);
+    }
+    InboundMessage inbound{.topic = message->topic,
+                           .payload = std::move(payload),
+                           .received_at = received_at};
+    try {
+      configured_handler(std::move(inbound));
+    } catch (...) {
+      WarnBusiness("mqtt_business_handler", "MQTT业务消息处理器异常");
+    }
+  }
+
+  void WarnBusiness(std::string_view category, std::string_view text) {
+    std::lock_guard lock{mutex};
+    if (logger != nullptr && business_warnings.ShouldEmit(
+                                 category, runtime::RateLimiter::Clock::now())) {
+      logger->Error(text);
+    }
+  }
+
   std::mutex mutex;
   logging::Logger* logger;
   runtime::RateLimiter disconnect_warnings;
   runtime::RateLimiter library_logs;
+  runtime::RateLimiter business_warnings;
   std::atomic_bool connected{false};
+  MessageHandler handler;
+  std::size_t max_payload_bytes = 0;
+  std::string topic_namespace_;
 };
 
 MqttClient::MqttClient(config::MqttConfig config, logging::Logger& logger)
@@ -135,6 +204,7 @@ std::expected<std::unique_ptr<MqttClient>, std::string> MqttClient::Create(
   mosquitto_disconnect_callback_set(instance->client_,
                                     &MqttClient::HandleDisconnect);
   mosquitto_log_callback_set(instance->client_, &MqttClient::HandleLog);
+  mosquitto_message_callback_set(instance->client_, &MqttClient::HandleMessage);
 
   const int reconnect_result = mosquitto_reconnect_delay_set(
       instance->client_, static_cast<unsigned int>(config.reconnect_delay.count()),
@@ -271,30 +341,115 @@ mqtt::RuntimeStatus MqttClient::GetRuntimeStatus() const noexcept {
                        : mqtt::RuntimeStatus::kDisconnectedOrRetrying;
 }
 
-void MqttClient::HandleConnect(struct mosquitto*, void* context, int result) {
-  auto& state = *static_cast<CallbackState*>(context);
-  if (result == 0) {
-    state.Connected();
-    return;
+std::expected<void, std::string> MqttClient::ConfigureBusinessMessages(
+    MessageHandler handler, std::size_t max_payload_bytes) {
+  if (!handler) return std::unexpected("MQTT业务消息处理器不能为空");
+  if (max_payload_bytes == 0) {
+    return std::unexpected("MQTT payload大小限制必须大于零");
   }
-  state.connected.store(false, std::memory_order_release);
-  state.WarnDisconnected(result);
+  std::lock_guard lock{callback_state_->mutex};
+  callback_state_->handler = std::move(handler);
+  callback_state_->max_payload_bytes = max_payload_bytes;
+  return {};
+}
+
+std::expected<void, std::string> MqttClient::SubscribeDeviceMessages(
+    std::string_view topic_namespace) {
+  if (topic_namespace.empty()) return std::unexpected("MQTT topic命名空间不能为空");
+  {
+    std::lock_guard lock{callback_state_->mutex};
+    callback_state_->topic_namespace_ = topic_namespace;
+  }
+  if (IsConnected()) callback_state_->SubscribeConfigured(client_);
+  return {};
+}
+
+std::expected<void, std::string> MqttClient::ReplayRetainedRegistrations(
+    std::string_view topic_namespace) {
+  if (topic_namespace.empty()) return std::unexpected("MQTT topic命名空间不能为空");
+  const auto filter = mqtt_topic::RegistrationFilter(topic_namespace);
+  const int unsubscribe_result =
+      mosquitto_unsubscribe(client_, nullptr, filter.c_str());
+  if (unsubscribe_result != MOSQ_ERR_SUCCESS) {
+    return std::unexpected(MosquittoError("取消registration订阅", unsubscribe_result));
+  }
+  const int subscribe_result = mosquitto_subscribe(client_, nullptr,
+                                                    filter.c_str(), 2);
+  if (subscribe_result != MOSQ_ERR_SUCCESS) {
+    return std::unexpected(MosquittoError("恢复registration订阅", subscribe_result));
+  }
+  return {};
+}
+
+std::expected<void, std::string> MqttClient::PublishStateEvent(
+    std::string_view topic, std::string_view payload) {
+  if (topic.empty()) return std::unexpected("MQTT发布topic不能为空");
+  if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    return std::unexpected("MQTT发布payload过大");
+  }
+  const int result = mosquitto_publish(
+      client_, nullptr, std::string{topic}.c_str(), static_cast<int>(payload.size()),
+      payload.data(), 0, false);
+  if (result != MOSQ_ERR_SUCCESS) {
+    return std::unexpected(MosquittoError("发布设备状态事件", result));
+  }
+  return {};
+}
+
+void MqttClient::HandleConnect(struct mosquitto* client, void* context,
+                               int result) {
+  auto& state = *static_cast<CallbackState*>(context);
+  try {
+    if (result == 0) {
+      state.Connected();
+      state.SubscribeConfigured(client);
+      return;
+    }
+    state.connected.store(false, std::memory_order_release);
+    state.WarnDisconnected(result);
+  } catch (...) {
+    try {
+      state.WarnBusiness("mqtt_connect_callback", "MQTT连接回调异常");
+    } catch (...) {
+    }
+  }
 }
 
 void MqttClient::HandleDisconnect(struct mosquitto*, void* context, int result) {
   auto& state = *static_cast<CallbackState*>(context);
-  state.connected.store(false, std::memory_order_release);
-  if (result != MOSQ_ERR_SUCCESS) state.WarnDisconnected(result);
+  try {
+    state.connected.store(false, std::memory_order_release);
+    if (result != MOSQ_ERR_SUCCESS) state.WarnDisconnected(result);
+  } catch (...) {
+  }
 }
 
 void MqttClient::HandleLog(struct mosquitto*, void* context, int level,
                            const char* message) {
   static_cast<void>(message);
   auto& state = *static_cast<CallbackState*>(context);
-  if ((level & MOSQ_LOG_ERR) != 0) {
-    state.WarnLibraryEvent("mqtt_library_error", "MQTT库报告错误事件");
-  } else if ((level & MOSQ_LOG_WARNING) != 0) {
-    state.WarnLibraryEvent("mqtt_library_warning", "MQTT库报告警告事件");
+  try {
+    if ((level & MOSQ_LOG_ERR) != 0) {
+      state.WarnLibraryEvent("mqtt_library_error", "MQTT库报告错误事件");
+    } else if ((level & MOSQ_LOG_WARNING) != 0) {
+      state.WarnLibraryEvent("mqtt_library_warning", "MQTT库报告警告事件");
+    }
+  } catch (...) {
+  }
+}
+
+void MqttClient::HandleMessage(
+    struct mosquitto*, void* context,
+    const struct mosquitto_message* message) {
+  const auto received_at = std::chrono::system_clock::now();
+  auto& state = *static_cast<CallbackState*>(context);
+  try {
+    state.Dispatch(message, received_at);
+  } catch (...) {
+    try {
+      state.WarnBusiness("mqtt_message_callback", "MQTT消息回调异常");
+    } catch (...) {
+    }
   }
 }
 

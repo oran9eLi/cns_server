@@ -2,11 +2,14 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "core/config/app_config.hpp"
@@ -14,11 +17,20 @@
 #include "core/runtime/rate_limiter.hpp"
 
 struct mosquitto;
+struct mosquitto_message;
 
 namespace cns::mqtt {
 
 /** 表示 MQTT 当前可供进程编排安全观察的运行状态。 */
 enum class RuntimeStatus { kDisconnectedOrRetrying, kConnected, kTerminalFailure };
+
+struct InboundMessage {
+  std::string topic;
+  std::string payload;
+  std::chrono::system_clock::time_point received_at;
+};
+
+using MessageHandler = std::function<void(InboundMessage)>;
 
 class MqttClient {
  public:
@@ -33,6 +45,14 @@ class MqttClient {
   void Stop();
   bool IsConnected() const noexcept;
   RuntimeStatus GetRuntimeStatus() const noexcept;
+  std::expected<void, std::string> ConfigureBusinessMessages(
+      MessageHandler handler, std::size_t max_payload_bytes);
+  std::expected<void, std::string> SubscribeDeviceMessages(
+      std::string_view topic_namespace);
+  std::expected<void, std::string> ReplayRetainedRegistrations(
+      std::string_view topic_namespace);
+  std::expected<void, std::string> PublishStateEvent(std::string_view topic,
+                                                     std::string_view payload);
 
  private:
   struct CallbackState;
@@ -44,6 +64,8 @@ class MqttClient {
   static void HandleDisconnect(struct mosquitto*, void* context, int result);
   static void HandleLog(struct mosquitto*, void* context, int level,
                         const char* message);
+  static void HandleMessage(struct mosquitto*, void* context,
+                            const struct mosquitto_message* message);
   void WarnDisconnected(int result);
   void RetryConnection();
   void FinishRetry(std::string error = {});
