@@ -5,7 +5,7 @@
 
 using cns::mqtt_topic::DeviceMessageKind;
 
-TEST_CASE("只解析 namespace vendor kind 准确四段设备主题") {
+TEST_CASE("只解析 namespace vendor kind 准确三段设备主题") {
   const auto registration = cns::mqtt_topic::ParseDeviceTopic("cns_rpi", "cns_rpi/A1b2C3d4E5f6G7h8I9j0/registration");
   REQUIRE(registration.has_value());
   CHECK(registration->vendor_id == "A1b2C3d4E5f6G7h8I9j0");

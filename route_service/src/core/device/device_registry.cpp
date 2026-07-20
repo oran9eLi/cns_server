@@ -109,7 +109,18 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
   }
 
   auto& record = iterator->second;
-  DeviceRecord new_record = record;
+  DeviceRecord new_record{
+      .vendor_id = record.vendor_id,
+      .school_id = record.school_id,
+      .school_name = record.school_name,
+      .dcdw_label = record.dcdw_label,
+      .model_version = record.model_version,
+      .status = Status::kOnline,
+      .last_seen_at = received_at,
+      .latest_telemetry = std::move(telemetry.payload),
+      .telemetry_received_at = received_at,
+      .revision = record.revision + 1,
+  };
   std::optional<std::string> diagnostic;
   std::optional<RoleKey> new_role;
   if (!record.dcdw_label && telemetry.dcdw_label) {
@@ -122,11 +133,6 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
       if (owner == roles_.end()) new_role.emplace(candidate);
     }
   }
-  new_record.latest_telemetry = std::move(telemetry.payload);
-  new_record.telemetry_received_at = received_at;
-  new_record.last_seen_at = received_at;
-  new_record.status = Status::kOnline;
-  ++new_record.revision;
   Mutation mutation{new_record, state_event::ChangeReason::kTelemetry,
                     record.status != new_record.status,
                     std::move(diagnostic)};

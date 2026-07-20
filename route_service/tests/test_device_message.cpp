@@ -46,6 +46,21 @@ TEST_CASE("拒绝 registration JSON 版本和身份错误") {
   }
 }
 
+TEST_CASE("registration 缺失 schema_version 时明确拒绝") {
+  const auto result = cns::protocol::ParseRegistration(
+      R"({"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"offline"})",
+      kVendor);
+  REQUIRE_FALSE(result);
+  CHECK(result.error() == "schema_version 必须是整数 1");
+}
+
+TEST_CASE("registration 缺失 vendor_id 时明确拒绝") {
+  const auto result = cns::protocol::ParseRegistration(
+      R"({"schema_version":1,"status":"offline"})", kVendor);
+  REQUIRE_FALSE(result);
+  CHECK(result.error() == "vendor_id 必须是非空字符串");
+}
+
 TEST_CASE("拒绝 registration 缺失空值与错误类型") {
   for (const auto payload : {
            R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"online"})",
@@ -78,4 +93,14 @@ TEST_CASE("拒绝非法 telemetry identity") {
            R"({"identity":{"dcdw_label":""}})"}) {
     CHECK_FALSE(cns::protocol::ParseTelemetry(payload, kVendor));
   }
+}
+
+TEST_CASE("telemetry 解析错误不回显原始 payload") {
+  constexpr auto payload =
+      R"({"identity":{"vendor_id":"不得出现在诊断中的敏感内容"}})";
+  const auto result = cns::protocol::ParseTelemetry(payload, kVendor);
+  REQUIRE_FALSE(result);
+  CHECK(result.error().find(payload) == std::string::npos);
+  CHECK(result.error().find("不得出现在诊断中的敏感内容") ==
+        std::string::npos);
 }
