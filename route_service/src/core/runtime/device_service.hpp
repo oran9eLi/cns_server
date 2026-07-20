@@ -94,6 +94,9 @@ class DeviceService {
   void SetProcessingReady(bool value);
   void AdjustOutstandingDatabaseWork(std::ptrdiff_t delta);
   void ResetOutstandingDatabaseWork();
+  bool IsClosed() const;
+  bool ConsumeCancelDatabaseWorkRequest();
+  void SetDrainDispatchPending(bool value);
 
   device::DeviceRegistry& registry_;
   ProvisionSubmitter provision_;
@@ -112,9 +115,11 @@ class DeviceService {
   std::chrono::steady_clock::time_point next_scan_{};
   bool scan_initialized_ = false;
   bool database_unavailable_ = false;
-  std::atomic_bool closed_{false};
+  bool closed_ = false;
   bool input_drained_ = false;
-  std::atomic_bool cancel_database_work_requested_{false};
+  bool cancel_database_work_requested_ = false;
+  bool drain_dispatch_pending_ = false;
+  bool drain_submission_blocked_ = false;
   bool processing_ready_ = false;
   std::size_t outstanding_database_work_ = 0;
   std::function<void()> before_database_idle_wait_for_testing_;

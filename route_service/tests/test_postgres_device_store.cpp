@@ -218,6 +218,8 @@ TEST_CASE("最新状态更新只在状态或遥测标志置位时执行") {
   CHECK(source.find("if (plan.update_latest_state)") != std::string::npos);
   CHECK(source.find("if (!plan.update_metadata && !plan.update_latest_state)") !=
         std::string::npos);
+  CHECK(source.find("last_seen_at = CASE WHEN $2 THEN") != std::string::npos);
+  CHECK(source.find("updated_at = CURRENT_TIMESTAMP") != std::string::npos);
 }
 
 TEST_CASE("非对象遥测在进入数据库事务前被拒绝") {

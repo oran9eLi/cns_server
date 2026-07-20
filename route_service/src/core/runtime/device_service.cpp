@@ -67,8 +67,9 @@ void DeviceService::Run(std::stop_token stop) {
         std::lock_guard results_lock(results_mutex_);
         no_results = results_.empty();
       }
-      if (closed_ && mqtt_queue_.Size() == 0) {
+      if (IsClosed() && mqtt_queue_.Size() == 0) {
         SetInputDrained();
+        ProcessReady();
       }
       if (IsInputDrained() && no_results && !HasOutstandingDatabaseWork()) break;
       std::unique_lock lock(wake_mutex_);
@@ -87,7 +88,11 @@ void DeviceService::Run(std::stop_token stop) {
 }
 
 void DeviceService::Close() {
-  closed_ = true;
+  {
+    std::lock_guard lock(wake_mutex_);
+    closed_ = true;
+    drain_dispatch_pending_ = true;
+  }
   mqtt_queue_.Close();
   Notify();
 }
@@ -99,12 +104,14 @@ bool DeviceService::WaitForInputDrained(std::chrono::milliseconds timeout) {
 
 bool DeviceService::WaitForDatabaseIdle(std::chrono::milliseconds timeout) {
   std::unique_lock lock(wake_mutex_);
-  if (outstanding_database_work_ == 0 && !processing_ready_) return true;
+  if (outstanding_database_work_ == 0 && !processing_ready_ &&
+      !drain_dispatch_pending_) return true;
   if (before_database_idle_wait_for_testing_) {
     before_database_idle_wait_for_testing_();
   }
   return wake_.wait_for(lock, timeout, [this] {
-    return outstanding_database_work_ == 0 && !processing_ready_;
+    return outstanding_database_work_ == 0 && !processing_ready_ &&
+           !drain_dispatch_pending_;
   });
 }
 
@@ -115,13 +122,35 @@ void DeviceService::SetBeforeDatabaseIdleWaitHookForTesting(
 }
 
 void DeviceService::CancelOutstandingDatabaseWork() {
-  cancel_database_work_requested_ = true;
+  {
+    std::lock_guard lock(wake_mutex_);
+    cancel_database_work_requested_ = true;
+    drain_dispatch_pending_ = false;
+  }
+  Notify();
+}
+
+bool DeviceService::IsClosed() const {
+  std::lock_guard lock(wake_mutex_);
+  return closed_;
+}
+
+bool DeviceService::ConsumeCancelDatabaseWorkRequest() {
+  std::lock_guard lock(wake_mutex_);
+  return std::exchange(cancel_database_work_requested_, false);
+}
+
+void DeviceService::SetDrainDispatchPending(bool value) {
+  {
+    std::lock_guard lock(wake_mutex_);
+    drain_dispatch_pending_ = value;
+  }
   Notify();
 }
 
 bool DeviceService::HasOutstandingDatabaseWork() const {
   std::lock_guard lock(wake_mutex_);
-  return outstanding_database_work_ != 0;
+  return outstanding_database_work_ != 0 || drain_dispatch_pending_;
 }
 
 bool DeviceService::IsInputDrained() const {
@@ -184,12 +213,14 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     }
     Handle(std::move(*result));
   }
-  if (cancel_database_work_requested_.exchange(false)) {
+  if (ConsumeCancelDatabaseWorkRequest()) {
     for (auto& [vendor, candidate] : pending_) {
       static_cast<void>(vendor);
       candidate.submitted = false;
     }
     submitted_.clear();
+    dirty_.Clear();
+    drain_submission_blocked_ = false;
     ResetOutstandingDatabaseWork();
   }
   while (mqtt_queue_.Size() != 0) {
@@ -382,12 +413,24 @@ void DeviceService::Mark(device::Mutation mutation) {
 void DeviceService::DispatchWrites() {
   if (database_unavailable_) return;
   auto send = [this](std::vector<persistence::DesiredDeviceWrite> writes) {
+    bool accepted = true;
     for (auto& item : writes) {
-      SubmitWrite(std::move(item));
+      accepted = SubmitWrite(std::move(item)) && accepted;
     }
+    return accepted;
   };
-  send(dirty_.TakeImmediate());
-  send(dirty_.TakeTelemetryDue(steady_now_(), telemetry_interval_));
+  if (IsInputDrained()) {
+    if (drain_submission_blocked_) return;
+    if (send(dirty_.TakeAllDirty())) {
+      SetDrainDispatchPending(false);
+    } else {
+      drain_submission_blocked_ = true;
+    }
+  } else {
+    static_cast<void>(send(dirty_.TakeImmediate()));
+    static_cast<void>(
+        send(dirty_.TakeTelemetryDue(steady_now_(), telemetry_interval_)));
+  }
 }
 
 bool DeviceService::SubmitWrite(persistence::DesiredDeviceWrite write) {

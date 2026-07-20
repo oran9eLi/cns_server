@@ -149,6 +149,68 @@ TEST_CASE("closed business service waits for provision and follow-up write resul
   CHECK(run.wait_for(500ms) == std::future_status::ready);
 }
 
+TEST_CASE("关闭时强制写入不足批次间隔的最后 telemetry 并等待结果") {
+  cns::device::DeviceRegistry registry;
+  REQUIRE(registry.Load({Record(kKnown)}));
+  std::mutex writes_mutex;
+  std::vector<DesiredDeviceWrite> writes;
+  DeviceService service(
+      registry, [](Registration, cns::runtime::TimePoint) { return true; },
+      [&](DesiredDeviceWrite write) {
+        std::lock_guard lock(writes_mutex);
+        writes.push_back(std::move(write));
+        return true;
+      },
+      [](cns::runtime::PublishedState) {},
+      [] { return std::chrono::steady_clock::time_point{}; });
+  REQUIRE(service.TryPush(Message(
+      std::string{"cns/"} + kKnown + "/telemetry", R"({"sequence":99})")));
+  service.Close();
+  auto run = std::async(std::launch::async,
+                        [&] { service.Run(std::stop_token{}); });
+
+  REQUIRE(WaitUntil([&] {
+    std::lock_guard lock(writes_mutex);
+    return !writes.empty();
+  }));
+  {
+    std::lock_guard lock(writes_mutex);
+    REQUIRE(writes.size() == 1);
+    CHECK(writes.front().write_telemetry);
+    CHECK(writes.front().record.latest_telemetry->at("sequence") == 99);
+  }
+  CHECK(run.wait_for(20ms) == std::future_status::timeout);
+  service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kKnown, 2,
+                              std::nullopt, {}});
+  CHECK(run.wait_for(500ms) == std::future_status::ready);
+}
+
+TEST_CASE("停机强制写入提交失败后不无限重复且保持非空闲") {
+  cns::device::DeviceRegistry registry;
+  REQUIRE(registry.Load({Record(kKnown)}));
+  std::atomic_int attempts{0};
+  DeviceService service(
+      registry, [](Registration, cns::runtime::TimePoint) { return true; },
+      [&](DesiredDeviceWrite) {
+        ++attempts;
+        return false;
+      },
+      [](cns::runtime::PublishedState) {},
+      [] { return std::chrono::steady_clock::time_point{}; });
+  REQUIRE(service.TryPush(Message(
+      std::string{"cns/"} + kKnown + "/telemetry", R"({"sequence":7})")));
+  service.Close();
+  auto run = std::async(std::launch::async,
+                        [&] { service.Run(std::stop_token{}); });
+  REQUIRE(WaitUntil([&] { return attempts.load() >= 1; }));
+  std::this_thread::sleep_for(250ms);
+  CHECK(attempts == 1);
+  CHECK_FALSE(service.WaitForDatabaseIdle(20ms));
+  CHECK(run.wait_for(20ms) == std::future_status::timeout);
+  service.CancelOutstandingDatabaseWork();
+  CHECK(run.wait_for(500ms) == std::future_status::ready);
+}
+
 TEST_CASE("database idle waiter wakes immediately after chained processing finishes") {
   cns::device::DeviceRegistry registry;
   std::latch write_entered{1};
@@ -219,6 +281,36 @@ TEST_CASE("database idle transition cannot be lost between predicate and wait") 
   CHECK(elapsed < 500ms);
 }
 
+TEST_CASE("Close在数据库空闲检查到等待窗口内不能丢失唤醒") {
+  cns::device::DeviceRegistry registry;
+  DeviceService service(
+      registry,
+      [](Registration, cns::runtime::TimePoint) { return true; },
+      [](DesiredDeviceWrite) { return true; },
+      [](cns::runtime::PublishedState) {},
+      [] { return std::chrono::steady_clock::time_point{}; });
+  REQUIRE(service.TryPush(Message(std::string{"cns/"} + kNew + "/registration",
+                                  RegistrationJson(kNew))));
+  service.ProcessReady();
+
+  std::latch predicate_checked{1};
+  std::latch permit_wait{1};
+  service.SetBeforeDatabaseIdleWaitHookForTesting([&] {
+    predicate_checked.count_down();
+    permit_wait.wait();
+  });
+  auto waiter = std::async(std::launch::async,
+                           [&] { return service.WaitForDatabaseIdle(100ms); });
+  predicate_checked.wait();
+  auto closer = std::async(std::launch::async, [&] { service.Close(); });
+  CHECK(closer.wait_for(20ms) == std::future_status::timeout);
+  permit_wait.count_down();
+  CHECK(closer.wait_for(100ms) == std::future_status::ready);
+  CHECK_FALSE(waiter.get());
+  service.CancelOutstandingDatabaseWork();
+  service.ProcessReady();
+}
+
 TEST_CASE("database results have priority over MQTT and unavailable clears pending") {
   Harness h;
   auto service = h.Make();
@@ -266,6 +358,7 @@ TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
   Harness h;
   auto online = Record(kKnown);
   online.status = Status::kOnline;
+  online.last_seen_at = cns::runtime::TimePoint{} + 10s;
   REQUIRE(h.registry.Load({online}));
   auto service = h.Make();
   const auto offline = nlohmann::json{{"schema_version", 1},
@@ -275,6 +368,10 @@ TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
                           offline));
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);
   REQUIRE(h.writes.size() == 1);
+  CHECK(h.writes.front().write_status);
+  CHECK(h.writes.front().record.status == Status::kOffline);
+  CHECK(h.writes.front().record.last_seen_at ==
+        cns::runtime::TimePoint{} + 10s);
   service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kKnown, 2,
                               std::nullopt, {}});
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);

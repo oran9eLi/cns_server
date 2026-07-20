@@ -85,7 +85,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
   const bool online =
       registration.status == protocol::RegistrationStatus::kOnline;
   new_record.status = online ? Status::kOnline : Status::kOffline;
-  new_record.last_seen_at = received_at;
+  if (online) new_record.last_seen_at = received_at;
   ++new_record.revision;
   Mutation mutation{
       new_record,

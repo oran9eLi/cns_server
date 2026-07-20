@@ -32,8 +32,11 @@ class DirtyState {
   std::vector<DesiredDeviceWrite> TakeTelemetryDue(
       std::chrono::steady_clock::time_point now,
       std::chrono::seconds interval);
+  /** 排空时立即提取所有尚未在途的最新脏字段。 */
+  std::vector<DesiredDeviceWrite> TakeAllDirty();
   void Complete(const DesiredDeviceWrite& write);
   void Restore(DesiredDeviceWrite write);
+  void Clear();
   std::size_t Size() const;
 
  private:
@@ -55,7 +58,7 @@ class DirtyState {
   std::vector<DesiredDeviceWrite> TakeMatching(
       bool immediate,
       std::chrono::steady_clock::time_point now,
-      std::chrono::seconds interval);
+      std::chrono::seconds interval, bool force = false);
   static bool HasDirty(const Entry& entry);
   static bool HasWork(const Entry& entry);
 

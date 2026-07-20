@@ -79,6 +79,7 @@ add_library(route_core STATIC
   src/core/migration/migration_plan.cpp
   src/core/persistence/dirty_state.cpp
   src/core/runtime/rate_limiter.cpp
+  src/core/runtime/device_ingress.cpp
   src/core/runtime/device_service.cpp
   src/core/runtime/postgres_worker.cpp
   src/core/runtime/service_runner.cpp
@@ -144,6 +145,11 @@ add_executable(test_dirty_state tests/test_dirty_state.cpp)
 target_link_libraries(test_dirty_state PRIVATE route_core doctest::doctest)
 target_compile_options(test_dirty_state PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME dirty_state COMMAND test_dirty_state)
+
+add_executable(test_device_ingress tests/test_device_ingress.cpp)
+target_link_libraries(test_device_ingress PRIVATE route_core doctest::doctest)
+target_compile_options(test_device_ingress PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME device_ingress COMMAND test_device_ingress)
 
 add_executable(test_state_event tests/test_state_event.cpp)
 target_link_libraries(test_state_event PRIVATE route_core doctest::doctest)

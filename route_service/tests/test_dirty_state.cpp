@@ -174,3 +174,21 @@ TEST_CASE("在途 telemetry 不因后来的立即 status 重复提交") {
   CHECK(status.front().write_status);
   CHECK_FALSE(status.front().write_telemetry);
 }
+
+TEST_CASE("排空时不等待批次间隔并提取每台设备最后 telemetry") {
+  DirtyState state;
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  state.Mark(Write("vendor-a", 1, false, false, true), t0);
+  state.Mark(Write("vendor-a", 2, false, false, true), t0 + 1s);
+  state.Mark(Write("vendor-b", 3, false, false, true), t0 + 1s);
+
+  const auto writes = state.TakeAllDirty();
+  REQUIRE(writes.size() == 2);
+  const auto device_a = std::ranges::find_if(writes, [](const auto& write) {
+    return write.record.vendor_id == "vendor-a";
+  });
+  REQUIRE(device_a != writes.end());
+  CHECK(device_a->revision == 2);
+  CHECK(device_a->record.latest_telemetry->at("seq") == 2);
+  CHECK(state.TakeAllDirty().empty());
+}

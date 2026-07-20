@@ -110,7 +110,7 @@ TEST_CASE("registration 上下线且每次变化递增 revision") {
   REQUIRE(down);
   CHECK(down->reason == cns::state_event::ChangeReason::kRegistrationOffline);
   CHECK(down->record.status == Status::kOffline);
-  CHECK(down->record.last_seen_at == kNow + 1s);
+  CHECK(down->record.last_seen_at == kNow);
   CHECK(down->record.dcdw_label == "DCDW-001");
   CHECK(down->record.revision == 9);
 }

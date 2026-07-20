@@ -75,6 +75,10 @@ std::vector<DesiredDeviceWrite> DirtyState::TakeTelemetryDue(
   return TakeMatching(false, now, interval);
 }
 
+std::vector<DesiredDeviceWrite> DirtyState::TakeAllDirty() {
+  return TakeMatching(false, {}, {}, true);
+}
+
 void DirtyState::Complete(const DesiredDeviceWrite& write) {
   const auto it = entries_.find(write.record.vendor_id);
   if (it == entries_.end()) {
@@ -123,11 +127,13 @@ void DirtyState::Restore(DesiredDeviceWrite write) {
   }
 }
 
+void DirtyState::Clear() { entries_.clear(); }
+
 std::size_t DirtyState::Size() const { return entries_.size(); }
 
 std::vector<DesiredDeviceWrite> DirtyState::TakeMatching(
     bool immediate, std::chrono::steady_clock::time_point now,
-    std::chrono::seconds interval) {
+    std::chrono::seconds interval, bool force) {
   std::vector<DesiredDeviceWrite> result;
   for (auto& [vendor_id, entry] : entries_) {
     static_cast<void>(vendor_id);
@@ -135,8 +141,8 @@ std::vector<DesiredDeviceWrite> DirtyState::TakeMatching(
       continue;
     }
     const bool is_immediate = entry.urgency == Urgency::kImmediate;
-    if (immediate != is_immediate ||
-        (!immediate && now - entry.marked_at < interval)) {
+    if (!force && (immediate != is_immediate ||
+        (!immediate && now - entry.marked_at < interval))) {
       continue;
     }
     result.push_back({.record = entry.record,

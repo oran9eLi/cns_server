@@ -9,6 +9,7 @@
 #include "core/migration/migration_plan.hpp"
 #include "core/mqtt_topic/device_topic.hpp"
 #include "core/runtime/device_service.hpp"
+#include "core/runtime/device_ingress.hpp"
 #include "core/runtime/postgres_worker.hpp"
 #include "core/runtime/shutdown_flag.hpp"
 #include "core/state_event/state_event.hpp"
@@ -154,6 +155,7 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
   std::unique_ptr<RuntimePostgresBridge> store;
   std::unique_ptr<runtime::PostgresWorker> worker;
   std::unique_ptr<runtime::DeviceService> service;
+  std::shared_ptr<runtime::DeviceIngress> ingress;
   std::weak_ptr<RuntimeExternalBridge> external;
   runtime::SelfOwnedRuntimeThread database_thread;
   runtime::SelfOwnedRuntimeThread business_thread;
@@ -208,6 +210,15 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         config.queues.mqtt_inbound_capacity, config.mqtt.topic_namespace,
         config.device_state.telemetry_flush_interval,
         config.device_state.offline_timeout);
+    ingress = std::make_shared<runtime::DeviceIngress>(
+        [weak_self](mqtt::InboundMessage message) {
+          const auto self = weak_self.lock();
+          return self && self->service &&
+                 self->service->TryPush(std::move(message));
+        },
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Diagnose(message);
+        });
   }
 
   std::expected<void, std::string> StartDatabaseThread() {
@@ -401,13 +412,13 @@ std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
     state_->accepting_device_messages = true;
 
     runtime::DeviceRuntimeStartOperations start_operations{
-        .configure_handler = [this, weak = std::weak_ptr<RuntimeBundle>{bundle}]()
+        .configure_handler = [this,
+            weak = std::weak_ptr<runtime::DeviceIngress>{bundle->ingress}]()
             -> std::expected<void, std::string> {
           auto configured = state_->mqtt->ConfigureBusinessMessages(
               [weak](mqtt::InboundMessage message) {
-                if (const auto runtime = weak.lock(); runtime && runtime->service) {
-                  static_cast<void>(runtime->service->TryPush(std::move(message)));
-                }
+                if (const auto ingress = weak.lock())
+                  ingress->Handle(std::move(message));
               },
               state_->config->mqtt.max_payload_bytes);
           if (!configured) return std::unexpected(configured.error());
@@ -456,6 +467,9 @@ std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
 void ServiceEnvironment::StopAcceptingDeviceMessages() {
   if (!state_ || !state_->accepting_device_messages) return;
   state_->accepting_device_messages = false;
+  if (state_->runtime_bundle && state_->runtime_bundle->ingress) {
+    state_->runtime_bundle->ingress->Disable();
+  }
   if (state_->mqtt) {
     auto result = state_->mqtt->ConfigureBusinessMessages(
         {}, state_->config->mqtt.max_payload_bytes);
