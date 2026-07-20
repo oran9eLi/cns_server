@@ -86,6 +86,8 @@ add_library(route_core STATIC
   src/core/runtime/rate_limiter.cpp
   src/core/runtime/device_ingress.cpp
   src/core/runtime/device_service.cpp
+  src/core/runtime/command_service.cpp
+  src/core/runtime/command_ingress.cpp
   src/core/runtime/postgres_worker.cpp
   src/core/runtime/service_runner.cpp
 )
@@ -242,6 +244,11 @@ target_link_options(test_mqtt_commands PRIVATE
   LINKER:--wrap=mosquitto_publish
 )
 add_test(NAME mqtt_commands COMMAND test_mqtt_commands)
+
+add_executable(test_command_service_requests tests/test_command_service_requests.cpp)
+target_link_libraries(test_command_service_requests PRIVATE route_core doctest::doctest)
+target_compile_options(test_command_service_requests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME command_service_requests COMMAND test_command_service_requests)
 
 add_executable(test_shutdown_flag tests/test_shutdown_flag.cpp)
 target_link_libraries(test_shutdown_flag PRIVATE route_core doctest::doctest)
