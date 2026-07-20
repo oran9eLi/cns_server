@@ -7,7 +7,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <string>
+#include <tuple>
 
 namespace {
 
@@ -17,15 +19,18 @@ std::string ValidJson() {
   return R"({
   "database": {
     "host": "127.0.0.1", "port": 5432, "name": "cns", "user": "cns_route",
-    "password": ")" + std::string{kTestPassword} + R"(", "connect_timeout_seconds": 5
+    "password": ")" + std::string{kTestPassword} + R"(", "connect_timeout_seconds": 5,
+    "reconnect_interval_seconds": 5
   },
   "mqtt": {
     "host": "127.0.0.1", "port": 1883, "keepalive_seconds": 60,
     "client_id": "cns-route-service", "username": "", "password": "",
-    "reconnect_delay_seconds": 1, "reconnect_delay_max_seconds": 30
+    "reconnect_delay_seconds": 1, "reconnect_delay_max_seconds": 30,
+    "topic_namespace": "cns_rpi", "max_payload_bytes": 262144
   },
   "logging": {"level": "info"},
-  "queues": {"mqtt_inbound_capacity": 256}
+  "queues": {"mqtt_inbound_capacity": 256},
+  "device_state": {"telemetry_flush_interval_seconds": 5, "offline_timeout_seconds": 120}
 })";
 }
 
@@ -66,6 +71,7 @@ TEST_CASE("完整配置准确解析为强类型结构") {
   CHECK(result->database.user == "cns_route");
   CHECK(result->database.password == kTestPassword);
   CHECK(result->database.connect_timeout == std::chrono::seconds{5});
+  CHECK(result->database.reconnect_interval == std::chrono::seconds{5});
   CHECK(result->mqtt.host == "127.0.0.1");
   CHECK(result->mqtt.port == 1883);
   CHECK(result->mqtt.keepalive == std::chrono::seconds{60});
@@ -74,8 +80,68 @@ TEST_CASE("完整配置准确解析为强类型结构") {
   CHECK(result->mqtt.password.empty());
   CHECK(result->mqtt.reconnect_delay == std::chrono::seconds{1});
   CHECK(result->mqtt.reconnect_delay_max == std::chrono::seconds{30});
+  CHECK(result->mqtt.topic_namespace == "cns_rpi");
+  CHECK(result->mqtt.max_payload_bytes == 262144);
   CHECK(result->logging.level == cns::logging::Level::kInfo);
   CHECK(result->queues.mqtt_inbound_capacity == 256);
+  CHECK(result->device_state.telemetry_flush_interval == std::chrono::seconds{5});
+  CHECK(result->device_state.offline_timeout == std::chrono::seconds{120});
+}
+
+TEST_CASE("新增配置字段均为必填") {
+  for (const auto& [from, to, path] : std::initializer_list<std::tuple<std::string, std::string, std::string>>{
+           {R"(, "connect_timeout_seconds": 5,
+    "reconnect_interval_seconds": 5)", R"(, "connect_timeout_seconds": 5)", "database.reconnect_interval_seconds"},
+           {R"(,
+    "topic_namespace": "cns_rpi")", "", "mqtt.topic_namespace"},
+           {R"(, "max_payload_bytes": 262144)", "", "mqtt.max_payload_bytes"},
+           {R"(,
+  "device_state": {"telemetry_flush_interval_seconds": 5, "offline_timeout_seconds": 120})", "", "device_state"}}) {
+    auto json = ValidJson(); Replace(json, from, to); CheckRejected(json, path);
+  }
+}
+
+TEST_CASE("device_state 严格拒绝缺失未知与错误类型") {
+  for (const auto& [from, to, path] : std::initializer_list<std::tuple<std::string, std::string, std::string>>{
+           {R"("telemetry_flush_interval_seconds": 5, )", "", "device_state.telemetry_flush_interval_seconds"},
+           {R"(, "offline_timeout_seconds": 120)", "", "device_state.offline_timeout_seconds"},
+           {R"("offline_timeout_seconds": 120)", R"("unknown": 1, "offline_timeout_seconds": 120)", "device_state.unknown"},
+           {R"("offline_timeout_seconds": 120)", R"("offline_timeout_seconds": "120")", "device_state.offline_timeout_seconds"}}) {
+    auto json = ValidJson(); Replace(json, from, to); CheckRejected(json, path);
+  }
+}
+
+TEST_CASE("新增整数配置执行类型与边界校验") {
+  const auto check = [](const std::string& token, const std::string& replacement,
+                        const std::string& path) {
+    auto json = ValidJson(); Replace(json, token, replacement); CheckRejected(json, path);
+  };
+  check("reconnect_interval_seconds\": 5", "reconnect_interval_seconds\": \"5\"", "database.reconnect_interval_seconds");
+  for (const auto value : {"0", "301"}) check("reconnect_interval_seconds\": 5", "reconnect_interval_seconds\": " + std::string{value}, "database.reconnect_interval_seconds");
+  check("max_payload_bytes\": 262144", "max_payload_bytes\": true", "mqtt.max_payload_bytes");
+  for (const auto value : {"1023", "1048577"}) check("max_payload_bytes\": 262144", "max_payload_bytes\": " + std::string{value}, "mqtt.max_payload_bytes");
+  for (const auto value : {"0", "61"}) check("telemetry_flush_interval_seconds\": 5", "telemetry_flush_interval_seconds\": " + std::string{value}, "device_state.telemetry_flush_interval_seconds");
+  for (const auto value : {"60", "86401"}) check("offline_timeout_seconds\": 120", "offline_timeout_seconds\": " + std::string{value}, "device_state.offline_timeout_seconds");
+}
+
+TEST_CASE("MQTT namespace 必须是单个非空合法段") {
+  for (const auto value : {"", "a/b", "a+", "a#", "a b", "a\\tb"}) {
+    auto json = ValidJson(); Replace(json, "cns_rpi", value); CheckRejected(json, "mqtt.topic_namespace");
+  }
+  auto json = ValidJson(); Replace(json, R"("topic_namespace": "cns_rpi")", R"("topic_namespace": true)");
+  CheckRejected(json, "mqtt.topic_namespace");
+}
+
+TEST_CASE("新增配置对象拒绝未知字段") {
+  auto json = ValidJson();
+  Replace(json, R"("max_payload_bytes": 262144)", R"("max_payload_bytes": 262144, "unknown": 1)");
+  CheckRejected(json, "mqtt.unknown");
+}
+
+TEST_CASE("离线超时必须严格大于 MQTT keepalive") {
+  auto json = ValidJson();
+  Replace(json, "offline_timeout_seconds\": 120", "offline_timeout_seconds\": 60");
+  CheckRejected(json, "device_state.offline_timeout_seconds");
 }
 
 TEST_CASE("未知顶层字段被拒绝") {

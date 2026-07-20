@@ -19,6 +19,7 @@ struct DatabaseConfig {
   std::string user;
   std::string password;
   std::chrono::seconds connect_timeout;
+  std::chrono::seconds reconnect_interval{};
 };
 
 struct MqttConfig {
@@ -30,6 +31,8 @@ struct MqttConfig {
   std::string password;
   std::chrono::seconds reconnect_delay;
   std::chrono::seconds reconnect_delay_max;
+  std::string topic_namespace{};
+  std::size_t max_payload_bytes{};
 };
 
 struct LoggingConfig {
@@ -40,11 +43,17 @@ struct QueueConfig {
   std::size_t mqtt_inbound_capacity;
 };
 
+struct DeviceStateConfig {
+  std::chrono::seconds telemetry_flush_interval;
+  std::chrono::seconds offline_timeout;
+};
+
 struct AppConfig {
   DatabaseConfig database;
   MqttConfig mqtt;
   LoggingConfig logging;
   QueueConfig queues;
+  DeviceStateConfig device_state;
 };
 
 std::expected<AppConfig, std::string> LoadAppConfig(

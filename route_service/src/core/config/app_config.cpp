@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -77,7 +78,8 @@ std::expected<void, std::string> CheckRoot(const Json& root) {
   if (!root.is_object()) {
     return Error("配置", "顶层必须是对象");
   }
-  constexpr std::array allowed{"database"sv, "mqtt"sv, "logging"sv, "queues"sv};
+  constexpr std::array allowed{"database"sv, "mqtt"sv, "logging"sv, "queues"sv,
+                               "device_state"sv};
   for (const auto& [field, unused] : root.items()) {
     (void)unused;
     if (std::ranges::find(allowed, field) == allowed.end()) {
@@ -89,7 +91,8 @@ std::expected<void, std::string> CheckRoot(const Json& root) {
 
 std::expected<DatabaseConfig, std::string> ParseDatabase(const Json& root) {
   constexpr std::array allowed{"host"sv, "port"sv, "name"sv, "user"sv,
-                               "password"sv, "connect_timeout_seconds"sv};
+                               "password"sv, "connect_timeout_seconds"sv,
+                               "reconnect_interval_seconds"sv};
   const auto object = ReadObject(root, "database", "database", allowed);
   if (!object) return std::unexpected(object.error());
   const auto host = ReadString(**object, "host", "database.host");
@@ -106,14 +109,27 @@ std::expected<DatabaseConfig, std::string> ParseDatabase(const Json& root) {
   const auto timeout = ReadInteger(**object, "connect_timeout_seconds",
                                    "database.connect_timeout_seconds", 1, 60);
   if (!timeout) return std::unexpected(timeout.error());
+  const auto reconnect = ReadInteger(**object, "reconnect_interval_seconds",
+                                     "database.reconnect_interval_seconds", 1, 300);
+  if (!reconnect) return std::unexpected(reconnect.error());
   return DatabaseConfig{*host, static_cast<std::uint16_t>(*port), *name, *user,
-                        *password, std::chrono::seconds{static_cast<long>(*timeout)}};
+                        *password, std::chrono::seconds{static_cast<long>(*timeout)},
+                        std::chrono::seconds{static_cast<long>(*reconnect)}};
+}
+
+bool IsValidTopicNamespace(std::string_view value) {
+  if (value.empty()) return false;
+  return std::ranges::none_of(value, [](unsigned char character) {
+    return character == '/' || character == '+' || character == '#' ||
+           std::isspace(character) != 0;
+  });
 }
 
 std::expected<MqttConfig, std::string> ParseMqtt(const Json& root) {
   constexpr std::array allowed{
       "host"sv, "port"sv, "keepalive_seconds"sv, "client_id"sv, "username"sv,
-      "password"sv, "reconnect_delay_seconds"sv, "reconnect_delay_max_seconds"sv};
+      "password"sv, "reconnect_delay_seconds"sv, "reconnect_delay_max_seconds"sv,
+      "topic_namespace"sv, "max_payload_bytes"sv};
   const auto object = ReadObject(root, "mqtt", "mqtt", allowed);
   if (!object) return std::unexpected(object.error());
   const auto host = ReadString(**object, "host", "mqtt.host");
@@ -142,6 +158,14 @@ std::expected<MqttConfig, std::string> ParseMqtt(const Json& root) {
   if (*delay > *delay_max) {
     return Error("mqtt.reconnect_delay_seconds", "不得大于 mqtt.reconnect_delay_max_seconds");
   }
+  const auto topic_namespace = ReadString(**object, "topic_namespace", "mqtt.topic_namespace");
+  if (!topic_namespace) return std::unexpected(topic_namespace.error());
+  if (!IsValidTopicNamespace(*topic_namespace)) {
+    return Error("mqtt.topic_namespace", "必须是单个非空合法 topic 段");
+  }
+  const auto max_payload = ReadInteger(**object, "max_payload_bytes",
+                                       "mqtt.max_payload_bytes", 1024, 1048576);
+  if (!max_payload) return std::unexpected(max_payload.error());
   return MqttConfig{*host,
                     static_cast<std::uint16_t>(*port),
                     std::chrono::seconds{static_cast<long>(*keepalive)},
@@ -149,7 +173,29 @@ std::expected<MqttConfig, std::string> ParseMqtt(const Json& root) {
                     *username,
                     *password,
                     std::chrono::seconds{static_cast<long>(*delay)},
-                    std::chrono::seconds{static_cast<long>(*delay_max)}};
+                    std::chrono::seconds{static_cast<long>(*delay_max)},
+                    *topic_namespace,
+                    static_cast<std::size_t>(*max_payload)};
+}
+
+std::expected<DeviceStateConfig, std::string> ParseDeviceState(
+    const Json& root, std::chrono::seconds keepalive) {
+  constexpr std::array allowed{"telemetry_flush_interval_seconds"sv,
+                               "offline_timeout_seconds"sv};
+  const auto object = ReadObject(root, "device_state", "device_state", allowed);
+  if (!object) return std::unexpected(object.error());
+  const auto flush = ReadInteger(**object, "telemetry_flush_interval_seconds",
+                                 "device_state.telemetry_flush_interval_seconds", 1, 60);
+  if (!flush) return std::unexpected(flush.error());
+  const auto offline = ReadInteger(**object, "offline_timeout_seconds",
+                                   "device_state.offline_timeout_seconds", 61, 86400);
+  if (!offline) return std::unexpected(offline.error());
+  if (std::chrono::seconds{static_cast<long>(*offline)} <= keepalive) {
+    return Error("device_state.offline_timeout_seconds",
+                 "必须严格大于 mqtt.keepalive_seconds");
+  }
+  return DeviceStateConfig{std::chrono::seconds{static_cast<long>(*flush)},
+                           std::chrono::seconds{static_cast<long>(*offline)}};
 }
 
 std::expected<LoggingConfig, std::string> ParseLogging(const Json& root) {
@@ -194,7 +240,9 @@ std::expected<AppConfig, std::string> LoadAppConfig(
     if (!logging) return std::unexpected(logging.error());
     const auto queues = ParseQueues(root);
     if (!queues) return std::unexpected(queues.error());
-    return AppConfig{*database, *mqtt, *logging, *queues};
+    const auto device_state = ParseDeviceState(root, mqtt->keepalive);
+    if (!device_state) return std::unexpected(device_state.error());
+    return AppConfig{*database, *mqtt, *logging, *queues, *device_state};
   } catch (const Json::exception&) {
     return Error("配置文件", "JSON 格式错误");
   } catch (const std::exception&) {

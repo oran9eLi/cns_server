@@ -5,7 +5,8 @@
     "name": "cns",
     "user": "cns_route",
     "password": "请替换为现场随机强密码",
-    "connect_timeout_seconds": 5
+    "connect_timeout_seconds": 5,
+    "reconnect_interval_seconds": 5
   },
   "mqtt": {
     "host": "127.0.0.1",
@@ -15,12 +16,18 @@
     "username": "",
     "password": "",
     "reconnect_delay_seconds": 1,
-    "reconnect_delay_max_seconds": 30
+    "reconnect_delay_max_seconds": 30,
+    "topic_namespace": "cns_rpi",
+    "max_payload_bytes": 262144
   },
   "logging": {
     "level": "info"
   },
   "queues": {
     "mqtt_inbound_capacity": 256
+  },
+  "device_state": {
+    "telemetry_flush_interval_seconds": 5,
+    "offline_timeout_seconds": 120
   }
 }
