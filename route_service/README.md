@@ -131,6 +131,17 @@ route_service/tests/integration/里程碑二本机联调.sh \
   --binary "$(pwd)/route_service/build-fresh-m2/route_service"
 ```
 
+从仓库根目录执行且使用默认干净构建路径时可以省略 `--binary`。只验证默认路径、参数、工具和配置，不连接真实依赖：
+
+```bash
+route_service/tests/integration/里程碑二本机联调.sh \
+  --config /仓库外/route_service.test.json \
+  --migrations "$(pwd)/route_service/migrations" \
+  --broker-host 127.0.0.1 \
+  --broker-port 18884 \
+  --check-only
+```
+
 脚本定向清理自身创建的设备、来源、最新状态及其命令，仅在学校已无设备时删除测试学校；不会执行 `TRUNCATE`、删除数据库或停止 Broker/PostgreSQL。数据库断线恢复测试需使用另行确认的可控代理环境，不得通过停止共享系统服务制造故障。
 
 ## 配置与运行

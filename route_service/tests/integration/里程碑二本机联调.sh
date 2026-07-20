@@ -5,9 +5,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 用法：里程碑二本机联调.sh --config <测试配置> --migrations <迁移目录> \
-  --broker-host <地址> --broker-port <端口> [--binary <route_service>] [--vendor-id <20字符编号>]
+  --broker-host <地址> --broker-port <端口> [--binary <route_service>] \
+  [--vendor-id <20字符编号>] [--check-only]
 
 要求：测试配置必须指向允许写入测试标识的本机数据库；脚本不会启动、停止或修改系统服务。
+`--check-only` 只检查参数、工具、配置和文件路径，不连接数据库或 Broker。
 EOF
 }
 
@@ -17,6 +19,7 @@ broker_host=''
 broker_port=''
 binary=''
 vendor_id=''
+check_only=false
 while (($# > 0)); do
   case "$1" in
     --config) config_file=${2-}; shift 2 ;;
@@ -25,6 +28,7 @@ while (($# > 0)); do
     --broker-port) broker_port=${2-}; shift 2 ;;
     --binary) binary=${2-}; shift 2 ;;
     --vendor-id) vendor_id=${2-}; shift 2 ;;
+    --check-only) check_only=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -42,7 +46,7 @@ done
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd -- "$script_dir/../../.." && pwd)
-binary=${binary:-$repo_dir/build-fresh-m2/route_service}
+binary=${binary:-$repo_dir/route_service/build-fresh-m2/route_service}
 [[ -x $binary ]] || { echo "错误：程序不可执行：$binary" >&2; exit 2; }
 
 if [[ -z $vendor_id ]]; then
@@ -65,6 +69,12 @@ export PGPASSWORD
 PGPASSWORD=$(jq -er '.database.password' "$config_file")
 PSQL=(psql -X -v ON_ERROR_STOP=1 -h "$database_host" -p "$database_port" -U "$database_user" -d "$database_name")
 MQTT=(-h "$broker_host" -p "$broker_port")
+
+if $check_only; then
+  echo "检查通过：将使用路由服务程序 $binary"
+  unset PGPASSWORD
+  exit 0
+fi
 
 service_pid=''
 event_pid=''
