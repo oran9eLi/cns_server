@@ -72,6 +72,8 @@ add_library(route_core STATIC
   src/core/config/app_config.cpp
   src/core/logging/logger.cpp
   src/core/mqtt_topic/device_topic.cpp
+  src/core/protocol/device_message.cpp
+  src/core/state_event/state_event.cpp
   src/core/migration/migration.cpp
   src/core/migration/migration_plan.cpp
   src/core/runtime/rate_limiter.cpp
@@ -123,6 +125,16 @@ target_link_libraries(test_device_topic PRIVATE route_core doctest::doctest)
 target_compile_options(test_device_topic PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME device_topic COMMAND test_device_topic)
+
+add_executable(test_device_message tests/test_device_message.cpp)
+target_link_libraries(test_device_message PRIVATE route_core doctest::doctest)
+target_compile_options(test_device_message PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME device_message COMMAND test_device_message)
+
+add_executable(test_state_event tests/test_state_event.cpp)
+target_link_libraries(test_state_event PRIVATE route_core doctest::doctest)
+target_compile_options(test_state_event PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME state_event COMMAND test_state_event)
 
 add_executable(test_logger tests/test_logger.cpp)
 target_link_libraries(test_logger PRIVATE route_core doctest::doctest)

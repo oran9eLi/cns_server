@@ -1,0 +1,81 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
+#include "core/protocol/device_message.hpp"
+
+using cns::protocol::RegistrationStatus;
+
+namespace {
+constexpr auto kVendor = "A1b2C3d4E5f6G7h8I9j0";
+}
+
+TEST_CASE("解析完整与缺角色号的 online registration") {
+  const auto complete = cns::protocol::ParseRegistration(
+      R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","school_name":"SEU","dcdw_label":"DCDW-001","status":"online","future":true})",
+      kVendor);
+  REQUIRE(complete);
+  CHECK(complete->vendor_id == kVendor);
+  CHECK(complete->status == RegistrationStatus::kOnline);
+  CHECK(complete->school_name == "SEU");
+  CHECK(complete->dcdw_label == "DCDW-001");
+
+  const auto without_label = cns::protocol::ParseRegistration(
+      R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","school_name":"SEU","status":"online"})", kVendor);
+  REQUIRE(without_label);
+  CHECK_FALSE(without_label->dcdw_label);
+}
+
+TEST_CASE("解析最小 offline registration") {
+  const auto result = cns::protocol::ParseRegistration(
+      R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"offline"})", kVendor);
+  REQUIRE(result);
+  CHECK(result->status == RegistrationStatus::kOffline);
+  CHECK_FALSE(result->school_name);
+  CHECK_FALSE(result->dcdw_label);
+}
+
+TEST_CASE("拒绝 registration JSON 版本和身份错误") {
+  for (const auto payload : {
+           "not secret valid json",
+           R"([])",
+           R"({"schema_version":2,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"offline"})",
+           R"({"schema_version":1,"vendor_id":"Z1b2C3d4E5f6G7h8I9j0","status":"offline"})"}) {
+    const auto result = cns::protocol::ParseRegistration(payload, kVendor);
+    CHECK_FALSE(result);
+    CHECK(result.error().find(payload) == std::string::npos);
+  }
+}
+
+TEST_CASE("拒绝 registration 缺失空值与错误类型") {
+  for (const auto payload : {
+           R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"online"})",
+           R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","school_name":"","status":"online"})",
+           R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","school_name":7,"status":"online"})",
+           R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","school_name":"SEU","dcdw_label":"","status":"online"})",
+           R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":true})",
+           R"({"schema_version":1,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"away"})"}) {
+    CHECK_FALSE(cns::protocol::ParseRegistration(payload, kVendor));
+  }
+}
+
+TEST_CASE("telemetry 保留完整对象并提取可选角色号") {
+  const auto payload = R"({"identity":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0","dcdw_label":"DCDW-001","future":3},"gps":{"lat":1},"unknown":[1,2]})";
+  const auto result = cns::protocol::ParseTelemetry(payload, kVendor);
+  REQUIRE(result);
+  CHECK(result->dcdw_label == "DCDW-001");
+  CHECK(result->payload == nlohmann::json::parse(payload));
+
+  const auto no_identity = cns::protocol::ParseTelemetry(R"({"sensor":42})", kVendor);
+  REQUIRE(no_identity);
+  CHECK_FALSE(no_identity->dcdw_label);
+}
+
+TEST_CASE("拒绝非法 telemetry identity") {
+  for (const auto payload : {
+           R"([])", R"({"identity":7})",
+           R"({"identity":{"vendor_id":7}})",
+           R"({"identity":{"vendor_id":"Z1b2C3d4E5f6G7h8I9j0"}})",
+           R"({"identity":{"dcdw_label":""}})"}) {
+    CHECK_FALSE(cns::protocol::ParseTelemetry(payload, kVendor));
+  }
+}
