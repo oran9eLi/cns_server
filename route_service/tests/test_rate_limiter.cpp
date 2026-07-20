@@ -325,6 +325,27 @@ TEST_CASE("MQTT重试遇到非网络错误后再次启动返回保存错误") {
   CHECK(restarted.error().find("重试MQTT异步连接失败") != std::string::npos);
 }
 
+TEST_CASE("MQTT后台终止性失败可由运行线程安全观察") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  MosquittoInjection injection{{MOSQ_ERR_EAI, MOSQ_ERR_INVAL}};
+  ScopedMosquittoInjection scoped{injection};
+
+  auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
+  REQUIRE(created.has_value());
+  REQUIRE((*created)->Start().has_value());
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while ((*created)->GetRuntimeStatus() !=
+             cns::mqtt::RuntimeStatus::kTerminalFailure &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+
+  CHECK((*created)->GetRuntimeStatus() ==
+        cns::mqtt::RuntimeStatus::kTerminalFailure);
+}
+
 TEST_CASE("MQTT后台网络线程启动失败后再次启动返回保存错误") {
   std::ostringstream out;
   std::ostringstream err;

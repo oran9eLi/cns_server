@@ -260,6 +260,17 @@ bool MqttClient::IsConnected() const noexcept {
   return callback_state_->connected.load(std::memory_order_acquire);
 }
 
+mqtt::RuntimeStatus MqttClient::GetRuntimeStatus() const noexcept {
+  {
+    std::lock_guard lock{retry_mutex_};
+    if (retry_state_ == RetryState::kFailed) {
+      return mqtt::RuntimeStatus::kTerminalFailure;
+    }
+  }
+  return IsConnected() ? mqtt::RuntimeStatus::kConnected
+                       : mqtt::RuntimeStatus::kDisconnectedOrRetrying;
+}
+
 void MqttClient::HandleConnect(struct mosquitto*, void* context, int result) {
   auto& state = *static_cast<CallbackState*>(context);
   if (result == 0) {

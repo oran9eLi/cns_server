@@ -17,6 +17,9 @@ struct mosquitto;
 
 namespace cns::mqtt {
 
+/** 表示 MQTT 当前可供进程编排安全观察的运行状态。 */
+enum class RuntimeStatus { kDisconnectedOrRetrying, kConnected, kTerminalFailure };
+
 class MqttClient {
  public:
   static std::expected<std::unique_ptr<MqttClient>, std::string> Create(
@@ -29,6 +32,7 @@ class MqttClient {
   std::expected<void, std::string> Start();
   void Stop();
   bool IsConnected() const noexcept;
+  RuntimeStatus GetRuntimeStatus() const noexcept;
 
  private:
   struct CallbackState;
@@ -50,7 +54,7 @@ class MqttClient {
   bool library_acquired_ = false;
   std::atomic_bool loop_started_{false};
   mutable std::mutex lifecycle_mutex_;
-  std::mutex retry_mutex_;
+  mutable std::mutex retry_mutex_;
   std::condition_variable retry_changed_;
   bool retry_stop_requested_ = false;
   RetryState retry_state_ = RetryState::kIdle;

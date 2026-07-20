@@ -68,6 +68,7 @@ add_library(route_core STATIC
   src/core/migration/migration.cpp
   src/core/migration/migration_plan.cpp
   src/core/runtime/rate_limiter.cpp
+  src/core/runtime/service_runner.cpp
 )
 target_include_directories(route_core PUBLIC src)
 target_link_libraries(route_core PUBLIC nlohmann_json::nlohmann_json)
@@ -81,7 +82,7 @@ target_include_directories(route_adapters PUBLIC src)
 target_link_libraries(route_adapters PUBLIC route_core pqxx_compat PkgConfig::MOSQUITTO)
 target_compile_options(route_adapters PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-add_executable(route_service src/main.cpp)
+add_executable(route_service src/main.cpp src/service_environment.cpp)
 target_link_libraries(route_service PRIVATE route_adapters)
 target_compile_options(route_service PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(route_service PRIVATE
@@ -147,6 +148,12 @@ target_link_libraries(test_shutdown_flag PRIVATE route_core doctest::doctest)
 target_compile_options(test_shutdown_flag PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME shutdown_flag COMMAND test_shutdown_flag)
+
+add_executable(test_service_runner tests/test_service_runner.cpp)
+target_link_libraries(test_service_runner PRIVATE route_core doctest::doctest)
+target_compile_options(test_service_runner PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME service_runner COMMAND test_service_runner)
 
 add_executable(test_migration tests/test_migration.cpp)
 target_link_libraries(test_migration PRIVATE route_core doctest::doctest)
