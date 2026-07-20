@@ -311,6 +311,11 @@ std::size_t PostgresWorker::PendingDeviceCount() const {
   return vendors.size();
 }
 
+bool PostgresWorker::IsDatabaseAvailable() const {
+  std::lock_guard lock{mutex_};
+  return accepting_ && !unavailable_;
+}
+
 void PostgresWorker::Emit(DatabaseResult result) noexcept {
   try {
     results_(std::move(result));

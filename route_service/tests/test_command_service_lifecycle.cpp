@@ -43,10 +43,14 @@ struct Harness {
   std::deque<std::pair<std::uint64_t, cns::runtime::CommandDatabaseTask>> db;
   std::vector<std::tuple<std::uint64_t, std::string, std::string>> publishes;
   std::vector<nlohmann::json> acks;
+  bool accept_database = true;
   cns::runtime::CommandService service;
 
   Harness() : service(sources, devices,
-      [this](auto id, auto task) { db.emplace_back(id, std::move(task)); return true; },
+      [this](auto id, auto task) {
+        if (!accept_database) return false;
+        db.emplace_back(id, std::move(task)); return true;
+      },
       [this](auto token, auto topic, auto payload) {
         publishes.emplace_back(token, std::move(topic), std::move(payload));
         return std::expected<void, std::string>{};
@@ -116,7 +120,7 @@ TEST_CASE("恢复pending命令沿用原command_id重发") {
   CHECK(nlohmann::json::parse(std::get<2>(h.publishes.front()))["command_id"] == kCommand);
 
   h.service.SetMqttAvailable(true);
-  h.service.ProcessReady(kNow + 1s);
+  h.service.ProcessReady(kNow + 500ms);
   CHECK(h.publishes.size() == 1);
   h.service.SetMqttAvailable(false);
   h.service.SetMqttAvailable(true);
@@ -147,4 +151,45 @@ TEST_CASE("恢复集合超过上限时拒绝加载且活动命令计入受理容
   }
   h.service.LoadActive(std::move(too_many));
   CHECK(h.service.ActiveCommandCount() == 0);
+}
+
+TEST_CASE("数据库故障期间只保留最终转换且恢复后补写") {
+  Harness h;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  h.accept_database = false;
+  h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow});
+  h.service.ProcessReady(kNow);
+  CHECK(h.db.empty());
+  CHECK(h.acks.empty());
+
+  h.accept_database = true;
+  h.service.SetDatabaseAvailable(true);
+  h.service.ProcessReady(kNow + 500ms);
+  REQUIRE(h.db.size() == 1);
+  CHECK(std::get<cns::runtime::TransitionCommandTask>(h.db.front().second).desired ==
+        cns::command::CommandStatus::kSucceeded);
+  CHECK(h.acks.empty());
+}
+
+TEST_CASE("快速设备ACK在dispatched先落库后重试终态条件转换") {
+  Harness h;
+  auto pending = Active(cns::command::CommandStatus::kPending);
+  h.service.LoadActive({pending});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.publishes.size() == 1);
+  h.service.PushPublishCompletion({std::get<0>(h.publishes.front()), {}});
+  h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+
+  auto dispatched = pending;
+  dispatched.status = cns::command::CommandStatus::kDispatched;
+  dispatched.dispatched_at = kNow;
+  h.Reply(dispatched);
+  REQUIRE(h.db.size() == 1);
+  const auto retry = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+  CHECK(retry.expected == cns::command::CommandStatus::kDispatched);
+  CHECK(retry.desired == cns::command::CommandStatus::kSucceeded);
 }

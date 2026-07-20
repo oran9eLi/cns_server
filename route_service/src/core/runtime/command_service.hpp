@@ -74,6 +74,15 @@ class CommandService {
   struct PublishedCommand {
     RequestContext context;
   };
+  struct DeferredTransition {
+    RequestContext context;
+    TransitionCommandTask task;
+  };
+  struct EarlyDeviceAck {
+    std::string vendor_id;
+    std::string payload;
+    command::TimePoint received_at;
+  };
 
   void Handle(mqtt::InboundMessage message, command::TimePoint now);
   void Handle(CommandDatabaseResult result, command::TimePoint now);
@@ -84,6 +93,9 @@ class CommandService {
   void PublishRecord(RequestContext context, command::TimePoint now);
   bool Submit(OperationKind kind, RequestContext context,
               CommandDatabaseTask task);
+  void SubmitTransitionOrDefer(RequestContext context,
+                               TransitionCommandTask task);
+  void RetryDeferredTransitions();
   void Reject(std::string_view source_id,
               std::optional<std::string_view> request_id,
               command::ProtocolError error, command::TimePoint now);
@@ -109,6 +121,8 @@ class CommandService {
   std::unordered_map<std::uint64_t, PublishedCommand> publications_;
   std::unordered_map<std::string, RequestContext> active_commands_;
   std::unordered_set<std::string> recovery_started_;
+  std::unordered_map<std::string, DeferredTransition> deferred_transitions_;
+  std::unordered_map<std::string, EarlyDeviceAck> early_device_acks_;
   std::mutex input_mutex_;
   std::chrono::seconds config_timeout_;
   std::chrono::days terminal_retention_;

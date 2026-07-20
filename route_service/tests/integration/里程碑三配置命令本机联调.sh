@@ -67,7 +67,7 @@ trap cleanup EXIT
 "$binary" --config "$config" --migrations "$migrations" >"$work_dir/service.log" 2>&1 &
 service_pid=$!
 sleep 1
-mosquitto_sub -h "$broker_host" -p "$broker_port" -q 2 -C 2 -W 20 \
+mosquitto_sub -h "$broker_host" -p "$broker_port" -q 2 \
   -t "cns_rpi/sources/$source_id/config/ack" >"$work_dir/source-ack.jsonl" &
 subscriber_pid=$!
 mosquitto_sub -h "$broker_host" -p "$broker_port" -q 2 -C 1 -W 20 \
@@ -87,8 +87,13 @@ command_id="$(jq -er '.command_id' <<<"$device_set")"
 mosquitto_pub -h "$broker_host" -p "$broker_port" -q 2 \
   -t "cns_rpi/$vendor_id/config/ack" -m "$(jq -cn --arg command_id "$command_id" \
     '{command_id:$command_id,status:"applied",restart_required:false}')"
-wait "$subscriber_pid"
+deadline=$((SECONDS + 20))
+while ! jq -e 'select(.status == "succeeded")' \
+    "$work_dir/source-ack.jsonl" >/dev/null 2>&1; do
+  ((SECONDS < deadline)) || { echo "错误：等待来源 succeeded ACK 超时" >&2; exit 1; }
+  sleep 0.2
+done
+kill "$subscriber_pid" 2>/dev/null || true
+wait "$subscriber_pid" 2>/dev/null || true
 subscriber_pid=""
-jq -e 'select(.status == "dispatched" or .status == "succeeded")' \
-  "$work_dir/source-ack.jsonl" >/dev/null
 echo "验收通过：配置命令已经过 route_service 路由并完成设备 ACK 回程"

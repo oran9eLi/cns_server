@@ -90,6 +90,7 @@ void CommandService::ProcessReady(command::TimePoint now) {
     if (publish_completion) Handle(std::move(*publish_completion), now);
     if (message) Handle(std::move(*message), now);
   }
+  RetryDeferredTransitions();
   ProcessTimeoutsAndRecovery(now);
 }
 
@@ -106,6 +107,8 @@ void CommandService::CancelOutstandingWork() {
   operations_.clear();
   outstanding_operations_.store(0, std::memory_order_release);
   publications_.clear();
+  deferred_transitions_.clear();
+  early_device_acks_.clear();
 }
 
 void CommandService::SetDatabaseAvailable(bool available) {
@@ -371,6 +374,26 @@ void CommandService::Handle(CommandDatabaseResult result,
     PublishAck(operation.context, now);
     return;
   }
+  if (operation.kind == OperationKind::kTransition &&
+      operation.context.record &&
+      command::IsTerminal(operation.context.record->status) &&
+      !command::IsTerminal(record->status) &&
+      command::CanTransition(record->status,
+                             operation.context.record->status)) {
+    const auto desired = *operation.context.record;
+    command::CommandUpdate update{
+        .error_code = desired.error_code,
+        .error_message = desired.error_message,
+        .device_ack = desired.device_ack,
+        .dispatched_at = std::nullopt,
+        .completed_at = desired.completed_at,
+        .updated_at = desired.updated_at};
+    SubmitTransitionOrDefer(
+        std::move(operation.context),
+        TransitionCommandTask{desired.command_id, record->status,
+                              desired.status, std::move(update)});
+    return;
+  }
   operation.context.record = *record;
   if (operation.kind == OperationKind::kTransition ||
       command::IsTerminal(record->status)) {
@@ -378,8 +401,18 @@ void CommandService::Handle(CommandDatabaseResult result,
     if (command::IsTerminal(record->status)) {
       active_commands_.erase(record->command_id);
       recovery_started_.erase(record->command_id);
+      early_device_acks_.erase(record->command_id);
     } else {
       active_commands_.insert_or_assign(record->command_id, operation.context);
+      if (record->status == command::CommandStatus::kDispatched) {
+        const auto early = early_device_acks_.find(record->command_id);
+        if (early != early_device_acks_.end()) {
+          auto pending_ack = std::move(early->second);
+          early_device_acks_.erase(early);
+          HandleDeviceAck(pending_ack.vendor_id, pending_ack.payload,
+                          pending_ack.received_at);
+        }
+      }
     }
     return;
   }
@@ -416,10 +449,10 @@ void CommandService::PublishRecord(RequestContext context,
         .dispatched_at = std::nullopt,
         .completed_at = now,
         .updated_at = now};
-    static_cast<void>(Submit(
-        OperationKind::kTransition, std::move(context),
+    SubmitTransitionOrDefer(
+        std::move(context),
         TransitionCommandTask{failed.command_id, previous_status,
-                              command::CommandStatus::kFailed, update}));
+                              command::CommandStatus::kFailed, update});
   }
 }
 
@@ -436,8 +469,18 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
   }
   auto context = found->second;
   const auto current = context.record->status;
-  if (current != command::CommandStatus::kPending &&
-      current != command::CommandStatus::kDispatched) return;
+  if (current == command::CommandStatus::kPending) {
+    const auto early = early_device_acks_.find(parsed->command_id);
+    if (early == early_device_acks_.end()) {
+      early_device_acks_.emplace(
+          parsed->command_id,
+          EarlyDeviceAck{std::string{vendor_id}, std::string{payload}, now});
+    } else if (early->second.payload != payload) {
+      Diagnose("设备配置ACK在发布确认前发生冲突");
+    }
+    return;
+  }
+  if (current != command::CommandStatus::kDispatched) return;
   const auto desired = parsed->business_status == "rejected"
                            ? command::CommandStatus::kFailed
                            : command::CommandStatus::kSucceeded;
@@ -453,8 +496,9 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
   context.record = record;
   command::CommandUpdate update{record.error_code, record.error_message,
                                 record.device_ack, std::nullopt, now, now};
-  static_cast<void>(Submit(OperationKind::kTransition, std::move(context),
-      TransitionCommandTask{record.command_id, current, desired, update}));
+  SubmitTransitionOrDefer(
+      std::move(context),
+      TransitionCommandTask{record.command_id, current, desired, update});
 }
 
 void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
@@ -495,9 +539,10 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
         context.record = timed_out;
         command::CommandUpdate update{timed_out.error_code, timed_out.error_message,
                                       std::nullopt, std::nullopt, now, now};
-        static_cast<void>(Submit(OperationKind::kTransition, std::move(context),
+        SubmitTransitionOrDefer(
+            std::move(context),
             TransitionCommandTask{id, record.status,
-                                  command::CommandStatus::kTimeout, update}));
+                                  command::CommandStatus::kTimeout, update});
       }
       continue;
     }
@@ -539,10 +584,43 @@ void CommandService::Handle(mqtt::PublishCompletion completion,
     update.completed_at = now;
   }
   context.record = record;
-  static_cast<void>(Submit(
-      OperationKind::kTransition, std::move(context),
+  SubmitTransitionOrDefer(
+      std::move(context),
       TransitionCommandTask{record.command_id, command::CommandStatus::kPending,
-                            desired, update}));
+                            desired, update});
+}
+
+void CommandService::SubmitTransitionOrDefer(RequestContext context,
+                                             TransitionCommandTask task) {
+  const auto command_id = task.command_id;
+  auto fallback_context = context;
+  auto fallback_task = task;
+  if (Submit(OperationKind::kTransition, std::move(context), std::move(task))) {
+    deferred_transitions_.erase(command_id);
+    return;
+  }
+  database_available_.store(false, std::memory_order_release);
+  deferred_transitions_.insert_or_assign(
+      command_id,
+      DeferredTransition{std::move(fallback_context), std::move(fallback_task)});
+}
+
+void CommandService::RetryDeferredTransitions() {
+  if (!database_available_.load(std::memory_order_acquire) ||
+      deferred_transitions_.empty()) return;
+  auto node = deferred_transitions_.extract(deferred_transitions_.begin());
+  auto deferred = std::move(node.mapped());
+  const auto command_id = deferred.task.command_id;
+  auto fallback_context = deferred.context;
+  auto fallback_task = deferred.task;
+  if (!Submit(OperationKind::kTransition, std::move(deferred.context),
+              std::move(deferred.task))) {
+    database_available_.store(false, std::memory_order_release);
+    deferred_transitions_.insert_or_assign(
+        command_id,
+        DeferredTransition{std::move(fallback_context),
+                           std::move(fallback_task)});
+  }
 }
 
 bool CommandService::Submit(OperationKind kind, RequestContext context,

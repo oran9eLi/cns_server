@@ -102,6 +102,7 @@ class PostgresWorker {
   // 只请求 Run 线程排空并等待，不调用 StorePort。
   bool FlushAndStop(std::chrono::milliseconds timeout);
   [[nodiscard]] std::size_t PendingDeviceCount() const;
+  [[nodiscard]] bool IsDatabaseAvailable() const;
 
  private:
   struct ProvisionTask {

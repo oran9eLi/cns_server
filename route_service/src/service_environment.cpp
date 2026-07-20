@@ -670,7 +670,9 @@ bool ServiceEnvironment::ShutdownRequested() const {
 
 void ServiceEnvironment::WaitForNextCheck() {
   if (state_->runtime_bundle && state_->runtime_bundle->command_service &&
-      state_->mqtt) {
+      state_->runtime_bundle->worker && state_->mqtt) {
+    state_->runtime_bundle->command_service->SetDatabaseAvailable(
+        state_->runtime_bundle->worker->IsDatabaseAvailable());
     state_->runtime_bundle->command_service->SetMqttAvailable(
         state_->mqtt->IsConnected());
   }
