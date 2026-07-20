@@ -30,7 +30,7 @@
 
 ## 当前状态
 
-- V1 设计已经逐节确认，尚未开始实现。
+- V1 设计已经逐节确认，后端工程骨架已开始实现。
 - 后端采用 Node.js、TypeScript、Fastify、MQTT.js、`pg` 和 Zod。
 - 前端作为仓库顶层独立 `frontend/` 子项目，采用 React、Vite、TypeScript、Ant Design 和 TanStack Query。
 - 查询与命令提交使用 REST，实时设备状态和命令结果使用标准原生 WebSocket，不使用 Socket.IO。
@@ -40,3 +40,48 @@
 - 全局里程碑路线见 `docs/2026-07-19-后端服务V1实施计划.md`；每个里程碑开始前另写设计和详细实施计划。
 - 里程碑一设计已经逐节确认，目标是在不依赖真实 route_service 的情况下，使用独立开发模拟器交付可查看、可交互的 React 设备管理页面；设计见 `docs/superpowers/specs/2026-07-19-里程碑一TypeScript全栈工程基础设计.md`。
 - 现有桌面文档《CNS设备管理前端_实施计划.md》仅作为需求输入，其中与正式设计不一致的技术栈和接口不再作为实现依据。
+
+## 当前工程骨架
+
+已建立：
+
+- `protocol/`：浏览器 REST/WebSocket 正式协议包。
+- `src/server.ts`：Fastify 服务入口。
+- `src/health/healthRoutes.ts`：`GET /api/health`。
+- `src/config/`：JSON 配置加载与 Zod 校验。
+- `src/logging/`：结构化 JSON 日志与敏感字段脱敏。
+- `test/`：健康检查和日志基础测试。
+- `config/backend_service.example.json`：本地示例配置。
+
+里程碑一当前骨架不连接 PostgreSQL、Mosquitto 或 route_service。健康检查中的 `database` 和 `mqtt` 依赖状态暂时返回 `not_configured`。
+
+## 本地命令
+
+在仓库根目录执行：
+
+```powershell
+npm install
+npm run build
+npm run typecheck
+npm test
+npm run dev:backend
+```
+
+后端默认监听：
+
+```text
+http://127.0.0.1:3000
+```
+
+健康检查：
+
+```text
+GET http://127.0.0.1:3000/api/health
+```
+
+如需使用显式配置文件：
+
+```powershell
+$env:CNS_BACKEND_CONFIG="C:\Users\admin\Desktop\服务器\backend_service\config\backend_service.example.json"
+npm run dev:backend
+```
