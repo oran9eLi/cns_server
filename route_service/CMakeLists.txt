@@ -11,7 +11,6 @@ pkg_check_modules(MOSQUITTO REQUIRED IMPORTED_TARGET libmosquitto)
 pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
 find_package(nlohmann_json REQUIRED)
 find_package(doctest REQUIRED)
-find_program(CNS_READELF NAMES readelf REQUIRED)
 
 if(NOT MOSQUITTO_VERSION VERSION_EQUAL "2.0.22")
   message(FATAL_ERROR
@@ -25,6 +24,10 @@ endif()
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
    NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   message(FATAL_ERROR "libpqxx 7.10 兼容层只支持 Linux GNU 工具链")
+endif()
+find_program(CNS_READELF NAMES readelf)
+if(NOT CNS_READELF)
+  message(FATAL_ERROR "libpqxx 7.10 兼容层要求安装 binutils（缺少 readelf）")
 endif()
 set(CNS_PQXX_SHARED FALSE)
 foreach(PQXX_LIBRARY IN LISTS PQXX_LINK_LIBRARIES)
@@ -42,11 +45,14 @@ execute_process(
   OUTPUT_VARIABLE CNS_CXX_LINKER_PROBE_OUTPUT
   ERROR_VARIABLE CNS_CXX_LINKER_PROBE_ERROR
 )
+string(STRIP "${CNS_CXX_LINKER_PROBE_OUTPUT}" CNS_CXX_LINKER_PROBE_OUTPUT)
+string(STRIP "${CNS_CXX_LINKER_PROBE_ERROR}" CNS_CXX_LINKER_PROBE_ERROR)
 if(NOT CNS_CXX_LINKER_PROBE_RESULT EQUAL 0 OR
    NOT CNS_CXX_LINKER_PROBE_OUTPUT MATCHES "GNU ld")
   message(FATAL_ERROR
-    "C++ 编译驱动无法选择支持 version script 的 GNU ld："
-    "${CNS_CXX_LINKER_PROBE_ERROR}"
+    "C++ 编译驱动无法选择支持 version script 的 GNU ld。\n"
+    "stdout：${CNS_CXX_LINKER_PROBE_OUTPUT}\n"
+    "stderr：${CNS_CXX_LINKER_PROBE_ERROR}"
   )
 endif()
 

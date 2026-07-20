@@ -313,7 +313,8 @@ TEST_CASE("MQTT重试遇到非网络错误后再次启动返回保存错误") {
   std::ostringstream out;
   std::ostringstream err;
   cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
-  MosquittoInjection injection{{MOSQ_ERR_EAI, MOSQ_ERR_INVAL}};
+  MosquittoInjection injection{{MOSQ_ERR_EAI, MOSQ_ERR_INVAL,
+                                MOSQ_ERR_SUCCESS}};
   ScopedMosquittoInjection scoped{injection};
 
   auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
@@ -323,6 +324,27 @@ TEST_CASE("MQTT重试遇到非网络错误后再次启动返回保存错误") {
 
   REQUIRE_FALSE(restarted.has_value());
   CHECK(restarted.error().find("重试MQTT异步连接失败") != std::string::npos);
+  REQUIRE((*created)->Start().has_value());
+  CHECK(std::ranges::count(injection.calls, "connect_async") == 3);
+  CHECK(std::ranges::count(injection.calls, "loop_start") == 1);
+}
+
+TEST_CASE("MQTT运行状态覆盖未连接与已连接") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  MosquittoInjection injection;
+  ScopedMosquittoInjection scoped{injection};
+
+  auto created = cns::mqtt::MqttClient::Create(TestConfig(), logger);
+  REQUIRE(created.has_value());
+  CHECK((*created)->GetRuntimeStatus() ==
+        cns::mqtt::RuntimeStatus::kDisconnectedOrRetrying);
+  REQUIRE((*created)->Start().has_value());
+  REQUIRE(injection.connect_callback != nullptr);
+  injection.connect_callback(nullptr, injection.callback_context, 0);
+  CHECK((*created)->GetRuntimeStatus() ==
+        cns::mqtt::RuntimeStatus::kConnected);
 }
 
 TEST_CASE("MQTT后台终止性失败可由运行线程安全观察") {
@@ -361,6 +383,11 @@ TEST_CASE("MQTT后台网络线程启动失败后再次启动返回保存错误")
 
   REQUIRE_FALSE(restarted.has_value());
   CHECK(restarted.error().find("启动MQTT网络线程失败") != std::string::npos);
+  const auto connect_count =
+      std::ranges::count(injection.calls, "connect_async");
+  REQUIRE_FALSE((*created)->Start().has_value());
+  CHECK(std::ranges::count(injection.calls, "connect_async") ==
+        connect_count + 1);
 }
 
 TEST_CASE("MQTT网络线程停止失败时析构不释放仍被引用的资源") {

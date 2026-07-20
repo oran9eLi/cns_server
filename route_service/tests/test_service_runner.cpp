@@ -98,6 +98,8 @@ TEST_CASE("迁移模式逐项执行并在首错停止且绝不创建MQTT") {
   operations.fail_apply_index = 1;
 
   CHECK(RunService(RunMode::kMigrateOnly, operations) == 1);
+  CHECK(std::ranges::find(operations.calls, "规划执行") != operations.calls.end());
+  CHECK(std::ranges::find(operations.calls, "规划检查") == operations.calls.end());
   CHECK(std::ranges::find(operations.calls, "执行迁移0") != operations.calls.end());
   CHECK(std::ranges::find(operations.calls, "执行迁移1") != operations.calls.end());
   CHECK(std::ranges::find(operations.calls, "执行迁移2") == operations.calls.end());

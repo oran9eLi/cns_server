@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <csignal>
+#include <cerrno>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -30,6 +31,22 @@ struct BlockingObservation {
   bool has_value = false;
   int value = 0;
 };
+
+pid_t WaitForChild(pid_t child, int* status, int options) {
+  pid_t result;
+  do {
+    result = waitpid(child, status, options);
+  } while (result < 0 && errno == EINTR);
+  return result;
+}
+
+bool KillChild(pid_t child, int signal) {
+  int result;
+  do {
+    result = kill(child, signal);
+  } while (result < 0 && errno == EINTR);
+  return result == 0 || errno == ESRCH;
+}
 
 template <typename Scenario>
 std::optional<BlockingObservation> RunIsolatedBlockingScenario(Scenario scenario) {
@@ -56,16 +73,23 @@ std::optional<BlockingObservation> RunIsolatedBlockingScenario(Scenario scenario
   close(observations[1]);
   const auto deadline = std::chrono::steady_clock::now() + 2s;
   int status = 0;
-  pid_t wait_result = waitpid(child, &status, WNOHANG);
+  pid_t wait_result = WaitForChild(child, &status, WNOHANG);
   while (wait_result == 0 &&
          std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(5ms);
-    wait_result = waitpid(child, &status, WNOHANG);
+    wait_result = WaitForChild(child, &status, WNOHANG);
   }
   if (wait_result == 0) {
-    kill(child, SIGKILL);
-    waitpid(child, &status, 0);
+    const bool killed = KillChild(child, SIGKILL);
+    const pid_t reaped = WaitForChild(child, &status, 0);
     close(observations[0]);
+    if (!killed || reaped != child) return std::nullopt;
+    return std::nullopt;
+  }
+  if (wait_result != child) {
+    close(observations[0]);
+    static_cast<void>(KillChild(child, SIGKILL));
+    static_cast<void>(WaitForChild(child, &status, 0));
     return std::nullopt;
   }
 
