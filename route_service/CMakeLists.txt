@@ -186,6 +186,7 @@ target_compile_options(test_mqtt_business PRIVATE -Wall -Wextra -Wpedantic -Werr
 target_link_options(test_mqtt_business PRIVATE
   LINKER:--wrap=mosquitto_new
   LINKER:--wrap=mosquitto_connect_callback_set
+  LINKER:--wrap=mosquitto_disconnect_callback_set
   LINKER:--wrap=mosquitto_message_callback_set
   LINKER:--wrap=mosquitto_subscribe
   LINKER:--wrap=mosquitto_unsubscribe

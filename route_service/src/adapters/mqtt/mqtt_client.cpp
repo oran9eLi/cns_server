@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -95,28 +96,52 @@ struct MqttClient::CallbackState {
   }
 
   void Connected() {
-    connected.store(true, std::memory_order_release);
     std::lock_guard lock{mutex};
+    if (!connected.exchange(true, std::memory_order_acq_rel)) {
+      ++connection_generation;
+    }
     if (logger != nullptr) logger->Info("MQTT连接已恢复");
   }
 
-  void SubscribeConfigured(struct mosquitto* client) {
+  std::expected<void, std::string> SubscribeConfigured(
+      struct mosquitto* client) {
+    std::lock_guard subscription_lock{subscription_mutex};
     std::string topic_namespace;
+    std::size_t generation = 0;
     {
       std::lock_guard lock{mutex};
       topic_namespace = topic_namespace_;
+      generation = connection_generation;
+      if (registration_generation == generation &&
+          telemetry_generation == generation) {
+        return {};
+      }
     }
-    if (topic_namespace.empty()) return;
+    if (topic_namespace.empty()) return {};
     const auto registration = mqtt_topic::RegistrationFilter(topic_namespace);
     const auto telemetry = mqtt_topic::TelemetryFilter(topic_namespace);
     const int registration_result =
         mosquitto_subscribe(client, nullptr, registration.c_str(), 2);
-    const int telemetry_result =
-        mosquitto_subscribe(client, nullptr, telemetry.c_str(), 0);
-    if (registration_result != MOSQ_ERR_SUCCESS ||
-        telemetry_result != MOSQ_ERR_SUCCESS) {
-      WarnBusiness("mqtt_business_subscribe", "MQTT设备消息订阅失败");
+    if (registration_result != MOSQ_ERR_SUCCESS) {
+      return std::unexpected(
+          MosquittoError("订阅registration消息", registration_result));
     }
+    const int telemetry_result = mosquitto_subscribe(
+        client, nullptr, telemetry.c_str(), 0);
+    if (telemetry_result != MOSQ_ERR_SUCCESS) {
+      return std::unexpected(
+          MosquittoError("订阅telemetry消息", telemetry_result));
+    }
+    {
+      std::lock_guard lock{mutex};
+      if (connected.load(std::memory_order_acquire) &&
+          connection_generation == generation &&
+          topic_namespace_ == topic_namespace) {
+        registration_generation = generation;
+        telemetry_generation = generation;
+      }
+    }
+    return {};
   }
 
   void Dispatch(const struct mosquitto_message* message,
@@ -162,6 +187,7 @@ struct MqttClient::CallbackState {
   }
 
   std::mutex mutex;
+  std::mutex subscription_mutex;
   logging::Logger* logger;
   runtime::RateLimiter disconnect_warnings;
   runtime::RateLimiter library_logs;
@@ -170,6 +196,9 @@ struct MqttClient::CallbackState {
   MessageHandler handler;
   std::size_t max_payload_bytes = 0;
   std::string topic_namespace_;
+  std::size_t connection_generation = 0;
+  std::optional<std::size_t> registration_generation;
+  std::optional<std::size_t> telemetry_generation;
 };
 
 MqttClient::MqttClient(config::MqttConfig config, logging::Logger& logger)
@@ -347,9 +376,12 @@ std::expected<void, std::string> MqttClient::ConfigureBusinessMessages(
   if (max_payload_bytes == 0) {
     return std::unexpected("MQTT payload大小限制必须大于零");
   }
-  std::lock_guard lock{callback_state_->mutex};
-  callback_state_->handler = std::move(handler);
-  callback_state_->max_payload_bytes = max_payload_bytes;
+  MessageHandler replacement = std::move(handler);
+  {
+    std::lock_guard lock{callback_state_->mutex};
+    callback_state_->handler.swap(replacement);
+    callback_state_->max_payload_bytes = max_payload_bytes;
+  }
   return {};
 }
 
@@ -358,15 +390,20 @@ std::expected<void, std::string> MqttClient::SubscribeDeviceMessages(
   if (topic_namespace.empty()) return std::unexpected("MQTT topic命名空间不能为空");
   {
     std::lock_guard lock{callback_state_->mutex};
+    if (callback_state_->topic_namespace_ != topic_namespace) {
+      callback_state_->registration_generation.reset();
+      callback_state_->telemetry_generation.reset();
+    }
     callback_state_->topic_namespace_ = topic_namespace;
   }
-  if (IsConnected()) callback_state_->SubscribeConfigured(client_);
+  if (IsConnected()) return callback_state_->SubscribeConfigured(client_);
   return {};
 }
 
 std::expected<void, std::string> MqttClient::ReplayRetainedRegistrations(
     std::string_view topic_namespace) {
   if (topic_namespace.empty()) return std::unexpected("MQTT topic命名空间不能为空");
+  std::lock_guard subscription_lock{callback_state_->subscription_mutex};
   const auto filter = mqtt_topic::RegistrationFilter(topic_namespace);
   const int unsubscribe_result =
       mosquitto_unsubscribe(client_, nullptr, filter.c_str());
@@ -377,6 +414,14 @@ std::expected<void, std::string> MqttClient::ReplayRetainedRegistrations(
                                                     filter.c_str(), 2);
   if (subscribe_result != MOSQ_ERR_SUCCESS) {
     return std::unexpected(MosquittoError("恢复registration订阅", subscribe_result));
+  }
+  {
+    std::lock_guard lock{callback_state_->mutex};
+    if (callback_state_->connected.load(std::memory_order_acquire) &&
+        callback_state_->topic_namespace_ == topic_namespace) {
+      callback_state_->registration_generation =
+          callback_state_->connection_generation;
+    }
   }
   return {};
 }
@@ -402,7 +447,11 @@ void MqttClient::HandleConnect(struct mosquitto* client, void* context,
   try {
     if (result == 0) {
       state.Connected();
-      state.SubscribeConfigured(client);
+      const auto subscribed = state.SubscribeConfigured(client);
+      if (!subscribed.has_value()) {
+        state.WarnBusiness("mqtt_business_subscribe",
+                           "MQTT设备消息订阅失败");
+      }
       return;
     }
     state.connected.store(false, std::memory_order_release);

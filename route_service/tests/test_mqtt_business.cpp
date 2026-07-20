@@ -6,11 +6,15 @@
 
 #include "adapters/mqtt/mqtt_client.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <atomic>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -21,9 +25,12 @@ namespace {
 struct Injection {
   void* context = nullptr;
   void (*connect_callback)(struct mosquitto*, void*, int) = nullptr;
+  void (*disconnect_callback)(struct mosquitto*, void*, int) = nullptr;
   void (*message_callback)(struct mosquitto*, void*, const struct mosquitto_message*) =
       nullptr;
   std::vector<std::tuple<std::string, int>> subscriptions;
+  std::vector<int> subscribe_results{MOSQ_ERR_SUCCESS};
+  std::size_t subscribe_attempt = 0;
   std::vector<std::string> unsubscriptions;
   std::vector<std::tuple<std::string, std::string, int, bool>> publications;
 };
@@ -63,6 +70,8 @@ std::unique_ptr<cns::mqtt::MqttClient> MakeClient(
 extern "C" struct mosquitto* __real_mosquitto_new(const char*, bool, void*);
 extern "C" void __real_mosquitto_connect_callback_set(
     struct mosquitto*, void (*)(struct mosquitto*, void*, int));
+extern "C" void __real_mosquitto_disconnect_callback_set(
+    struct mosquitto*, void (*)(struct mosquitto*, void*, int));
 extern "C" void __real_mosquitto_message_callback_set(
     struct mosquitto*,
     void (*)(struct mosquitto*, void*, const struct mosquitto_message*));
@@ -79,6 +88,11 @@ extern "C" void __wrap_mosquitto_connect_callback_set(
   active->connect_callback = callback;
 }
 
+extern "C" void __wrap_mosquitto_disconnect_callback_set(
+    struct mosquitto*, void (*callback)(struct mosquitto*, void*, int)) {
+  active->disconnect_callback = callback;
+}
+
 extern "C" void __wrap_mosquitto_message_callback_set(
     struct mosquitto*,
     void (*callback)(struct mosquitto*, void*, const struct mosquitto_message*)) {
@@ -88,7 +102,10 @@ extern "C" void __wrap_mosquitto_message_callback_set(
 extern "C" int __wrap_mosquitto_subscribe(struct mosquitto*, int*,
                                              const char* topic, int qos) {
   active->subscriptions.emplace_back(topic, qos);
-  return MOSQ_ERR_SUCCESS;
+  const auto index = std::min(active->subscribe_attempt,
+                              active->subscribe_results.size() - 1);
+  ++active->subscribe_attempt;
+  return active->subscribe_results[index];
 }
 
 extern "C" int __wrap_mosquitto_unsubscribe(struct mosquitto*, int*,
@@ -123,6 +140,128 @@ TEST_CASE("连接成功后订阅registration QoS2和telemetry QoS0") {
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
             {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+}
+
+TEST_CASE("已连接时registration订阅失败同步返回错误且不尝试telemetry") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  injection.connect_callback(nullptr, injection.context, 0);
+  injection.subscribe_results = {MOSQ_ERR_NOMEM};
+
+  const auto subscribed = client->SubscribeDeviceMessages("cns");
+
+  REQUIRE_FALSE(subscribed.has_value());
+  CHECK(subscribed.error().find("订阅registration消息失败") !=
+        std::string::npos);
+  CHECK(injection.subscriptions ==
+        std::vector<std::tuple<std::string, int>>{
+            {"cns/+/registration", 2}});
+}
+
+TEST_CASE("已连接时telemetry订阅失败同步返回错误") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  injection.connect_callback(nullptr, injection.context, 0);
+  injection.subscribe_results = {MOSQ_ERR_SUCCESS, MOSQ_ERR_NOMEM};
+
+  const auto subscribed = client->SubscribeDeviceMessages("cns");
+
+  REQUIRE_FALSE(subscribed.has_value());
+  CHECK(subscribed.error().find("订阅telemetry消息失败") != std::string::npos);
+  CHECK(injection.subscriptions ==
+        std::vector<std::tuple<std::string, int>>{
+            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+}
+
+TEST_CASE("同一连接代仅成功订阅一次且新连接代重新订阅") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->SubscribeDeviceMessages("cns").has_value());
+
+  injection.connect_callback(nullptr, injection.context, 0);
+  injection.connect_callback(nullptr, injection.context, 0);
+  CHECK(injection.subscriptions.size() == 2);
+
+  REQUIRE(injection.disconnect_callback != nullptr);
+  injection.disconnect_callback(nullptr, injection.context, MOSQ_ERR_CONN_LOST);
+  injection.connect_callback(nullptr, injection.context, 0);
+  CHECK(injection.subscriptions.size() == 4);
+}
+
+TEST_CASE("订阅失败不标记当前连接代并允许完整重试") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  injection.subscribe_results = {MOSQ_ERR_SUCCESS, MOSQ_ERR_NOMEM,
+                                 MOSQ_ERR_SUCCESS};
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->SubscribeDeviceMessages("cns").has_value());
+
+  injection.connect_callback(nullptr, injection.context, 0);
+  injection.connect_callback(nullptr, injection.context, 0);
+
+  CHECK(injection.subscriptions ==
+        std::vector<std::tuple<std::string, int>>{
+            {"cns/+/registration", 2}, {"cns/+/telemetry", 0},
+            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+  CHECK(err.str().find("MQTT设备消息订阅失败") != std::string::npos);
+}
+
+TEST_CASE("替换handler在状态锁外析构旧capture") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  std::atomic_bool destroyed{false};
+  struct ReenterOnDestroy {
+    cns::mqtt::MqttClient* client;
+    std::atomic_bool* destroyed;
+    ~ReenterOnDestroy() {
+      static_cast<void>(client->ConfigureBusinessMessages(
+          [](cns::mqtt::InboundMessage) {}, 16));
+      destroyed->store(true, std::memory_order_release);
+    }
+  };
+  auto capture =
+      std::make_shared<ReenterOnDestroy>(client.get(), &destroyed);
+  REQUIRE(client->ConfigureBusinessMessages(
+                    [capture](cns::mqtt::InboundMessage) {}, 16)
+              .has_value());
+  capture.reset();
+
+  std::thread replacement([&] {
+    static_cast<void>(client->ConfigureBusinessMessages(
+        [](cns::mqtt::InboundMessage) {}, 16));
+  });
+  const auto deadline = std::chrono::steady_clock::now() + 200ms;
+  while (!destroyed.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+
+  CHECK(destroyed.load(std::memory_order_acquire));
+  if (destroyed.load(std::memory_order_acquire)) {
+    replacement.join();
+  } else {
+    replacement.detach();
+    static_cast<void>(client.release());
+  }
 }
 
 TEST_CASE("消息回调在进入时记录时间并原样转交topic和payload") {
@@ -234,4 +373,23 @@ TEST_CASE("恢复registration retained消息先unsubscribe再以QoS2 subscribe")
   CHECK(injection.unsubscriptions == std::vector<std::string>{"cns/+/registration"});
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{{"cns/+/registration", 2}});
+}
+
+TEST_CASE("成功replay不把仅registration恢复误标为完整业务订阅") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  injection.subscribe_results = {MOSQ_ERR_NOMEM, MOSQ_ERR_SUCCESS};
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->SubscribeDeviceMessages("cns").has_value());
+  injection.connect_callback(nullptr, injection.context, 0);
+  REQUIRE(injection.subscriptions.size() == 1);
+
+  REQUIRE(client->ReplayRetainedRegistrations("cns").has_value());
+  REQUIRE(injection.subscriptions.size() == 2);
+  injection.connect_callback(nullptr, injection.context, 0);
+
+  CHECK(injection.subscriptions.size() == 4);
 }
