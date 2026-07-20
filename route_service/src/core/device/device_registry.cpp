@@ -26,10 +26,36 @@ std::size_t DeviceRegistry::RoleKeyHash::operator()(
                         (school_hash >> 2U));
 }
 
+std::size_t DeviceRegistry::NamedRoleKeyHash::operator()(
+    const NamedRoleKey& key) const noexcept {
+  const auto school_hash = std::hash<std::string>{}(key.school_name);
+  const auto label_hash = std::hash<std::string>{}(key.dcdw_label);
+  return school_hash ^ (label_hash + 0x9e3779b9U + (school_hash << 6U) +
+                        (school_hash >> 2U));
+}
+
+void DeviceRegistry::AddNamedRole(const DeviceRecord& record) {
+  if (!record.dcdw_label) return;
+  named_roles_[NamedRoleKey{record.school_name, *record.dcdw_label}]
+      .push_back(record.vendor_id);
+}
+
+void DeviceRegistry::RemoveNamedRole(const DeviceRecord& record) {
+  if (!record.dcdw_label) return;
+  const NamedRoleKey key{record.school_name, *record.dcdw_label};
+  const auto iterator = named_roles_.find(key);
+  if (iterator == named_roles_.end()) return;
+  auto& vendors = iterator->second;
+  std::erase(vendors, record.vendor_id);
+  if (vendors.empty()) named_roles_.erase(iterator);
+}
+
 std::expected<void, std::string> DeviceRegistry::Load(
     std::vector<DeviceRecord> records) {
   std::unordered_map<std::string, DeviceRecord> new_records;
   std::unordered_map<RoleKey, std::string, RoleKeyHash> new_roles;
+  std::unordered_map<NamedRoleKey, std::vector<std::string>, NamedRoleKeyHash>
+      new_named_roles;
   for (auto& record : records) {
     const auto vendor_id = record.vendor_id;
     if (new_records.contains(vendor_id)) {
@@ -42,11 +68,14 @@ std::expected<void, std::string> DeviceRegistry::Load(
                                *record.dcdw_label);
       }
       new_roles.emplace(std::move(key), vendor_id);
+      new_named_roles[NamedRoleKey{record.school_name, *record.dcdw_label}]
+          .push_back(vendor_id);
     }
     new_records.emplace(vendor_id, std::move(record));
   }
   records_.swap(new_records);
   roles_.swap(new_roles);
+  named_roles_.swap(new_named_roles);
   return {};
 }
 
@@ -93,9 +122,11 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
              : state_event::ChangeReason::kRegistrationOffline,
       record.status != new_record.status,
       std::move(diagnostic)};
+  if (old_role) RemoveNamedRole(record);
   if (new_role) roles_.emplace(*new_role, record.vendor_id);
   using std::swap;
   swap(record, new_record);
+  if (new_role) AddNamedRole(record);
   if (old_role) roles_.erase(*old_role);
   return mutation;
 }
@@ -139,6 +170,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
   if (new_role) roles_.emplace(*new_role, record.vendor_id);
   using std::swap;
   swap(record, new_record);
+  if (new_role) AddNamedRole(record);
   return mutation;
 }
 
@@ -194,6 +226,7 @@ std::expected<void, std::string> DeviceRegistry::AddProvisioned(
       if (inserted_role) roles_.erase(*inserted_role);
       return std::unexpected("重复 vendor_id");
     }
+    AddNamedRole(iterator->second);
   } catch (...) {
     if (inserted_role) roles_.erase(*inserted_role);
     throw;
@@ -204,6 +237,27 @@ std::expected<void, std::string> DeviceRegistry::AddProvisioned(
 const DeviceRecord* DeviceRegistry::Find(std::string_view vendor_id) const {
   const auto iterator = records_.find(std::string{vendor_id});
   return iterator == records_.end() ? nullptr : &iterator->second;
+}
+
+const DeviceRecord* DeviceRegistry::FindBySchoolAndLabel(
+    std::int64_t school_id, std::string_view label) const {
+  const auto role = roles_.find(RoleKey{school_id, std::string{label}});
+  return role == roles_.end() ? nullptr : Find(role->second);
+}
+
+const DeviceRecord* DeviceRegistry::FindBySchoolNameAndLabel(
+    std::string_view school_name, std::string_view label) const {
+  const auto role = named_roles_.find(
+      NamedRoleKey{std::string{school_name}, std::string{label}});
+  if (role == named_roles_.end() || role->second.size() != 1) return nullptr;
+  return Find(role->second.front());
+}
+
+bool DeviceRegistry::IsSchoolNameAndLabelAmbiguous(
+    std::string_view school_name, std::string_view label) const {
+  const auto role = named_roles_.find(
+      NamedRoleKey{std::string{school_name}, std::string{label}});
+  return role != named_roles_.end() && role->second.size() > 1;
 }
 
 }  // namespace cns::device

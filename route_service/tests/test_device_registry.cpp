@@ -48,6 +48,17 @@ TEST_CASE("加载和新增拒绝同校重复角色号") {
   CHECK(registry.Find(kVendorB) == nullptr);
 }
 
+TEST_CASE("按学校编号和学校名角色号使用索引查询") {
+  DeviceRegistry registry;
+  REQUIRE(registry.Load(
+      {Record(kVendorA, 1, "DCDW-001"), Record(kVendorB, 2, "DCDW-002")}));
+  CHECK(registry.FindBySchoolAndLabel(1, "DCDW-001")->vendor_id == kVendorA);
+  CHECK(registry.FindBySchoolNameAndLabel("Other", "DCDW-002")->vendor_id ==
+        kVendorB);
+  CHECK(registry.FindBySchoolAndLabel(1, "missing") == nullptr);
+  CHECK(registry.FindBySchoolNameAndLabel("missing", "DCDW-001") == nullptr);
+}
+
 TEST_CASE("无效全量加载保持调用前合法目录和角色索引") {
   DeviceRegistry registry;
   REQUIRE(registry.Load({Record(kVendorA, 1, "DCDW-001")}));

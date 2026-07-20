@@ -53,6 +53,12 @@ class DeviceRegistry {
   std::expected<void, std::string> AddProvisioned(DeviceRecord record);
   // 返回的指针只保证在本目录下一次修改操作前有效。
   const DeviceRecord* Find(std::string_view vendor_id) const;
+  const DeviceRecord* FindBySchoolAndLabel(std::int64_t school_id,
+                                           std::string_view label) const;
+  const DeviceRecord* FindBySchoolNameAndLabel(
+      std::string_view school_name, std::string_view label) const;
+  bool IsSchoolNameAndLabelAmbiguous(std::string_view school_name,
+                                     std::string_view label) const;
 
  private:
   struct RoleKey {
@@ -66,8 +72,24 @@ class DeviceRegistry {
     std::size_t operator()(const RoleKey& key) const noexcept;
   };
 
+  struct NamedRoleKey {
+    std::string school_name;
+    std::string dcdw_label;
+
+    bool operator==(const NamedRoleKey&) const = default;
+  };
+
+  struct NamedRoleKeyHash {
+    std::size_t operator()(const NamedRoleKey& key) const noexcept;
+  };
+
+  void AddNamedRole(const DeviceRecord& record);
+  void RemoveNamedRole(const DeviceRecord& record);
+
   std::unordered_map<std::string, DeviceRecord> records_;
   std::unordered_map<RoleKey, std::string, RoleKeyHash> roles_;
+  std::unordered_map<NamedRoleKey, std::vector<std::string>, NamedRoleKeyHash>
+      named_roles_;
 };
 
 }  // namespace cns::device

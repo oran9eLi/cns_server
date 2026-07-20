@@ -69,6 +69,7 @@ enable_testing()
 
 add_library(route_core STATIC
   src/core/cli/command_line.cpp
+  src/core/command/command_router.cpp
   src/core/command/source_request.cpp
   src/core/command/config_policy.cpp
   src/core/config/app_config.cpp
@@ -142,6 +143,11 @@ add_executable(test_command_protocol tests/test_command_protocol.cpp)
 target_link_libraries(test_command_protocol PRIVATE route_core doctest::doctest)
 target_compile_options(test_command_protocol PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME command_protocol COMMAND test_command_protocol)
+
+add_executable(test_command_router tests/test_command_router.cpp)
+target_link_libraries(test_command_router PRIVATE route_core doctest::doctest)
+target_compile_options(test_command_router PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME command_router COMMAND test_command_router)
 
 add_executable(test_device_registry tests/test_device_registry.cpp)
 target_link_libraries(test_device_registry PRIVATE route_core doctest::doctest)
