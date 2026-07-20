@@ -16,6 +16,7 @@
 #include <vector>
 
 namespace {
+using namespace std::chrono_literals;
 
 class FakeOperations final : public cns::runtime::ServiceOperations {
  public:
@@ -108,6 +109,8 @@ using cns::runtime::RunService;
 using cns::runtime::DeviceRuntimeStartOperations;
 using cns::runtime::StartDeviceRuntimeTransaction;
 using cns::runtime::SelfOwnedRuntimeThread;
+using cns::runtime::DeviceRuntimeDrainOperations;
+using cns::runtime::DrainDeviceRuntime;
 
 TEST_CASE("设备运行时事务在handler配置失败时回滚且不启动线程") {
   std::vector<std::string> calls;
@@ -208,6 +211,88 @@ TEST_CASE("分离线程自持有运行时且外部桥失效后不回调") {
   }
   CHECK(destroyed);
   CHECK(external->callbacks == 0);
+}
+
+TEST_CASE("真实接线排空编排在链路完成时走join而非detach") {
+  std::vector<std::string> calls;
+  DeviceRuntimeDrainOperations operations{
+      .wait_input_drained = [&](std::chrono::milliseconds) {
+        calls.emplace_back("输入排空");
+        return true;
+      },
+      .wait_database_idle = [&](std::chrono::milliseconds) {
+        calls.emplace_back("数据库链路完成");
+        return true;
+      },
+      .flush_database = [&](std::chrono::milliseconds) {
+        calls.emplace_back("数据库最终排空");
+        return true;
+      },
+      .pending_devices = [] { return std::size_t{0}; },
+      .disable_external_bridge = [&] { calls.emplace_back("禁用外部桥"); },
+      .request_stop = [&] { calls.emplace_back("请求停止"); },
+      .join_threads = [&] { calls.emplace_back("join"); },
+      .detach_threads = [&] { calls.emplace_back("detach"); },
+      .report_timeout = [](std::size_t) {},
+  };
+
+  CHECK(DrainDeviceRuntime(5000ms, operations));
+  CHECK(calls == std::vector<std::string>{
+                     "输入排空", "数据库链路完成", "数据库最终排空",
+                     "join", "禁用外部桥"});
+}
+
+TEST_CASE("真实接线排空编排超时禁用桥后分离且不join") {
+  std::vector<std::string> calls;
+  std::size_t reported = 0;
+  DeviceRuntimeDrainOperations operations{
+      .wait_input_drained = [](std::chrono::milliseconds) { return false; },
+      .wait_database_idle = [](std::chrono::milliseconds) { return true; },
+      .flush_database = [](std::chrono::milliseconds) { return true; },
+      .pending_devices = [] { return std::size_t{3}; },
+      .disable_external_bridge = [&] { calls.emplace_back("禁用外部桥"); },
+      .request_stop = [&] { calls.emplace_back("请求停止"); },
+      .join_threads = [&] { calls.emplace_back("join"); },
+      .detach_threads = [&] { calls.emplace_back("detach"); },
+      .report_timeout = [&](std::size_t pending) { reported = pending; },
+  };
+
+  CHECK_FALSE(DrainDeviceRuntime(5000ms, operations));
+  CHECK(reported == 3);
+  CHECK(calls == std::vector<std::string>{"禁用外部桥", "请求停止",
+                                          "detach"});
+}
+
+TEST_CASE("两个分离线程共同自持有运行时且桥销毁后不回调") {
+  struct Owner {
+    explicit Owner(std::atomic_bool& destroyed_value) : destroyed(destroyed_value) {}
+    ~Owner() { destroyed = true; }
+    std::atomic_bool& destroyed;
+  };
+  struct Bridge { std::atomic_int callbacks{0}; };
+  std::atomic_bool release_database{false};
+  std::atomic_bool business_finished{false};
+  std::atomic_bool destroyed{false};
+  auto owner = std::make_shared<Owner>(destroyed);
+  auto bridge = std::make_shared<Bridge>();
+  SelfOwnedRuntimeThread database;
+  SelfOwnedRuntimeThread business;
+  database.Start(owner, [&, weak = std::weak_ptr<Bridge>{bridge}](std::stop_token) {
+    while (!release_database) std::this_thread::yield();
+    if (const auto output = weak.lock()) ++output->callbacks;
+  });
+  business.Start(owner, [&](std::stop_token) { business_finished = true; });
+  while (!business_finished) std::this_thread::yield();
+  owner.reset();
+  bridge.reset();
+  database.Detach();
+  business.Detach();
+  release_database = true;
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (!destroyed && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  CHECK(destroyed);
 }
 
 TEST_CASE("启动前置阶段任一失败都停止并返回非零") {

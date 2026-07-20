@@ -149,8 +149,8 @@ std::string BuildConnectionString(const config::DatabaseConfig& config) {
 }
 
 PostgresStore::PostgresStore(std::unique_ptr<pqxx::connection> connection,
-                             logging::Logger& logger)
-    : connection_(std::move(connection)), logger_(logger) {}
+                             InfoSink info_sink)
+    : connection_(std::move(connection)), info_sink_(std::move(info_sink)) {}
 
 PostgresStore::~PostgresStore() = default;
 
@@ -164,16 +164,27 @@ OperationFailureKind PostgresStore::LastOperationFailureKind() const noexcept {
 
 std::expected<std::unique_ptr<PostgresStore>, std::string> PostgresStore::Connect(
     const config::DatabaseConfig& config, logging::Logger& logger) {
+  return Connect(config, [&logger](std::string message) {
+    logger.Info(message);
+  });
+}
+
+std::expected<std::unique_ptr<PostgresStore>, std::string> PostgresStore::Connect(
+    const config::DatabaseConfig& config, InfoSink info_sink) {
   const std::string safe_description = BuildSafeConnectionDescription(config);
   try {
     auto connection =
         std::make_unique<pqxx::connection>(BuildConnectionString(config));
-    logger.Info("已连接 PostgreSQL：" + safe_description);
+    if (info_sink) info_sink("已连接 PostgreSQL：" + safe_description);
     return std::unique_ptr<PostgresStore>(
-        new PostgresStore(std::move(connection), logger));
+        new PostgresStore(std::move(connection), std::move(info_sink)));
   } catch (const std::exception&) {
     return std::unexpected("连接 PostgreSQL 失败：" + safe_description);
   }
+}
+
+void PostgresStore::SetInfoSink(InfoSink info_sink) {
+  info_sink_ = std::move(info_sink);
 }
 
 std::expected<std::vector<migration::AppliedMigration>, std::string>
@@ -222,7 +233,7 @@ std::expected<void, std::string> PostgresStore::ApplyMigration(
         "INSERT INTO public.schema_migrations (version, name) VALUES ($1, $2)",
         pqxx::params{migration.version, migration.name});
     transaction.commit();
-    logger_.Info("已执行" + MigrationContext(migration));
+    if (info_sink_) info_sink_("已执行" + MigrationContext(migration));
     return {};
   } catch (const std::exception&) {
     return std::unexpected("执行" + MigrationContext(migration) + "失败");

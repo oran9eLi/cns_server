@@ -78,4 +78,13 @@ TEST_CASE("设备存储错误处理不回显异常文本") {
   CHECK(source.find("exception.what(") == std::string::npos);
 }
 
+TEST_CASE("PostgreSQL存储不持有原始日志器引用") {
+  std::ifstream header_input{CNS_POSTGRES_STORE_HEADER_FILE};
+  REQUIRE(header_input.is_open());
+  const std::string header{std::istreambuf_iterator<char>{header_input},
+                           std::istreambuf_iterator<char>{}};
+  CHECK(header.find("logging::Logger& logger_;") == std::string::npos);
+  CHECK(header.find("InfoSink info_sink_;") != std::string::npos);
+}
+
 }  // namespace

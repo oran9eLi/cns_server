@@ -242,6 +242,7 @@ target_link_libraries(test_postgres_store PRIVATE route_adapters doctest::doctes
 target_compile_options(test_postgres_store PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(test_postgres_store PRIVATE
   CNS_POSTGRES_STORE_SOURCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/src/adapters/postgres/postgres_store.cpp"
+  CNS_POSTGRES_STORE_HEADER_FILE="${CMAKE_CURRENT_SOURCE_DIR}/src/adapters/postgres/postgres_store.hpp"
 )
 
 add_test(NAME postgres_store COMMAND test_postgres_store)

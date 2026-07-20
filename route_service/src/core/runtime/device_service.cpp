@@ -115,10 +115,14 @@ bool DeviceService::HasOutstandingDatabaseWork() const {
 }
 
 void DeviceService::ProcessReady(TimePoint system_now) {
+  const auto finish_processing = [this] {
+    processing_ready_ = false;
+    Notify();
+  };
   struct ProcessingGuard {
-    std::atomic_bool& processing;
-    ~ProcessingGuard() { processing = false; }
-  } guard{processing_ready_};
+    const decltype(finish_processing)& finish;
+    ~ProcessingGuard() { finish(); }
+  } guard{finish_processing};
   processing_ready_ = true;
   for (;;) {
     std::optional<DatabaseResult> result;
@@ -173,7 +177,6 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     next_scan_ = now + kOfflineScan;
   }
   DispatchWrites();
-  Notify();
 }
 
 std::size_t DeviceService::PendingRegistrationCount() const { return pending_.size(); }

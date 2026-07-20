@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -55,6 +56,7 @@ std::string BuildConnectionString(const config::DatabaseConfig& config);
 /** 独占一个同步 PostgreSQL 连接并提供迁移所需的最小操作。 */
 class PostgresStore {
  public:
+  using InfoSink = std::function<void(std::string)>;
   ~PostgresStore();
 
   PostgresStore(const PostgresStore&) = delete;
@@ -62,6 +64,9 @@ class PostgresStore {
 
   static std::expected<std::unique_ptr<PostgresStore>, std::string> Connect(
       const config::DatabaseConfig& config, logging::Logger& logger);
+  static std::expected<std::unique_ptr<PostgresStore>, std::string> Connect(
+      const config::DatabaseConfig& config, InfoSink info_sink);
+  void SetInfoSink(InfoSink info_sink);
 
   /** 读取数据库中按版本升序排列的已执行迁移；表不存在时返回空列表。 */
   std::expected<std::vector<migration::AppliedMigration>, std::string>
@@ -82,10 +87,10 @@ class PostgresStore {
 
  private:
   explicit PostgresStore(std::unique_ptr<pqxx::connection> connection,
-                         logging::Logger& logger);
+                         InfoSink info_sink);
 
   std::unique_ptr<pqxx::connection> connection_;
-  logging::Logger& logger_;
+  InfoSink info_sink_;
   OperationFailureKind last_failure_kind_ = OperationFailureKind::kPermanent;
 };
 

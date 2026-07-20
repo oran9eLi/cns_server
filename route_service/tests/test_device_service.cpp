@@ -9,6 +9,7 @@
 #include <chrono>
 #include <mutex>
 #include <future>
+#include <latch>
 #include <thread>
 #include <vector>
 
@@ -146,6 +147,42 @@ TEST_CASE("closed business service waits for provision and follow-up write resul
   service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kNew, 2,
                               std::nullopt, {}});
   CHECK(run.wait_for(500ms) == std::future_status::ready);
+}
+
+TEST_CASE("database idle waiter wakes immediately after chained processing finishes") {
+  cns::device::DeviceRegistry registry;
+  std::latch write_entered{1};
+  std::latch release_write{1};
+  DeviceService service(
+      registry,
+      [](Registration, cns::runtime::TimePoint) { return true; },
+      [&](DesiredDeviceWrite) {
+        write_entered.count_down();
+        release_write.wait();
+        return true;
+      },
+      [](cns::runtime::PublishedState) {},
+      [] { return std::chrono::steady_clock::time_point{}; });
+  REQUIRE(service.TryPush(Message(std::string{"cns/"} + kNew + "/registration",
+                                  RegistrationJson(kNew, "SEU", "DCDW-002"))));
+  service.ProcessReady();
+  service.PushDatabaseResult({DatabaseResult::Kind::kProvisioned, kNew, 1,
+                              Record(kNew), {}});
+  auto processing = std::async(std::launch::async, [&] { service.ProcessReady(); });
+  write_entered.wait();
+  auto idle = std::async(std::launch::async, [&] {
+    const auto started = std::chrono::steady_clock::now();
+    const bool result = service.WaitForDatabaseIdle(2s);
+    return std::pair{result, std::chrono::steady_clock::now() - started};
+  });
+  release_write.count_down();
+  processing.get();
+  service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kNew, 2,
+                              std::nullopt, {}});
+  service.ProcessReady();
+  const auto [idle_result, elapsed] = idle.get();
+  CHECK(idle_result);
+  CHECK(elapsed < 500ms);
 }
 
 TEST_CASE("database results have priority over MQTT and unavailable clears pending") {

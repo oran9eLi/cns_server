@@ -45,6 +45,22 @@ class SelfOwnedRuntimeThread {
   std::thread thread_;
 };
 
+struct DeviceRuntimeDrainOperations {
+  std::function<bool(std::chrono::milliseconds)> wait_input_drained;
+  std::function<bool(std::chrono::milliseconds)> wait_database_idle;
+  std::function<bool(std::chrono::milliseconds)> flush_database;
+  std::function<std::size_t()> pending_devices;
+  std::function<void()> disable_external_bridge;
+  std::function<void()> request_stop;
+  std::function<void()> join_threads;
+  std::function<void()> detach_threads;
+  std::function<void(std::size_t)> report_timeout;
+};
+
+/** 使用单一总期限完成正常 join，或先禁用外部桥再安全 detach。 */
+bool DrainDeviceRuntime(std::chrono::milliseconds timeout,
+                        const DeviceRuntimeDrainOperations& operations) noexcept;
+
 /** 提供进程编排所需的最小外部操作集合。 */
 class ServiceOperations {
  public:

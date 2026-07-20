@@ -14,7 +14,6 @@
 #include "core/state_event/state_event.hpp"
 
 #include <chrono>
-#include <algorithm>
 #include <csignal>
 #include <iostream>
 #include <optional>
@@ -33,10 +32,10 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
  public:
   RuntimePostgresBridge(std::unique_ptr<postgres::PostgresStore> store,
                         config::DatabaseConfig config,
-                        std::shared_ptr<logging::Logger> logger,
+                        postgres::PostgresStore::InfoSink info_sink,
                         std::vector<migration::Migration> migrations)
       : store_(std::move(store)), config_(std::move(config)),
-        logger_(std::move(logger)), migrations_(std::move(migrations)) {}
+        info_sink_(std::move(info_sink)), migrations_(std::move(migrations)) {}
 
   std::expected<device::DeviceRecord, runtime::DatabaseError> Provision(
       const protocol::Registration& registration,
@@ -54,7 +53,7 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
   }
 
   std::expected<void, runtime::DatabaseError> ReconnectAndValidate() override {
-    auto connected = postgres::PostgresStore::Connect(config_, *logger_);
+    auto connected = postgres::PostgresStore::Connect(config_, info_sink_);
     if (!connected) {
       return std::unexpected(runtime::DatabaseError{
           runtime::DatabaseError::Kind::kUnavailable, "数据库重连失败"});
@@ -91,7 +90,7 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
 
   std::unique_ptr<postgres::PostgresStore> store_;
   config::DatabaseConfig config_;
-  std::shared_ptr<logging::Logger> logger_;
+  postgres::PostgresStore::InfoSink info_sink_;
   std::vector<migration::Migration> migrations_;
 };
 
@@ -113,6 +112,12 @@ struct RuntimeExternalBridge {
     std::lock_guard lock(mutex);
     if (!enabled || logger == nullptr) return;
     try { logger->Error(message); } catch (...) {}
+  }
+
+  void Inform(std::string message) noexcept {
+    std::lock_guard lock(mutex);
+    if (!enabled || logger == nullptr) return;
+    try { logger->Info(message); } catch (...) {}
   }
 
   void Publish(runtime::PublishedState published) noexcept {
@@ -381,8 +386,14 @@ std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
     bundle->registry = std::move(state_->registry);
     bundle->startup_writes = std::move(state_->startup_writes);
     bundle->external = state_->external_bridge;
+    const postgres::PostgresStore::InfoSink postgres_info =
+        [weak = std::weak_ptr<RuntimeExternalBridge>{state_->external_bridge}](
+            std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Inform(std::move(message));
+        };
+    state_->store->SetInfoSink(postgres_info);
     bundle->store = std::make_unique<RuntimePostgresBridge>(
-        std::move(state_->store), state_->config->database, state_->logger,
+        std::move(state_->store), state_->config->database, postgres_info,
         state_->available);
     bundle->Initialize();
     state_->runtime_bundle = bundle;
@@ -460,32 +471,33 @@ bool ServiceEnvironment::StopDeviceRuntime(std::chrono::milliseconds timeout) {
   state_->device_runtime_stopped = true;
   const auto bundle = state_->runtime_bundle;
   if (!bundle) return true;
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  const auto remaining = [&] {
-    return std::max(std::chrono::milliseconds{0},
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        deadline - std::chrono::steady_clock::now()));
+  runtime::DeviceRuntimeDrainOperations operations{
+      .wait_input_drained = [bundle](std::chrono::milliseconds wait) {
+        return bundle->service->WaitForInputDrained(wait);
+      },
+      .wait_database_idle = [bundle](std::chrono::milliseconds wait) {
+        return bundle->service->WaitForDatabaseIdle(wait);
+      },
+      .flush_database = [bundle](std::chrono::milliseconds wait) {
+        return bundle->worker->FlushAndStop(wait);
+      },
+      .pending_devices = [bundle] {
+        return bundle->worker->PendingDeviceCount();
+      },
+      .disable_external_bridge = [bridge = state_->external_bridge] {
+        if (bridge) bridge->Disable();
+      },
+      .request_stop = [bundle] { bundle->RequestStop(); },
+      .join_threads = [bundle] { bundle->Join(); },
+      .detach_threads = [bundle] { bundle->Detach(); },
+      .report_timeout = [logger = state_->logger](std::size_t pending) {
+        logger->Error("数据库排空超时，未持久化设备数量：" +
+                      std::to_string(pending));
+      },
   };
-  const bool input_drained = bundle->service->WaitForInputDrained(remaining());
-  const bool database_idle = input_drained &&
-      bundle->service->WaitForDatabaseIdle(remaining());
-  const bool flushed = database_idle &&
-      bundle->worker->FlushAndStop(remaining());
-  if (input_drained && database_idle && flushed) {
-    bundle->Join();
-    if (state_->external_bridge) state_->external_bridge->Disable();
-    state_->runtime_bundle.reset();
-    return true;
-  }
-
-  const auto pending = bundle->worker->PendingDeviceCount();
-  state_->logger->Error("数据库排空超时，未持久化设备数量：" +
-                        std::to_string(pending));
-  if (state_->external_bridge) state_->external_bridge->Disable();
-  bundle->RequestStop();
-  bundle->Detach();
+  const bool drained = runtime::DrainDeviceRuntime(timeout, operations);
   state_->runtime_bundle.reset();
-  return false;
+  return drained;
 }
 
 std::expected<void, std::string> ServiceEnvironment::StartMqtt() {

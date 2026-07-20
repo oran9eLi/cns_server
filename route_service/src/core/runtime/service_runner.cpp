@@ -1,6 +1,7 @@
 // 本文件实现两种运行模式共用的可测试进程生命周期编排。
 #include "core/runtime/service_runner.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <stdexcept>
 
@@ -83,6 +84,38 @@ void SelfOwnedRuntimeThread::Detach() noexcept {
 
 bool SelfOwnedRuntimeThread::Joinable() const noexcept {
   return thread_.joinable();
+}
+
+bool DrainDeviceRuntime(
+    std::chrono::milliseconds timeout,
+    const DeviceRuntimeDrainOperations& operations) noexcept {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  const auto remaining = [&] {
+    return std::max(std::chrono::milliseconds{0},
+                    std::chrono::ceil<std::chrono::milliseconds>(
+                        deadline - std::chrono::steady_clock::now()));
+  };
+  try {
+    const bool input_drained = operations.wait_input_drained(remaining());
+    const bool database_idle = input_drained &&
+        operations.wait_database_idle(remaining());
+    const bool flushed = database_idle && operations.flush_database(remaining());
+    if (input_drained && database_idle && flushed) {
+      operations.join_threads();
+      operations.disable_external_bridge();
+      return true;
+    }
+    operations.report_timeout(operations.pending_devices());
+    operations.disable_external_bridge();
+    operations.request_stop();
+    operations.detach_threads();
+    return false;
+  } catch (...) {
+    try { operations.disable_external_bridge(); } catch (...) {}
+    try { operations.request_stop(); } catch (...) {}
+    try { operations.detach_threads(); } catch (...) {}
+    return false;
+  }
 }
 
 int RunService(const RunMode mode, ServiceOperations& operations) {
