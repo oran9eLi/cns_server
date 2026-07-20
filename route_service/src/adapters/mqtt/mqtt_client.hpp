@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "core/config/app_config.hpp"
 #include "core/logging/logger.hpp"
@@ -31,6 +33,13 @@ struct InboundMessage {
 };
 
 using MessageHandler = std::function<void(InboundMessage)>;
+
+struct PublishCompletion {
+  std::uint64_t token;
+  std::expected<void, std::string> result;
+};
+
+using PublishCompletionHandler = std::function<void(PublishCompletion)>;
 
 class MqttClient {
  public:
@@ -56,6 +65,14 @@ class MqttClient {
       MessageHandler handler, std::size_t max_payload_bytes);
   std::expected<void, std::string> SubscribeDeviceMessages(
       std::string_view topic_namespace);
+  std::expected<void, std::string> ConfigureCommandPublishing(
+      PublishCompletionHandler handler, std::size_t capacity);
+  std::expected<void, std::string> SubscribeCommandMessages(
+      std::string_view topic_namespace);
+  std::expected<void, std::string> PublishConfigSet(
+      std::uint64_t token, std::string_view topic, std::string_view payload);
+  std::expected<void, std::string> PublishSourceConfigAck(
+      std::string_view topic, std::string_view payload);
   std::expected<void, std::string> ReplayRetainedRegistrations(
       std::string_view topic_namespace);
   std::expected<void, std::string> PublishStateEvent(std::string_view topic,
@@ -76,6 +93,7 @@ class MqttClient {
                         const char* message) noexcept;
   static void HandleMessage(struct mosquitto*, void* context,
                             const struct mosquitto_message* message) noexcept;
+  static void HandlePublish(struct mosquitto*, void* context, int mid) noexcept;
   void WarnDisconnected(int result);
   void RetryConnection();
   void FinishRetry(std::string error = {});

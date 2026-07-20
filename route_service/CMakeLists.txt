@@ -230,6 +230,19 @@ target_link_options(test_mqtt_business PRIVATE
 )
 add_test(NAME mqtt_business COMMAND test_mqtt_business)
 
+add_executable(test_mqtt_commands tests/test_mqtt_commands.cpp)
+target_link_libraries(test_mqtt_commands PRIVATE route_adapters doctest::doctest)
+target_compile_options(test_mqtt_commands PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_options(test_mqtt_commands PRIVATE
+  LINKER:--wrap=mosquitto_new
+  LINKER:--wrap=mosquitto_connect_callback_set
+  LINKER:--wrap=mosquitto_disconnect_callback_set
+  LINKER:--wrap=mosquitto_publish_callback_set
+  LINKER:--wrap=mosquitto_subscribe
+  LINKER:--wrap=mosquitto_publish
+)
+add_test(NAME mqtt_commands COMMAND test_mqtt_commands)
+
 add_executable(test_shutdown_flag tests/test_shutdown_flag.cpp)
 target_link_libraries(test_shutdown_flag PRIVATE route_core doctest::doctest)
 target_compile_options(test_shutdown_flag PRIVATE -Wall -Wextra -Wpedantic -Werror)
