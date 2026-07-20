@@ -81,14 +81,17 @@ V1 阶段核心职责：
 
 高频状态与稳定元数据分表。遥测默认每 5 秒合并批量写入，同一设备在周期内只写最后一份；实时状态事件立即发布，不受数据库批量周期限制。
 
+运行时全量加载设备目录，当前方案面向约 1,000 台以内的规模保持简单。PostgreSQL 冷启动不可用时服务退出；运行中断线时，已登记设备继续维护内存状态并发布降级事件，未登记新设备暂不接纳，数据库线程默认每 5 秒重连并在恢复后补写。
+
 ## 当前状态
 
 - 里程碑一“工程基础与数据库骨架”已实现并完成本机验收；现场 PostgreSQL、Mosquitto、迁移重复执行和信号退出尚未验证，等待用户授权。
 - Route Service V1 设计已逐节确认，书面规格见 `docs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
 - 书面规格已复核，全局里程碑路线见 `docs/2026-07-18-路由服务V1实施计划.md`；当前尚未实现 registration、telemetry、ACK、业务 topic、设备在线状态、遥测合并写库、实时状态事件及配置/飞控命令路由。
+- 里程碑二“设备注册与最新状态”正在设计，书面设计见 `docs/superpowers/specs/2026-07-20-里程碑二设备注册与最新状态设计.md`。
 
-本子项目全局设计和全局计划放在 `docs/` 根目录。每个里程碑的设计和详细计划直接在 `main` 编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `main` 建立实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入 `main` 后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。
+本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。
 
 ## 测试与部署约束
 
