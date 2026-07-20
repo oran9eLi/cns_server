@@ -81,6 +81,23 @@ target_include_directories(route_adapters PUBLIC src)
 target_link_libraries(route_adapters PUBLIC route_core pqxx_compat PkgConfig::MOSQUITTO)
 target_compile_options(route_adapters PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+add_executable(route_service src/main.cpp)
+target_link_libraries(route_service PRIVATE route_adapters)
+target_compile_options(route_service PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(route_service PRIVATE
+  CNS_ROUTE_SERVICE_VERSION="${PROJECT_VERSION}"
+)
+
+add_test(NAME route_service_help COMMAND route_service --help)
+set_tests_properties(route_service_help PROPERTIES
+  PASS_REGULAR_EXPRESSION "用法："
+)
+
+add_test(NAME route_service_version COMMAND route_service --version)
+set_tests_properties(route_service_version PROPERTIES
+  PASS_REGULAR_EXPRESSION "0\\.1\\.0"
+)
+
 add_executable(test_command_line tests/test_command_line.cpp)
 target_link_libraries(test_command_line PRIVATE route_core doctest::doctest)
 target_compile_options(test_command_line PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -124,6 +141,12 @@ target_link_options(test_rate_limiter PRIVATE
 )
 
 add_test(NAME rate_limiter COMMAND test_rate_limiter)
+
+add_executable(test_shutdown_flag tests/test_shutdown_flag.cpp)
+target_link_libraries(test_shutdown_flag PRIVATE route_core doctest::doctest)
+target_compile_options(test_shutdown_flag PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_test(NAME shutdown_flag COMMAND test_shutdown_flag)
 
 add_executable(test_migration tests/test_migration.cpp)
 target_link_libraries(test_migration PRIVATE route_core doctest::doctest)
