@@ -1,7 +1,10 @@
 // 本文件实现配置命令的受理、幂等与异步端口编排。
 #include "core/runtime/command_service.hpp"
 
+#include <algorithm>
 #include <utility>
+#include <thread>
+#include <ranges>
 
 #include "core/command/config_policy.hpp"
 
@@ -30,7 +33,9 @@ CommandService::CommandService(
     command::SourceCatalog& sources, device::DeviceRegistry& devices,
     DatabaseSubmitter database_submitter, DevicePublisher device_publisher,
     SourceAckPublisher source_ack_publisher, DiagnosticSink diagnostic,
-    std::size_t max_inflight_commands, std::string topic_namespace)
+    std::size_t max_inflight_commands, std::string topic_namespace,
+    std::chrono::seconds config_timeout, std::chrono::days terminal_retention,
+    std::chrono::seconds cleanup_interval, std::size_t cleanup_batch_size)
     : sources_(sources),
       devices_(devices),
       database_submitter_(std::move(database_submitter)),
@@ -38,7 +43,11 @@ CommandService::CommandService(
       source_ack_publisher_(std::move(source_ack_publisher)),
       diagnostic_(std::move(diagnostic)),
       topic_namespace_(std::move(topic_namespace)),
-      max_inflight_commands_(max_inflight_commands) {}
+      max_inflight_commands_(max_inflight_commands),
+      config_timeout_(config_timeout),
+      terminal_retention_(terminal_retention),
+      cleanup_interval_(cleanup_interval),
+      cleanup_batch_size_(cleanup_batch_size) {}
 
 bool CommandService::TryPush(mqtt::InboundMessage message) {
   std::lock_guard lock{input_mutex_};
@@ -81,6 +90,7 @@ void CommandService::ProcessReady(command::TimePoint now) {
     if (publish_completion) Handle(std::move(*publish_completion), now);
     if (message) Handle(std::move(*message), now);
   }
+  ProcessTimeoutsAndRecovery(now);
 }
 
 void CommandService::Close() {
@@ -103,6 +113,45 @@ void CommandService::SetDatabaseAvailable(bool available) {
 
 void CommandService::SetMqttAvailable(bool available) {
   mqtt_available_ = available;
+  if (available) recovery_started_.clear();
+}
+
+void CommandService::LoadActive(std::vector<command::CommandRecord> commands) {
+  if (commands.size() > max_inflight_commands_) {
+    Diagnose("活动命令数量超过配置上限");
+    commands.resize(max_inflight_commands_);
+  }
+  for (auto& record : commands) {
+    const auto* source = sources_.Find(record.source_id);
+    if (source == nullptr || command::IsTerminal(record.status)) continue;
+    auto parsed = command::ParseSourceConfigRequest(record.request_payload.dump(),
+                                                     source->kind);
+    RequestContext context{record.source_id, source, std::move(parsed),
+                           record.created_at, TargetFor(record), record};
+    active_commands_.insert_or_assign(record.command_id, std::move(context));
+  }
+}
+
+void CommandService::OnTargetOnline(std::string_view vendor_id,
+                                    command::TimePoint now) {
+  for (auto& [command_id, context] : active_commands_) {
+    if (context.record && context.record->target_vendor_id == vendor_id) {
+      recovery_started_.erase(command_id);
+    }
+  }
+  ProcessTimeoutsAndRecovery(now);
+}
+
+bool CommandService::WaitForDatabaseIdle(std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!operations_.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  return operations_.empty();
+}
+
+std::size_t CommandService::ActiveCommandCount() const {
+  return active_commands_.size();
 }
 
 void CommandService::SetDiagnosticSinkForTesting(DiagnosticSink diagnostic) {
@@ -111,6 +160,11 @@ void CommandService::SetDiagnosticSinkForTesting(DiagnosticSink diagnostic) {
 
 void CommandService::Handle(mqtt::InboundMessage message,
                             command::TimePoint now) {
+  if (const auto vendor =
+          command::ParseDeviceConfigAckTopic(topic_namespace_, message.topic)) {
+    HandleDeviceAck(*vendor, message.payload, now);
+    return;
+  }
   const auto source_id =
       command::ParseSourceRequestTopic(topic_namespace_, message.topic);
   if (!source_id) return;
@@ -184,6 +238,13 @@ void CommandService::Handle(CommandDatabaseResult result,
       database_available_ = false;
     }
     Diagnose("命令数据库操作失败");
+    return;
+  }
+
+  if (operation.kind == OperationKind::kCleanup) {
+    if (std::get_if<std::size_t>(&*result.value) == nullptr) {
+      Diagnose("命令清理返回类型异常");
+    }
     return;
   }
 
@@ -309,26 +370,40 @@ void CommandService::Handle(CommandDatabaseResult result,
   if (operation.kind == OperationKind::kTransition ||
       command::IsTerminal(record->status)) {
     PublishAck(operation.context, now);
+    if (command::IsTerminal(record->status)) {
+      active_commands_.erase(record->command_id);
+      recovery_started_.erase(record->command_id);
+    } else {
+      active_commands_.insert_or_assign(record->command_id, operation.context);
+    }
     return;
   }
+  active_commands_.insert_or_assign(record->command_id, operation.context);
+  PublishRecord(std::move(operation.context), now);
+}
 
-  const auto& request =
-      std::get<command::SourceConfigRequest>(operation.context.parsed);
+void CommandService::PublishRecord(RequestContext context,
+                                   command::TimePoint now) {
+  if (!context.record || !context.record->target_vendor_id || !mqtt_available_) return;
+  const auto* request = std::get_if<command::SourceConfigRequest>(&context.parsed);
+  if (request == nullptr) return;
+  const auto previous_status = context.record->status;
+  recovery_started_.insert(context.record->command_id);
   const auto token = next_publish_token_++;
-  publications_.emplace(token, PublishedCommand{operation.context});
+  publications_.emplace(token, PublishedCommand{context});
   const auto payload =
-      command::BuildDeviceConfigSet(record->command_id, request.parameters).dump();
+      command::BuildDeviceConfigSet(context.record->command_id, request->parameters).dump();
   const auto published = device_publisher_(
-      token, DeviceSetTopic(topic_namespace_, *record->target_vendor_id), payload);
+      token, DeviceSetTopic(topic_namespace_, *context.record->target_vendor_id), payload);
   if (!published) {
     publications_.erase(token);
-    auto failed = *record;
+    auto failed = *context.record;
     failed.status = command::CommandStatus::kFailed;
     failed.error_code = "mqtt_publish_failed";
     failed.error_message = "设备配置命令发布失败";
     failed.updated_at = now;
     failed.completed_at = now;
-    operation.context.record = failed;
+    context.record = failed;
     const command::CommandUpdate update{
         .error_code = failed.error_code,
         .error_message = failed.error_message,
@@ -337,9 +412,96 @@ void CommandService::Handle(CommandDatabaseResult result,
         .completed_at = now,
         .updated_at = now};
     static_cast<void>(Submit(
-        OperationKind::kTransition, std::move(operation.context),
-        TransitionCommandTask{record->command_id, command::CommandStatus::kPending,
+        OperationKind::kTransition, std::move(context),
+        TransitionCommandTask{failed.command_id, previous_status,
                               command::CommandStatus::kFailed, update}));
+  }
+}
+
+void CommandService::HandleDeviceAck(std::string_view vendor_id,
+                                     std::string_view payload,
+                                     command::TimePoint now) {
+  const auto parsed = command::ParseDeviceConfigAck(payload);
+  if (!parsed) { Diagnose("设备配置ACK格式非法"); return; }
+  const auto found = active_commands_.find(parsed->command_id);
+  if (found == active_commands_.end() || !found->second.record ||
+      found->second.record->target_vendor_id != vendor_id) {
+    Diagnose("设备配置ACK无法关联活动命令");
+    return;
+  }
+  auto context = found->second;
+  const auto current = context.record->status;
+  if (current != command::CommandStatus::kPending &&
+      current != command::CommandStatus::kDispatched) return;
+  const auto desired = parsed->business_status == "rejected"
+                           ? command::CommandStatus::kFailed
+                           : command::CommandStatus::kSucceeded;
+  auto record = *context.record;
+  record.status = desired;
+  record.device_ack = parsed->raw;
+  record.updated_at = now;
+  record.completed_at = now;
+  if (desired == command::CommandStatus::kFailed) {
+    record.error_code = "device_rejected";
+    record.error_message = "设备拒绝配置命令";
+  }
+  context.record = record;
+  command::CommandUpdate update{record.error_code, record.error_message,
+                                record.device_ack, std::nullopt, now, now};
+  static_cast<void>(Submit(OperationKind::kTransition, std::move(context),
+      TransitionCommandTask{record.command_id, current, desired, update}));
+}
+
+void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
+  if (!next_cleanup_at_) {
+    next_cleanup_at_ = now + cleanup_interval_;
+  } else if (now >= *next_cleanup_at_) {
+    const bool cleanup_pending = std::ranges::any_of(
+        operations_, [](const auto& item) {
+          return item.second.kind == OperationKind::kCleanup;
+        });
+    if (!cleanup_pending && database_available_) {
+      RequestContext context{
+          .source_id = {}, .source = nullptr,
+          .parsed = command::RejectedSourceRequest{
+              std::nullopt, std::nullopt, {"cleanup", "终态清理"}},
+          .received_at = now, .target = std::nullopt, .record = std::nullopt};
+      static_cast<void>(Submit(OperationKind::kCleanup, std::move(context),
+          CleanupCommandsTask{now - terminal_retention_, cleanup_batch_size_}));
+    }
+    next_cleanup_at_ = now + cleanup_interval_;
+  }
+  std::vector<std::string> ids;
+  ids.reserve(active_commands_.size());
+  for (const auto& [id, unused] : active_commands_) { (void)unused; ids.push_back(id); }
+  for (const auto& id : ids) {
+    const auto found = active_commands_.find(id);
+    if (found == active_commands_.end() || !found->second.record) continue;
+    auto context = found->second;
+    const auto record = *context.record;
+    if (now >= record.created_at + config_timeout_) {
+      if (recovery_started_.insert(id).second) {
+        auto timed_out = record;
+        timed_out.status = command::CommandStatus::kTimeout;
+        timed_out.error_code = "command_timeout";
+        timed_out.error_message = "设备配置命令超时";
+        timed_out.updated_at = now;
+        timed_out.completed_at = now;
+        context.record = timed_out;
+        command::CommandUpdate update{timed_out.error_code, timed_out.error_message,
+                                      std::nullopt, std::nullopt, now, now};
+        static_cast<void>(Submit(OperationKind::kTransition, std::move(context),
+            TransitionCommandTask{id, record.status,
+                                  command::CommandStatus::kTimeout, update}));
+      }
+      continue;
+    }
+    if (!mqtt_available_ || recovery_started_.contains(id) ||
+        !record.target_vendor_id) continue;
+    const auto* target = devices_.Find(*record.target_vendor_id);
+    if (target == nullptr || target->status != device::Status::kOnline) continue;
+    recovery_started_.insert(id);
+    PublishRecord(std::move(context), now);
   }
 }
 

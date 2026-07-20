@@ -250,6 +250,11 @@ target_link_libraries(test_command_service_requests PRIVATE route_core doctest::
 target_compile_options(test_command_service_requests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME command_service_requests COMMAND test_command_service_requests)
 
+add_executable(test_command_service_lifecycle tests/test_command_service_lifecycle.cpp)
+target_link_libraries(test_command_service_lifecycle PRIVATE route_core doctest::doctest)
+target_compile_options(test_command_service_lifecycle PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME command_service_lifecycle COMMAND test_command_service_lifecycle)
+
 add_executable(test_shutdown_flag tests/test_shutdown_flag.cpp)
 target_link_libraries(test_shutdown_flag PRIVATE route_core doctest::doctest)
 target_compile_options(test_shutdown_flag PRIVATE -Wall -Wextra -Wpedantic -Werror)

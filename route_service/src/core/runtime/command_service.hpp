@@ -9,6 +9,8 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "adapters/mqtt/mqtt_client.hpp"
 #include "core/command/command_state.hpp"
@@ -33,7 +35,11 @@ class CommandService {
                  SourceAckPublisher source_ack_publisher,
                  DiagnosticSink diagnostic = {},
                  std::size_t max_inflight_commands = 256,
-                 std::string topic_namespace = "cns");
+                 std::string topic_namespace = "cns",
+                 std::chrono::seconds config_timeout = std::chrono::seconds{15},
+                 std::chrono::days terminal_retention = std::chrono::days{30},
+                 std::chrono::seconds cleanup_interval = std::chrono::seconds{3600},
+                 std::size_t cleanup_batch_size = 100);
 
   bool TryPush(mqtt::InboundMessage message);
   void PushDatabaseResult(CommandDatabaseResult result);
@@ -43,6 +49,10 @@ class CommandService {
   void CancelOutstandingWork();
   void SetDatabaseAvailable(bool available);
   void SetMqttAvailable(bool available);
+  void LoadActive(std::vector<command::CommandRecord> commands);
+  void OnTargetOnline(std::string_view vendor_id, command::TimePoint now);
+  bool WaitForDatabaseIdle(std::chrono::milliseconds timeout);
+  [[nodiscard]] std::size_t ActiveCommandCount() const;
   void SetDiagnosticSinkForTesting(DiagnosticSink diagnostic);
 
  private:
@@ -55,7 +65,7 @@ class CommandService {
     std::optional<command::CommandRecord> record;
   };
 
-  enum class OperationKind { kFind, kInsert, kTransition };
+  enum class OperationKind { kFind, kInsert, kTransition, kCleanup };
   struct Operation {
     OperationKind kind;
     RequestContext context;
@@ -67,6 +77,10 @@ class CommandService {
   void Handle(mqtt::InboundMessage message, command::TimePoint now);
   void Handle(CommandDatabaseResult result, command::TimePoint now);
   void Handle(mqtt::PublishCompletion completion, command::TimePoint now);
+  void HandleDeviceAck(std::string_view vendor_id, std::string_view payload,
+                       command::TimePoint now);
+  void ProcessTimeoutsAndRecovery(command::TimePoint now);
+  void PublishRecord(RequestContext context, command::TimePoint now);
   bool Submit(OperationKind kind, RequestContext context,
               CommandDatabaseTask task);
   void Reject(std::string_view source_id,
@@ -92,7 +106,14 @@ class CommandService {
   std::deque<mqtt::PublishCompletion> publish_completions_;
   std::unordered_map<std::uint64_t, Operation> operations_;
   std::unordered_map<std::uint64_t, PublishedCommand> publications_;
+  std::unordered_map<std::string, RequestContext> active_commands_;
+  std::unordered_set<std::string> recovery_started_;
   std::mutex input_mutex_;
+  std::chrono::seconds config_timeout_;
+  std::chrono::days terminal_retention_;
+  std::chrono::seconds cleanup_interval_;
+  std::size_t cleanup_batch_size_;
+  std::optional<command::TimePoint> next_cleanup_at_;
   bool database_available_ = true;
   bool mqtt_available_ = true;
   bool closed_ = false;
