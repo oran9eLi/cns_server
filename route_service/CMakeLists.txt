@@ -79,6 +79,8 @@ add_library(route_core STATIC
   src/core/migration/migration_plan.cpp
   src/core/persistence/dirty_state.cpp
   src/core/runtime/rate_limiter.cpp
+  src/core/runtime/device_service.cpp
+  src/core/runtime/postgres_worker.cpp
   src/core/runtime/service_runner.cpp
 )
 target_include_directories(route_core PUBLIC src)
@@ -258,6 +260,12 @@ target_link_libraries(test_pqxx_compat PRIVATE pqxx_compat)
 target_compile_options(test_pqxx_compat PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_test(NAME pqxx_compat COMMAND test_pqxx_compat)
+
+add_executable(test_device_service tests/test_device_service.cpp)
+target_link_libraries(test_device_service PRIVATE route_core doctest::doctest)
+target_compile_options(test_device_service PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME device_service COMMAND test_device_service)
+set_tests_properties(device_service PROPERTIES TIMEOUT 10)
 
 add_test(NAME pqxx_elf_symbols
   COMMAND ${CMAKE_COMMAND}
