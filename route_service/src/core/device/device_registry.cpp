@@ -1,6 +1,7 @@
 #include "core/device/device_registry.hpp"
 
 #include <functional>
+#include <type_traits>
 #include <utility>
 
 namespace cns::device {
@@ -15,7 +16,10 @@ std::optional<std::string> AppendDiagnostic(
 
 }  // namespace
 
-std::size_t DeviceRegistry::RoleKeyHash::operator()(const RoleKey& key) const {
+static_assert(std::is_nothrow_swappable_v<DeviceRecord>);
+
+std::size_t DeviceRegistry::RoleKeyHash::operator()(
+    const RoleKey& key) const noexcept {
   const auto school_hash = std::hash<std::int64_t>{}(key.school_id);
   const auto label_hash = std::hash<std::string>{}(key.dcdw_label);
   return school_hash ^ (label_hash + 0x9e3779b9U + (school_hash << 6U) +
@@ -48,120 +52,144 @@ std::expected<void, std::string> DeviceRegistry::Load(
 
 std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
     const protocol::Registration& registration, TimePoint received_at) {
-  if (!records_.contains(registration.vendor_id)) {
+  const auto iterator = records_.find(registration.vendor_id);
+  if (iterator == records_.end()) {
     return std::unexpected("未知设备: " + registration.vendor_id);
   }
 
-  auto new_records = records_;
-  auto new_roles = roles_;
-  auto& record = new_records.at(registration.vendor_id);
+  auto& record = iterator->second;
+  DeviceRecord new_record = record;
   std::optional<std::string> diagnostic;
   if (registration.school_name &&
       *registration.school_name != record.school_name) {
     diagnostic = AppendDiagnostic(std::move(diagnostic), "拒绝设备自动迁移学校");
   }
+  std::optional<RoleKey> old_role;
+  std::optional<RoleKey> new_role;
   if (registration.dcdw_label &&
       registration.dcdw_label != record.dcdw_label) {
     const RoleKey candidate{record.school_id, *registration.dcdw_label};
-    const auto owner = new_roles.find(candidate);
-    if (owner != new_roles.end() && owner->second != record.vendor_id) {
+    const auto owner = roles_.find(candidate);
+    if (owner != roles_.end() && owner->second != record.vendor_id) {
       diagnostic = AppendDiagnostic(std::move(diagnostic),
                                     "拒绝同校冲突角色号");
     } else {
       if (record.dcdw_label) {
-        new_roles.erase(RoleKey{record.school_id, *record.dcdw_label});
+        old_role.emplace(RoleKey{record.school_id, *record.dcdw_label});
       }
-      record.dcdw_label = registration.dcdw_label;
-      new_roles.emplace(candidate, record.vendor_id);
+      new_record.dcdw_label = registration.dcdw_label;
+      if (owner == roles_.end()) new_role.emplace(candidate);
     }
   }
 
   const bool online =
       registration.status == protocol::RegistrationStatus::kOnline;
-  record.status = online ? Status::kOnline : Status::kOffline;
-  record.last_seen_at = received_at;
-  ++record.revision;
+  new_record.status = online ? Status::kOnline : Status::kOffline;
+  new_record.last_seen_at = received_at;
+  ++new_record.revision;
   Mutation mutation{
-      record,
+      new_record,
       online ? state_event::ChangeReason::kRegistrationOnline
              : state_event::ChangeReason::kRegistrationOffline,
       std::move(diagnostic)};
-  records_.swap(new_records);
-  roles_.swap(new_roles);
+  if (new_role) roles_.emplace(*new_role, record.vendor_id);
+  using std::swap;
+  swap(record, new_record);
+  if (old_role) roles_.erase(*old_role);
   return mutation;
 }
 
 std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
     std::string_view vendor_id, protocol::Telemetry telemetry,
     TimePoint received_at) {
-  const std::string vendor{vendor_id};
-  if (!records_.contains(vendor)) {
+  const auto iterator = records_.find(std::string{vendor_id});
+  if (iterator == records_.end()) {
     return std::unexpected("未知设备: " + std::string{vendor_id});
   }
 
-  auto new_records = records_;
-  auto new_roles = roles_;
-  auto& record = new_records.at(vendor);
+  auto& record = iterator->second;
+  DeviceRecord new_record = record;
   std::optional<std::string> diagnostic;
+  std::optional<RoleKey> new_role;
   if (!record.dcdw_label && telemetry.dcdw_label) {
     const RoleKey candidate{record.school_id, *telemetry.dcdw_label};
-    const auto owner = new_roles.find(candidate);
-    if (owner != new_roles.end() && owner->second != record.vendor_id) {
+    const auto owner = roles_.find(candidate);
+    if (owner != roles_.end() && owner->second != record.vendor_id) {
       diagnostic = "拒绝同校冲突角色号";
     } else {
-      record.dcdw_label = telemetry.dcdw_label;
-      new_roles.emplace(candidate, record.vendor_id);
+      new_record.dcdw_label = telemetry.dcdw_label;
+      if (owner == roles_.end()) new_role.emplace(candidate);
     }
   }
-  record.latest_telemetry = std::move(telemetry.payload);
-  record.telemetry_received_at = received_at;
-  record.last_seen_at = received_at;
-  record.status = Status::kOnline;
-  ++record.revision;
-  Mutation mutation{record, state_event::ChangeReason::kTelemetry,
+  new_record.latest_telemetry = std::move(telemetry.payload);
+  new_record.telemetry_received_at = received_at;
+  new_record.last_seen_at = received_at;
+  new_record.status = Status::kOnline;
+  ++new_record.revision;
+  Mutation mutation{new_record, state_event::ChangeReason::kTelemetry,
                     std::move(diagnostic)};
-  records_.swap(new_records);
-  roles_.swap(new_roles);
+  if (new_role) roles_.emplace(*new_role, record.vendor_id);
+  using std::swap;
+  swap(record, new_record);
   return mutation;
 }
 
 std::vector<Mutation> DeviceRegistry::ExpireInactive(
     TimePoint now, std::chrono::seconds timeout) {
   std::vector<Mutation> mutations;
-  auto new_records = records_;
-  for (auto& [vendor_id, record] : new_records) {
+  std::vector<DeviceRecord*> expired;
+  for (auto& [vendor_id, record] : records_) {
     static_cast<void>(vendor_id);
     if (record.status != Status::kOnline || !record.last_seen_at ||
         now - *record.last_seen_at < timeout) {
       continue;
     }
-    record.status = Status::kOffline;
-    ++record.revision;
-    mutations.push_back(
-        Mutation{record, state_event::ChangeReason::kActivityTimeout,
-                 std::nullopt});
+    expired.push_back(&record);
   }
-  if (!mutations.empty()) records_.swap(new_records);
+  mutations.reserve(expired.size());
+  std::vector<DeviceRecord> replacements;
+  replacements.reserve(expired.size());
+  for (const auto* record : expired) {
+    auto replacement = *record;
+    replacement.status = Status::kOffline;
+    ++replacement.revision;
+    mutations.push_back(
+        Mutation{replacement, state_event::ChangeReason::kActivityTimeout,
+                 std::nullopt});
+    replacements.push_back(std::move(replacement));
+  }
+  using std::swap;
+  for (std::size_t index = 0; index < expired.size(); ++index) {
+    swap(*expired[index], replacements[index]);
+  }
   return mutations;
 }
 
 std::expected<void, std::string> DeviceRegistry::AddProvisioned(
     DeviceRecord record) {
-  auto new_records = records_;
-  auto new_roles = roles_;
-  if (new_records.contains(record.vendor_id)) {
+  if (records_.contains(record.vendor_id)) {
     return std::unexpected("重复 vendor_id: " + record.vendor_id);
   }
+  std::optional<decltype(roles_)::iterator> inserted_role;
   if (record.dcdw_label) {
     RoleKey key{record.school_id, *record.dcdw_label};
-    if (new_roles.contains(key)) {
+    if (roles_.contains(key)) {
       return std::unexpected("同校角色号冲突: " + *record.dcdw_label);
     }
-    new_roles.emplace(std::move(key), record.vendor_id);
+    inserted_role = roles_.emplace(std::move(key), record.vendor_id).first;
   }
-  new_records.emplace(record.vendor_id, std::move(record));
-  records_.swap(new_records);
-  roles_.swap(new_roles);
+  try {
+    const auto [iterator, inserted] =
+        records_.emplace(record.vendor_id, std::move(record));
+    static_cast<void>(iterator);
+    if (!inserted) {
+      if (inserted_role) roles_.erase(*inserted_role);
+      return std::unexpected("重复 vendor_id");
+    }
+  } catch (...) {
+    if (inserted_role) roles_.erase(*inserted_role);
+    throw;
+  }
   return {};
 }
 

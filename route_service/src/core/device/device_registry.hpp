@@ -50,6 +50,7 @@ class DeviceRegistry {
   std::vector<Mutation> ExpireInactive(TimePoint now,
                                        std::chrono::seconds timeout);
   std::expected<void, std::string> AddProvisioned(DeviceRecord record);
+  // 返回的指针只保证在本目录下一次修改操作前有效。
   const DeviceRecord* Find(std::string_view vendor_id) const;
 
  private:
@@ -61,7 +62,7 @@ class DeviceRegistry {
   };
 
   struct RoleKeyHash {
-    std::size_t operator()(const RoleKey& key) const;
+    std::size_t operator()(const RoleKey& key) const noexcept;
   };
 
   std::unordered_map<std::string, DeviceRecord> records_;

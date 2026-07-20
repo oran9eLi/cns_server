@@ -226,6 +226,31 @@ TEST_CASE("online 但无 last_seen 不参与超时") {
   CHECK(registry.Find(kVendorA)->revision == 7);
 }
 
+TEST_CASE("无设备超时时扫描保持记录地址稳定") {
+  DeviceRegistry registry;
+  auto record = Record(kVendorA, 1, std::nullopt, Status::kOnline);
+  record.last_seen_at = kNow;
+  REQUIRE(registry.Load({record}));
+  const auto* before = registry.Find(kVendorA);
+  REQUIRE(before);
+
+  CHECK(registry.ExpireInactive(kNow + 179s, 180s).empty());
+  CHECK(registry.Find(kVendorA) == before);
+}
+
+TEST_CASE("更新设备 A 不使设备 B 的 Find 指针失效") {
+  DeviceRegistry registry;
+  REQUIRE(registry.Load({Record(kVendorA), Record(kVendorB)}));
+  const auto* device_b = registry.Find(kVendorB);
+  REQUIRE(device_b);
+
+  REQUIRE(registry.ApplyTelemetry(kVendorA,
+      cns::protocol::Telemetry{nlohmann::json{{"sensor", 42}}, std::nullopt},
+      kNow));
+  CHECK(registry.Find(kVendorB) == device_b);
+  CHECK(device_b->vendor_id == kVendorB);
+}
+
 TEST_CASE("telemetry 角色号冲突只拒绝补全") {
   DeviceRegistry registry;
   REQUIRE(registry.Load(
