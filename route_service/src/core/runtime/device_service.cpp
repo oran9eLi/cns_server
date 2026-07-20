@@ -26,12 +26,20 @@ persistence::DesiredDeviceWrite WriteFor(device::Mutation mutation,
 
 DeviceService::DeviceService(device::DeviceRegistry& registry,
     ProvisionSubmitter provision, WriteSubmitter write, EventSink events,
-    SteadyNow steady_now, std::size_t queue_capacity)
+    SteadyNow steady_now, DiagnosticSink diagnostic, std::size_t queue_capacity)
     : registry_(registry), provision_(std::move(provision)),
       write_(std::move(write)), events_(std::move(events)),
-      steady_now_(std::move(steady_now)), mqtt_queue_(queue_capacity),
-      next_scan_(steady_now_() + kOfflineScan),
-      scan_initialized_(true) {}
+      steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)),
+      mqtt_queue_(queue_capacity) {
+  try {
+    next_scan_ = steady_now_() + kOfflineScan;
+    scan_initialized_ = true;
+  } catch (const std::exception&) {
+    Diagnose("设备时钟端口初始化异常");
+  } catch (...) {
+    Diagnose("设备时钟端口初始化发生未知异常");
+  }
+}
 
 bool DeviceService::TryPush(mqtt::InboundMessage message) {
   const bool pushed = mqtt_queue_.TryPush(std::move(message));
@@ -49,21 +57,27 @@ void DeviceService::PushDatabaseResult(DatabaseResult result) {
 
 void DeviceService::Run(std::stop_token stop) {
   std::stop_callback callback(stop, [this] { Notify(); });
-  while (!stop.stop_requested()) {
-    ProcessReady();
-    bool no_results;
-    {
-      std::lock_guard results_lock(results_mutex_);
-      no_results = results_.empty();
+  try {
+    while (!stop.stop_requested()) {
+      ProcessReady();
+      bool no_results;
+      {
+        std::lock_guard results_lock(results_mutex_);
+        no_results = results_.empty();
+      }
+      if (closed_ && mqtt_queue_.Size() == 0 && no_results) break;
+      std::unique_lock lock(wake_mutex_);
+      wake_.wait_for(lock, stop, std::chrono::milliseconds{100}, [this] {
+        std::lock_guard results_lock(results_mutex_);
+        return closed_ || mqtt_queue_.Size() != 0 || !results_.empty();
+      });
     }
-    if (closed_ && mqtt_queue_.Size() == 0 && no_results) break;
-    std::unique_lock lock(wake_mutex_);
-    wake_.wait_for(lock, stop, std::chrono::milliseconds{100}, [this] {
-      std::lock_guard results_lock(results_mutex_);
-      return closed_ || mqtt_queue_.Size() != 0 || !results_.empty();
-    });
+    ProcessReady();
+  } catch (const std::exception&) {
+    Diagnose("设备业务线程端口异常，已安全停止");
+  } catch (...) {
+    Diagnose("设备业务线程发生未知异常，已安全停止");
   }
-  ProcessReady();
 }
 
 void DeviceService::Close() {
@@ -90,8 +104,17 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     for (auto& [vendor, candidate] : pending_) {
       static_cast<void>(vendor);
       if (!candidate.submitted) {
-        provision_(candidate.registration, candidate.received_at);
-        candidate.submitted = true;
+        try {
+          candidate.submitted = provision_(candidate.registration,
+                                           candidate.received_at);
+          if (!candidate.submitted) Diagnose("数据库建档提交端口已关闭");
+        } catch (const std::exception&) {
+          candidate.submitted = false;
+          Diagnose("数据库建档提交回调异常");
+        } catch (...) {
+          candidate.submitted = false;
+          Diagnose("数据库建档提交回调发生未知异常");
+        }
       }
     }
   }
@@ -118,7 +141,27 @@ bool DeviceService::IsDeviceDegraded(std::string_view vendor_id) const {
 void DeviceService::Handle(DatabaseResult result) {
   if (result.kind == DatabaseResult::Kind::kUnavailable) {
     database_unavailable_ = true;
+    if (const auto* record = registry_.Find(result.vendor_id)) {
+      degraded_[result.vendor_id] = std::max(record->revision, result.revision);
+      const auto reason = last_reason_.contains(result.vendor_id)
+          ? last_reason_.at(result.vendor_id)
+          : state_event::ChangeReason::kTelemetry;
+      Publish({*record, reason, true});
+    }
     pending_.clear();
+    Diagnose(result.error.empty() ? "数据库暂不可用" : result.error);
+    return;
+  }
+  if (result.kind == DatabaseResult::Kind::kPermanentFailure) {
+    pending_.erase(result.vendor_id);
+    if (const auto* record = registry_.Find(result.vendor_id)) {
+      degraded_[result.vendor_id] = std::max(record->revision, result.revision);
+      const auto reason = last_reason_.contains(result.vendor_id)
+          ? last_reason_.at(result.vendor_id)
+          : state_event::ChangeReason::kTelemetry;
+      Publish({*record, reason, true});
+    }
+    Diagnose(result.error.empty() ? "数据库永久错误" : result.error);
     return;
   }
   if (result.kind == DatabaseResult::Kind::kRecovered) {
@@ -129,8 +172,7 @@ void DeviceService::Handle(DatabaseResult result) {
       persistence::DesiredDeviceWrite write{*record, record->revision, true, true,
                                              record->latest_telemetry.has_value(),
                                              persistence::Urgency::kImmediate};
-      submitted_[vendor] = write;
-      write_(std::move(write));
+      SubmitWrite(std::move(write));
       static_cast<void>(revision);
     }
     return;
@@ -157,7 +199,7 @@ void DeviceService::Handle(DatabaseResult result) {
     if (degraded != degraded_.end() && result.revision >= degraded->second) {
       degraded_.erase(degraded);
       if (const auto* record = registry_.Find(result.vendor_id)) {
-        events_({*record, state_event::ChangeReason::kDatabaseRecovered, false});
+        Publish({*record, state_event::ChangeReason::kDatabaseRecovered, false});
       }
     }
   }
@@ -171,11 +213,15 @@ void DeviceService::Handle(mqtt::InboundMessage message) {
     if (!registration) return;
     if (!registry_.Find(topic->vendor_id)) {
       if (!database_unavailable_) {
-        auto [it, inserted] = pending_.insert_or_assign(
-            topic->vendor_id, PendingRegistration{std::move(*registration),
-                                                  message.received_at, false});
-        static_cast<void>(it);
-        static_cast<void>(inserted);
+        const auto existing = pending_.find(topic->vendor_id);
+        if (existing == pending_.end()) {
+          pending_.emplace(topic->vendor_id,
+                           PendingRegistration{std::move(*registration),
+                                               message.received_at, false});
+        } else {
+          existing->second.registration = std::move(*registration);
+          existing->second.received_at = message.received_at;
+        }
       }
       return;
     }
@@ -195,24 +241,76 @@ void DeviceService::Handle(mqtt::InboundMessage message) {
 void DeviceService::Mark(device::Mutation mutation) {
   const auto reason = mutation.reason;
   const auto record = mutation.record;
+  last_reason_[record.vendor_id] = reason;
   const bool telemetry = reason == state_event::ChangeReason::kTelemetry;
   dirty_.Mark(WriteFor(std::move(mutation), telemetry
       ? persistence::Urgency::kTelemetryBatch : persistence::Urgency::kImmediate),
       steady_now_());
-  if (database_unavailable_) degraded_[record.vendor_id] = record.revision;
-  events_({record, reason, IsDeviceDegraded(record.vendor_id)});
+  if (database_unavailable_ || degraded_.contains(record.vendor_id)) {
+    degraded_[record.vendor_id] = record.revision;
+  }
+  Publish({record, reason, IsDeviceDegraded(record.vendor_id)});
 }
 
 void DeviceService::DispatchWrites() {
   if (database_unavailable_) return;
   auto send = [this](std::vector<persistence::DesiredDeviceWrite> writes) {
     for (auto& item : writes) {
-      submitted_[item.record.vendor_id] = item;
-      write_(std::move(item));
+      SubmitWrite(std::move(item));
     }
   };
   send(dirty_.TakeImmediate());
   send(dirty_.TakeTelemetryDue(steady_now_(), kTelemetryInterval));
+}
+
+bool DeviceService::SubmitWrite(persistence::DesiredDeviceWrite write) {
+  const auto vendor = write.record.vendor_id;
+  try {
+    if (!write_(write)) {
+      dirty_.Restore(std::move(write));
+      if (const auto* record = registry_.Find(vendor)) {
+        degraded_[vendor] = record->revision;
+        const auto reason = last_reason_.contains(vendor)
+            ? last_reason_.at(vendor) : state_event::ChangeReason::kTelemetry;
+        Publish({*record, reason, true});
+      }
+      Diagnose("数据库写入提交端口已关闭");
+      return false;
+    }
+  } catch (const std::exception&) {
+    dirty_.Restore(std::move(write));
+    if (const auto* record = registry_.Find(vendor)) {
+      degraded_[vendor] = record->revision;
+      const auto reason = last_reason_.contains(vendor)
+          ? last_reason_.at(vendor) : state_event::ChangeReason::kTelemetry;
+      Publish({*record, reason, true});
+    }
+    Diagnose("数据库写入提交回调异常");
+    return false;
+  } catch (...) {
+    dirty_.Restore(std::move(write));
+    if (const auto* record = registry_.Find(vendor)) {
+      degraded_[vendor] = record->revision;
+      const auto reason = last_reason_.contains(vendor)
+          ? last_reason_.at(vendor) : state_event::ChangeReason::kTelemetry;
+      Publish({*record, reason, true});
+    }
+    Diagnose("数据库写入提交回调发生未知异常");
+    return false;
+  }
+  submitted_[vendor] = std::move(write);
+  return true;
+}
+
+void DeviceService::Publish(PublishedState state) noexcept {
+  try { events_(std::move(state)); }
+  catch (const std::exception&) { Diagnose("状态事件发布回调异常"); }
+  catch (...) { Diagnose("状态事件发布回调发生未知异常"); }
+}
+
+void DeviceService::Diagnose(std::string message) noexcept {
+  if (!diagnostic_) return;
+  try { diagnostic_(std::move(message)); } catch (...) {}
 }
 
 void DeviceService::Notify() { wake_.notify_all(); }

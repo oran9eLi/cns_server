@@ -23,7 +23,9 @@ namespace cns::runtime {
 using TimePoint = std::chrono::system_clock::time_point;
 
 struct DatabaseResult {
-  enum class Kind { kProvisioned, kWriteCompleted, kUnavailable, kRecovered };
+  enum class Kind {
+    kProvisioned, kWriteCompleted, kUnavailable, kRecovered, kPermanentFailure
+  };
   Kind kind;
   std::string vendor_id;
   std::uint64_t revision;
@@ -39,13 +41,15 @@ struct PublishedState {
 
 class DeviceService {
  public:
-  using ProvisionSubmitter = std::function<void(protocol::Registration, TimePoint)>;
-  using WriteSubmitter = std::function<void(persistence::DesiredDeviceWrite)>;
+  using ProvisionSubmitter = std::function<bool(protocol::Registration, TimePoint)>;
+  using WriteSubmitter = std::function<bool(persistence::DesiredDeviceWrite)>;
   using EventSink = std::function<void(PublishedState)>;
   using SteadyNow = std::function<std::chrono::steady_clock::time_point()>;
+  using DiagnosticSink = std::function<void(std::string)>;
 
   DeviceService(device::DeviceRegistry& registry, ProvisionSubmitter provision,
                 WriteSubmitter write, EventSink events, SteadyNow steady_now,
+                DiagnosticSink diagnostic = {},
                 std::size_t queue_capacity = 1024);
 
   bool TryPush(mqtt::InboundMessage message);
@@ -70,6 +74,9 @@ class DeviceService {
   void Handle(mqtt::InboundMessage message);
   void Mark(device::Mutation mutation);
   void DispatchWrites();
+  bool SubmitWrite(persistence::DesiredDeviceWrite write);
+  void Publish(PublishedState state) noexcept;
+  void Diagnose(std::string message) noexcept;
   void Notify();
 
   device::DeviceRegistry& registry_;
@@ -77,12 +84,14 @@ class DeviceService {
   WriteSubmitter write_;
   EventSink events_;
   SteadyNow steady_now_;
+  DiagnosticSink diagnostic_;
   queue::BoundedQueue<mqtt::InboundMessage> mqtt_queue_;
   std::deque<DatabaseResult> results_;
   mutable std::mutex results_mutex_;
   persistence::DirtyState dirty_;
   std::unordered_map<std::string, PendingRegistration> pending_;
   std::unordered_map<std::string, std::uint64_t> degraded_;
+  std::unordered_map<std::string, state_event::ChangeReason> last_reason_;
   std::unordered_map<std::string, persistence::DesiredDeviceWrite> submitted_;
   std::chrono::steady_clock::time_point next_scan_{};
   bool scan_initialized_ = false;

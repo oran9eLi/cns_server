@@ -1,101 +1,249 @@
 #include "core/runtime/postgres_worker.hpp"
 
-#include <thread>
+#include <algorithm>
+#include <exception>
 #include <utility>
 
 namespace cns::runtime {
 namespace { constexpr auto kReconnectDelay = std::chrono::seconds{5}; }
 
 PostgresWorker::PostgresWorker(StorePort& store, ResultSink results,
-    ReplayRequest replay, SteadyNow steady_now, std::size_t capacity)
+    ReplayRequest replay, SteadyNow steady_now, DiagnosticSink diagnostic)
     : store_(store), results_(std::move(results)), replay_(std::move(replay)),
-      steady_now_(std::move(steady_now)), incoming_(capacity) {}
+      steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)) {}
 
-void PostgresWorker::SubmitProvision(protocol::Registration registration,
+bool PostgresWorker::SubmitProvision(protocol::Registration registration,
                                      TimePoint at) {
-  if (incoming_.TryPush(Task{std::move(registration), at, std::nullopt})) Notify();
+  std::lock_guard lock(mutex_);
+  if (!accepting_) return false;
+  const auto vendor = registration.vendor_id;
+  if (!provisioning_.contains(vendor)) {
+    provisions_.insert_or_assign(vendor,
+                                 ProvisionTask{std::move(registration), at});
+  }
+  changed_.notify_one();
+  return true;
 }
-void PostgresWorker::SubmitWrite(persistence::DesiredDeviceWrite write) {
-  if (incoming_.TryPush(Task{std::nullopt, {}, std::move(write)})) Notify();
+
+bool PostgresWorker::SubmitWrite(persistence::DesiredDeviceWrite write) {
+  std::lock_guard lock(mutex_);
+  if (!accepting_) return false;
+  MergeWrite(std::move(write));
+  changed_.notify_one();
+  return true;
 }
 
 void PostgresWorker::Run(std::stop_token stop) {
-  std::stop_callback callback(stop, [this] { Notify(); });
-  while (!stop.stop_requested() && !stopping_) {
-    ProcessReady();
-    std::unique_lock lock(wake_mutex_);
-    wake_.wait_for(lock, stop, std::chrono::milliseconds{100}, [this] {
-      return stopping_ || incoming_.Size() != 0;
-    });
-  }
-}
+  std::stop_callback callback(stop, [this] { changed_.notify_all(); });
+  try {
+    for (;;) {
+      std::optional<ProvisionTask> provision;
+      std::optional<persistence::DesiredDeviceWrite> write;
+      bool reconnect = false;
+      {
+        std::unique_lock lock(mutex_);
+        changed_.wait_for(lock, std::chrono::milliseconds{100}, [&] {
+          return stop.stop_requested() ||
+                 (drain_requested_ && !unavailable_ && !HasWork()) ||
+                 (!unavailable_ && HasWork()) ||
+                 (unavailable_ && steady_now_() >= reconnect_at_);
+        });
+        if (stop.stop_requested()) {
+          Finish();
+          return;
+        }
+        if (unavailable_) {
+          if (steady_now_() < reconnect_at_) continue;
+          reconnect = true;
+        } else if (!provisions_.empty()) {
+          auto node = provisions_.extract(provisions_.begin());
+          provisioning_.insert(node.key());
+          provision = std::move(node.mapped());
+        } else if (!writes_.empty()) {
+          auto node = writes_.extract(writes_.begin());
+          write = std::move(node.mapped());
+        } else if (drain_requested_) {
+          Finish();
+          return;
+        }
+      }
 
-bool PostgresWorker::FlushAndStop(std::chrono::seconds timeout) {
-  stopping_ = true;
-  incoming_.Close();
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  do {
-    ProcessReady();
-    if (incoming_.Size() == 0 && pending_.empty()) return true;
-    if (unavailable_) return false;
-    std::this_thread::yield();
-  } while (std::chrono::steady_clock::now() < deadline);
-  return false;
-}
+      if (reconnect) {
+        std::expected<void, DatabaseError> result;
+        try {
+          result = store_.ReconnectAndValidate();
+        } catch (const std::exception&) {
+          result = std::unexpected(DatabaseError{
+              DatabaseError::Kind::kPermanent, "数据库重连校验端口异常"});
+        } catch (...) {
+          result = std::unexpected(DatabaseError{
+              DatabaseError::Kind::kPermanent, "数据库重连校验发生未知异常"});
+        }
+        if (!result) {
+          if (result.error().kind == DatabaseError::Kind::kUnavailable) {
+            {
+              std::lock_guard lock(mutex_);
+              reconnect_at_ = steady_now_() + kReconnectDelay;
+            }
+            Diagnose(result.error().message);
+            continue;
+          }
+          Emit({DatabaseResult::Kind::kPermanentFailure, {}, 0, std::nullopt,
+                result.error().message});
+          Diagnose(result.error().message);
+          std::lock_guard lock(mutex_);
+          accepting_ = false;
+          provisions_.clear();
+          writes_.clear();
+          Finish();
+          return;
+        }
+        {
+          std::lock_guard lock(mutex_);
+          unavailable_ = false;
+        }
+        Emit({DatabaseResult::Kind::kRecovered, {}, 0, std::nullopt, {}});
+        try {
+          replay_();
+        } catch (const std::exception&) {
+          Diagnose("registration retained replay 回调异常");
+        } catch (...) {
+          Diagnose("registration retained replay 回调发生未知异常");
+        }
+        continue;
+      }
 
-void PostgresWorker::ProcessReady() {
-  while (incoming_.Size() != 0) {
-    if (auto task = incoming_.WaitPop()) pending_.push_back(std::move(*task));
-  }
-  const auto now = steady_now_();
-  if (unavailable_) {
-    if (now < reconnect_at_) return;
-    auto reconnected = store_.ReconnectAndValidate();
-    if (!reconnected) {
-      reconnect_at_ = now + kReconnectDelay;
-      return;
+      if (provision) {
+        std::expected<device::DeviceRecord, DatabaseError> result;
+        try {
+          result = store_.Provision(provision->registration,
+                                    provision->received_at);
+        } catch (const std::exception&) {
+          result = std::unexpected(DatabaseError{
+              DatabaseError::Kind::kPermanent, "数据库建档端口异常"});
+        } catch (...) {
+          result = std::unexpected(DatabaseError{
+              DatabaseError::Kind::kPermanent, "数据库建档发生未知异常"});
+        }
+        {
+          std::lock_guard lock(mutex_);
+          provisioning_.erase(provision->registration.vendor_id);
+        }
+        if (result) {
+          Emit({DatabaseResult::Kind::kProvisioned,
+                provision->registration.vendor_id, result->revision,
+                std::move(*result), {}});
+        } else {
+          if (result.error().kind == DatabaseError::Kind::kUnavailable) {
+            std::lock_guard lock(mutex_);
+            unavailable_ = true;
+            reconnect_at_ = steady_now_() + kReconnectDelay;
+          }
+          const auto kind = result.error().kind == DatabaseError::Kind::kUnavailable
+              ? DatabaseResult::Kind::kUnavailable
+              : DatabaseResult::Kind::kPermanentFailure;
+          Emit({kind, provision->registration.vendor_id, 0, std::nullopt,
+                result.error().message});
+          Diagnose(result.error().message);
+        }
+        continue;
+      }
+
+      std::expected<void, DatabaseError> result;
+      try {
+        result = store_.Write(*write);
+      } catch (const std::exception&) {
+        result = std::unexpected(DatabaseError{
+            DatabaseError::Kind::kPermanent, "数据库写入端口异常"});
+      } catch (...) {
+        result = std::unexpected(DatabaseError{
+            DatabaseError::Kind::kPermanent, "数据库写入发生未知异常"});
+      }
+      if (result) {
+        Emit({DatabaseResult::Kind::kWriteCompleted, write->record.vendor_id,
+              write->revision, std::nullopt, {}});
+      } else {
+        if (result.error().kind == DatabaseError::Kind::kUnavailable) {
+          std::lock_guard lock(mutex_);
+          unavailable_ = true;
+          reconnect_at_ = steady_now_() + kReconnectDelay;
+          MergeWrite(*write);
+        }
+        const auto kind = result.error().kind == DatabaseError::Kind::kUnavailable
+            ? DatabaseResult::Kind::kUnavailable
+            : DatabaseResult::Kind::kPermanentFailure;
+        Emit({kind, write->record.vendor_id, write->revision, std::nullopt,
+              result.error().message});
+        Diagnose(result.error().message);
+      }
     }
-    unavailable_ = false;
-    results_({DatabaseResult::Kind::kRecovered, {}, 0, std::nullopt, {}});
-    replay_();
+  } catch (const std::exception&) {
+    Emit({DatabaseResult::Kind::kPermanentFailure, {}, 0, std::nullopt,
+          "PostgreSQL 工作线程端口异常"});
+    Diagnose("PostgreSQL 工作线程异常退出");
+  } catch (...) {
+    Emit({DatabaseResult::Kind::kPermanentFailure, {}, 0, std::nullopt,
+          "PostgreSQL 工作线程发生未知异常"});
+    Diagnose("PostgreSQL 工作线程发生未知异常并退出");
   }
-  while (!pending_.empty()) {
-    if (!Execute(pending_.front())) {
-      // 未建档设备由业务线程在断线时拒绝；恢复后只接受 retained replay，
-      // 避免用故障前的旧候选偷偷建档。已登记设备写入则必须保留补写。
-      if (pending_.front().registration) pending_.pop_front();
-      return;
-    }
-    pending_.pop_front();
+  {
+    std::lock_guard lock(mutex_);
+    Finish();
   }
 }
 
-bool PostgresWorker::Execute(Task& task) {
-  if (task.registration) {
-    auto result = store_.Provision(*task.registration, task.received_at);
-    if (result) {
-      results_({DatabaseResult::Kind::kProvisioned, task.registration->vendor_id,
-                result->revision, std::move(*result), {}});
-      return true;
-    }
-    unavailable_ = true;
-    reconnect_at_ = steady_now_() + kReconnectDelay;
-    results_({DatabaseResult::Kind::kUnavailable, task.registration->vendor_id,
-              0, std::nullopt, result.error()});
-    return false;
-  }
-  auto result = store_.Write(*task.write);
-  if (result) {
-    results_({DatabaseResult::Kind::kWriteCompleted, task.write->record.vendor_id,
-              task.write->revision, std::nullopt, {}});
-    return true;
-  }
-  unavailable_ = true;
-  reconnect_at_ = steady_now_() + kReconnectDelay;
-  results_({DatabaseResult::Kind::kUnavailable, task.write->record.vendor_id,
-            task.write->revision, std::nullopt, result.error()});
-  return false;
+bool PostgresWorker::FlushAndStop(std::chrono::milliseconds timeout) {
+  std::unique_lock lock(mutex_);
+  accepting_ = false;
+  drain_requested_ = true;
+  changed_.notify_all();
+  return changed_.wait_until(lock, std::chrono::steady_clock::now() + timeout,
+                             [this] { return worker_stopped_; });
 }
 
-void PostgresWorker::Notify() { wake_.notify_all(); }
+void PostgresWorker::Emit(DatabaseResult result) noexcept {
+  try {
+    results_(std::move(result));
+  } catch (const std::exception&) {
+    Diagnose("数据库结果回调异常");
+  } catch (...) {
+    Diagnose("数据库结果回调发生未知异常");
+  }
+}
+
+void PostgresWorker::Diagnose(std::string message) noexcept {
+  if (!diagnostic_) return;
+  try { diagnostic_(std::move(message)); } catch (...) {}
+}
+
+void PostgresWorker::Finish() noexcept {
+  // 调用方可能已持锁；worker_stopped_ 只在 Run 线程写，等待方持锁读取。
+  worker_stopped_ = true;
+  accepting_ = false;
+  changed_.notify_all();
+}
+
+void PostgresWorker::MergeWrite(persistence::DesiredDeviceWrite write) {
+  const auto vendor = write.record.vendor_id;
+  const auto it = writes_.find(vendor);
+  if (it == writes_.end()) {
+    writes_.emplace(vendor, std::move(write));
+    return;
+  }
+  auto& current = it->second;
+  current.write_metadata = current.write_metadata || write.write_metadata;
+  current.write_status = current.write_status || write.write_status;
+  current.write_telemetry = current.write_telemetry || write.write_telemetry;
+  if (write.revision >= current.revision) {
+    current.record = std::move(write.record);
+    current.revision = write.revision;
+  }
+  if (write.urgency == persistence::Urgency::kImmediate) {
+    current.urgency = persistence::Urgency::kImmediate;
+  }
+}
+
+bool PostgresWorker::HasWork() const {
+  return !provisions_.empty() || !writes_.empty();
+}
 }  // namespace cns::runtime

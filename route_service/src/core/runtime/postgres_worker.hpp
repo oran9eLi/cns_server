@@ -1,65 +1,82 @@
 #pragma once
 
 #include <chrono>
-#include <atomic>
 #include <condition_variable>
-#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <stop_token>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 
-#include "core/queue/bounded_queue.hpp"
 #include "core/runtime/device_service.hpp"
 
 namespace cns::runtime {
+
+struct DatabaseError {
+  enum class Kind { kUnavailable, kPermanent };
+  Kind kind;
+  std::string message;
+};
 
 class PostgresWorker {
  public:
   class StorePort {
    public:
     virtual ~StorePort() = default;
-    virtual std::expected<device::DeviceRecord, std::string> Provision(
+    virtual std::expected<device::DeviceRecord, DatabaseError> Provision(
         const protocol::Registration&, TimePoint) = 0;
-    virtual std::expected<void, std::string> Write(
+    virtual std::expected<void, DatabaseError> Write(
         const persistence::DesiredDeviceWrite&) = 0;
-    virtual std::expected<void, std::string> ReconnectAndValidate() = 0;
+    virtual std::expected<void, DatabaseError> ReconnectAndValidate() = 0;
   };
 
   using ResultSink = std::function<void(DatabaseResult)>;
   using ReplayRequest = std::function<void()>;
   using SteadyNow = std::function<std::chrono::steady_clock::time_point()>;
+  using DiagnosticSink = std::function<void(std::string)>;
 
   PostgresWorker(StorePort& store, ResultSink results, ReplayRequest replay,
-                 SteadyNow steady_now, std::size_t capacity = 1024);
+                 SteadyNow steady_now, DiagnosticSink diagnostic = {});
 
-  void SubmitProvision(protocol::Registration registration, TimePoint at);
-  void SubmitWrite(persistence::DesiredDeviceWrite write);
+  // 按 vendor 接纳并合并最终期望；停止接纳后明确返回 false。
+  bool SubmitProvision(protocol::Registration registration, TimePoint at);
+  bool SubmitWrite(persistence::DesiredDeviceWrite write);
+  // 唯一允许调用 StorePort 的入口。
   void Run(std::stop_token stop);
-  bool FlushAndStop(std::chrono::seconds timeout);
-  void ProcessReady();
+  // 只请求 Run 线程排空并等待，不调用 StorePort。
+  bool FlushAndStop(std::chrono::milliseconds timeout);
 
  private:
-  struct Task {
-    std::optional<protocol::Registration> registration;
-    TimePoint received_at{};
-    std::optional<persistence::DesiredDeviceWrite> write;
+  struct ProvisionTask {
+    protocol::Registration registration;
+    TimePoint received_at;
   };
 
-  void Notify();
-  bool Execute(Task& task);
+  void Emit(DatabaseResult result) noexcept;
+  void Diagnose(std::string message) noexcept;
+  void Finish() noexcept;
+  void MergeWrite(persistence::DesiredDeviceWrite write);
+  bool HasWork() const;
 
   StorePort& store_;
   ResultSink results_;
   ReplayRequest replay_;
   SteadyNow steady_now_;
-  queue::BoundedQueue<Task> incoming_;
-  std::deque<Task> pending_;
+  DiagnosticSink diagnostic_;
+  mutable std::mutex mutex_;
+  std::condition_variable changed_;
+  std::unordered_map<std::string, ProvisionTask> provisions_;
+  std::unordered_map<std::string, persistence::DesiredDeviceWrite> writes_;
+  std::unordered_set<std::string> provisioning_;
   bool unavailable_ = false;
-  std::atomic_bool stopping_{false};
+  bool accepting_ = true;
+  bool drain_requested_ = false;
+  bool worker_stopped_ = false;
   std::chrono::steady_clock::time_point reconnect_at_{};
-  mutable std::mutex wake_mutex_;
-  std::condition_variable_any wake_;
 };
 
 }  // namespace cns::runtime
