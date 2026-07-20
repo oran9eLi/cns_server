@@ -24,6 +24,7 @@ using cns::runtime::DeviceService;
 using cns::runtime::PostgresWorker;
 constexpr auto kKnown = "A1b2C3d4E5f6G7h8I9j0";
 constexpr auto kNew = "Z9y8X7w6V5u4T3s2R1q0";
+constexpr auto kOther = "M1n2B3v4C5x6Z7a8S9d0";
 
 std::string RegistrationJson(std::string_view vendor,
                              std::string_view school = "SEU",
@@ -565,6 +566,93 @@ TEST_CASE("throwing replay callback is diagnosed and worker still drains") {
       return error.find("replay") != std::string::npos;
     });
   }));
+  CHECK(worker.FlushAndStop(500ms));
+}
+
+TEST_CASE("write unavailable clears all accepted provisions before recovery") {
+  struct BlockingUnavailableWrite final : FakeStore {
+    std::atomic_bool entered{false};
+    std::atomic_bool release{false};
+    std::atomic_int attempts{0};
+    std::expected<void, cns::runtime::DatabaseError> Write(
+        const DesiredDeviceWrite&) override {
+      Called("write");
+      if (++attempts > 1) return {};
+      entered = true;
+      while (!release) std::this_thread::yield();
+      return std::unexpected(cns::runtime::DatabaseError{
+          cns::runtime::DatabaseError::Kind::kUnavailable,
+          "password=do-not-log"});
+    }
+  } store;
+  std::atomic<std::int64_t> now_ms{0};
+  std::vector<DatabaseResult> results;
+  std::vector<std::string> diagnostics;
+  std::mutex observed;
+  PostgresWorker worker(store, [&](DatabaseResult result) {
+    std::lock_guard lock(observed); results.push_back(std::move(result));
+  }, [] {}, [&] {
+    return std::chrono::steady_clock::time_point{std::chrono::milliseconds{now_ms.load()}};
+  }, [&](std::string diagnostic) {
+    std::lock_guard lock(observed); diagnostics.push_back(std::move(diagnostic));
+  });
+  std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });
+  REQUIRE(worker.SubmitWrite({Record(kKnown, 2), 2, false, true, false,
+                              cns::persistence::Urgency::kImmediate}));
+  REQUIRE(WaitUntil([&] { return store.entered.load(); }));
+  REQUIRE(worker.SubmitProvision(
+      {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-001"}, {}));
+  REQUIRE(worker.SubmitProvision(
+      {kOther, RegistrationStatus::kOnline, "SEU", "DCDW-002"}, {}));
+  store.release = true;
+  REQUIRE(WaitUntil([&] {
+    std::lock_guard lock(observed); return !results.empty();
+  }));
+  store.connected = true;
+  now_ms = 5000;
+  REQUIRE(WaitUntil([&] { return store.Calls().size() >= 3; }));
+  CHECK(store.Calls() == std::vector<std::string>{"write", "validate", "write"});
+  { std::lock_guard lock(observed);
+    CHECK(results.front().error.find("password") == std::string::npos);
+    CHECK(std::ranges::none_of(diagnostics, [](const std::string& value) {
+      return value.find("password") != std::string::npos;
+    })); }
+  CHECK(worker.FlushAndStop(500ms));
+}
+
+TEST_CASE("provision unavailable clears other vendors and merged latest candidate") {
+  struct BlockingUnavailableProvision final : FakeStore {
+    std::atomic_bool entered{false};
+    std::atomic_bool release{false};
+    std::expected<DeviceRecord, cns::runtime::DatabaseError> Provision(
+        const Registration& registration, cns::runtime::TimePoint) override {
+      Called("provision:" + registration.vendor_id);
+      entered = true;
+      while (!release) std::this_thread::yield();
+      return std::unexpected(cns::runtime::DatabaseError{
+          cns::runtime::DatabaseError::Kind::kUnavailable, "连接串秘密"});
+    }
+  } store;
+  std::atomic<std::int64_t> now_ms{0};
+  std::atomic_int results{0};
+  PostgresWorker worker(store, [&](DatabaseResult) { ++results; }, [] {}, [&] {
+    return std::chrono::steady_clock::time_point{std::chrono::milliseconds{now_ms.load()}};
+  });
+  std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });
+  REQUIRE(worker.SubmitProvision(
+      {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-001"}, {}));
+  REQUIRE(WaitUntil([&] { return store.entered.load(); }));
+  REQUIRE(worker.SubmitProvision(
+      {kNew, RegistrationStatus::kOnline, "SEU", "DCDW-009"}, {}));
+  REQUIRE(worker.SubmitProvision(
+      {kOther, RegistrationStatus::kOnline, "SEU", "DCDW-002"}, {}));
+  store.release = true;
+  REQUIRE(WaitUntil([&] { return results.load() == 1; }));
+  store.connected = true;
+  now_ms = 5000;
+  REQUIRE(WaitUntil([&] { return store.Calls().size() >= 2; }));
+  CHECK(store.Calls().size() == 2);
+  CHECK(store.Calls().back() == "validate");
   CHECK(worker.FlushAndStop(500ms));
 }
 }  // namespace

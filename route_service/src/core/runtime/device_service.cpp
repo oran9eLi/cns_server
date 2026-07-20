@@ -149,7 +149,7 @@ void DeviceService::Handle(DatabaseResult result) {
       Publish({*record, reason, true});
     }
     pending_.clear();
-    Diagnose(result.error.empty() ? "数据库暂不可用" : result.error);
+    Diagnose("数据库暂不可用，设备状态进入降级模式");
     return;
   }
   if (result.kind == DatabaseResult::Kind::kPermanentFailure) {
@@ -161,7 +161,7 @@ void DeviceService::Handle(DatabaseResult result) {
           : state_event::ChangeReason::kTelemetry;
       Publish({*record, reason, true});
     }
-    Diagnose(result.error.empty() ? "数据库永久错误" : result.error);
+    Diagnose("数据库操作永久失败，已拒绝相关待处理操作");
     return;
   }
   if (result.kind == DatabaseResult::Kind::kRecovered) {

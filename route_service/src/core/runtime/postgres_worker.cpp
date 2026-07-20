@@ -5,7 +5,15 @@
 #include <utility>
 
 namespace cns::runtime {
-namespace { constexpr auto kReconnectDelay = std::chrono::seconds{5}; }
+namespace {
+constexpr auto kReconnectDelay = std::chrono::seconds{5};
+constexpr auto kReconnectUnavailable = "数据库重连暂不可用";
+constexpr auto kMigrationPermanent = "数据库迁移版本校验永久失败";
+constexpr auto kProvisionUnavailable = "数据库建档暂不可用";
+constexpr auto kProvisionPermanent = "数据库建档永久失败";
+constexpr auto kWriteUnavailable = "数据库写入暂不可用";
+constexpr auto kWritePermanent = "数据库写入永久失败";
+}  // namespace
 
 PostgresWorker::PostgresWorker(StorePort& store, ResultSink results,
     ReplayRequest replay, SteadyNow steady_now, DiagnosticSink diagnostic)
@@ -17,10 +25,8 @@ bool PostgresWorker::SubmitProvision(protocol::Registration registration,
   std::lock_guard lock(mutex_);
   if (!accepting_) return false;
   const auto vendor = registration.vendor_id;
-  if (!provisioning_.contains(vendor)) {
-    provisions_.insert_or_assign(vendor,
-                                 ProvisionTask{std::move(registration), at});
-  }
+  provisions_.insert_or_assign(vendor,
+                               ProvisionTask{std::move(registration), at});
   changed_.notify_one();
   return true;
 }
@@ -85,12 +91,12 @@ void PostgresWorker::Run(std::stop_token stop) {
               std::lock_guard lock(mutex_);
               reconnect_at_ = steady_now_() + kReconnectDelay;
             }
-            Diagnose(result.error().message);
+            Diagnose(kReconnectUnavailable);
             continue;
           }
           Emit({DatabaseResult::Kind::kPermanentFailure, {}, 0, std::nullopt,
-                result.error().message});
-          Diagnose(result.error().message);
+                kMigrationPermanent});
+          Diagnose(kMigrationPermanent);
           std::lock_guard lock(mutex_);
           accepting_ = false;
           provisions_.clear();
@@ -128,6 +134,9 @@ void PostgresWorker::Run(std::stop_token stop) {
         {
           std::lock_guard lock(mutex_);
           provisioning_.erase(provision->registration.vendor_id);
+          // 在途期间接纳的同 vendor 最新候选由 DeviceService 保留并在
+          // kProvisioned 后应用；不能再次调用建档 store。
+          provisions_.erase(provision->registration.vendor_id);
         }
         if (result) {
           Emit({DatabaseResult::Kind::kProvisioned,
@@ -138,13 +147,17 @@ void PostgresWorker::Run(std::stop_token stop) {
             std::lock_guard lock(mutex_);
             unavailable_ = true;
             reconnect_at_ = steady_now_() + kReconnectDelay;
+            // 故障前尚未执行的新设备建档全部作废；恢复只依赖 retained replay。
+            provisions_.clear();
           }
           const auto kind = result.error().kind == DatabaseError::Kind::kUnavailable
               ? DatabaseResult::Kind::kUnavailable
               : DatabaseResult::Kind::kPermanentFailure;
+          const auto context = result.error().kind == DatabaseError::Kind::kUnavailable
+              ? kProvisionUnavailable : kProvisionPermanent;
           Emit({kind, provision->registration.vendor_id, 0, std::nullopt,
-                result.error().message});
-          Diagnose(result.error().message);
+                context});
+          Diagnose(context);
         }
         continue;
       }
@@ -168,13 +181,17 @@ void PostgresWorker::Run(std::stop_token stop) {
           unavailable_ = true;
           reconnect_at_ = steady_now_() + kReconnectDelay;
           MergeWrite(*write);
+          // 任一运行中连接故障都会使故障前新设备候选失效。
+          provisions_.clear();
         }
         const auto kind = result.error().kind == DatabaseError::Kind::kUnavailable
             ? DatabaseResult::Kind::kUnavailable
             : DatabaseResult::Kind::kPermanentFailure;
+        const auto context = result.error().kind == DatabaseError::Kind::kUnavailable
+            ? kWriteUnavailable : kWritePermanent;
         Emit({kind, write->record.vendor_id, write->revision, std::nullopt,
-              result.error().message});
-        Diagnose(result.error().message);
+              context});
+        Diagnose(context);
       }
     }
   } catch (const std::exception&) {
