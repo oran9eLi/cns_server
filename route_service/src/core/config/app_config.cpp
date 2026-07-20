@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iterator>
 #include <string_view>
+#include <unordered_set>
 
 namespace cns::config {
 namespace {
@@ -79,7 +80,7 @@ std::expected<void, std::string> CheckRoot(const Json& root) {
     return Error("配置", "顶层必须是对象");
   }
   constexpr std::array allowed{"database"sv, "mqtt"sv, "logging"sv, "queues"sv,
-                               "device_state"sv};
+                               "device_state"sv, "command"sv};
   for (const auto& [field, unused] : root.items()) {
     (void)unused;
     if (std::ranges::find(allowed, field) == allowed.end()) {
@@ -222,6 +223,87 @@ std::expected<QueueConfig, std::string> ParseQueues(const Json& root) {
   return QueueConfig{static_cast<std::size_t>(*capacity)};
 }
 
+bool IsValidSourceId(std::string_view source_id) {
+  if (source_id.empty() || source_id.size() > 64) return false;
+  return std::ranges::all_of(source_id, [](unsigned char character) {
+    return std::isalnum(character) != 0 || character == '.' || character == '_' ||
+           character == '-';
+  });
+}
+
+std::expected<CommandConfig, std::string> ParseCommand(const Json& root) {
+  constexpr std::array allowed{
+      "config_timeout_seconds"sv, "terminal_retention_days"sv,
+      "cleanup_interval_seconds"sv, "cleanup_batch_size"sv,
+      "max_inflight_commands"sv, "fixed_sources"sv};
+  const auto object = ReadObject(root, "command", "command", allowed);
+  if (!object) return std::unexpected(object.error());
+
+  const auto timeout = ReadInteger(**object, "config_timeout_seconds",
+                                   "command.config_timeout_seconds", 1, 300);
+  if (!timeout) return std::unexpected(timeout.error());
+  const auto retention = ReadInteger(**object, "terminal_retention_days",
+                                     "command.terminal_retention_days", 1, 3650);
+  if (!retention) return std::unexpected(retention.error());
+  const auto cleanup_interval = ReadInteger(
+      **object, "cleanup_interval_seconds", "command.cleanup_interval_seconds", 60,
+      86400);
+  if (!cleanup_interval) return std::unexpected(cleanup_interval.error());
+  const auto cleanup_batch = ReadInteger(**object, "cleanup_batch_size",
+                                         "command.cleanup_batch_size", 1, 1000);
+  if (!cleanup_batch) return std::unexpected(cleanup_batch.error());
+  const auto max_inflight = ReadInteger(**object, "max_inflight_commands",
+                                        "command.max_inflight_commands", 1, 4096);
+  if (!max_inflight) return std::unexpected(max_inflight.error());
+
+  if (!(**object).contains("fixed_sources")) {
+    return Error("command.fixed_sources", "缺少必填字段");
+  }
+  const auto& sources = (**object).at("fixed_sources");
+  if (!sources.is_array()) return Error("command.fixed_sources", "必须是数组");
+
+  std::vector<FixedSourceConfig> parsed_sources;
+  std::unordered_set<std::string> source_ids;
+  parsed_sources.reserve(sources.size());
+  for (std::size_t index = 0; index < sources.size(); ++index) {
+    const auto path = "command.fixed_sources[" + std::to_string(index) + "]";
+    const auto& source = sources[index];
+    if (!source.is_object()) return Error(path, "必须是对象");
+    for (const auto& [field, unused] : source.items()) {
+      (void)unused;
+      if (field != "source_id" && field != "source_kind") {
+        return Error(path + "." + field, "未知字段");
+      }
+    }
+    const auto source_id = ReadString(source, "source_id", path + ".source_id");
+    if (!source_id) return std::unexpected(source_id.error());
+    if (!IsValidSourceId(*source_id)) {
+      return Error(path + ".source_id", "必须匹配[A-Za-z0-9._-]+且长度不超过64");
+    }
+    if (!source_ids.insert(*source_id).second) {
+      return Error(path + ".source_id", "source_id不得重复");
+    }
+    const auto kind = ReadString(source, "source_kind", path + ".source_kind");
+    if (!kind) return std::unexpected(kind.error());
+    FixedSourceKind parsed_kind;
+    if (*kind == "host_app") {
+      parsed_kind = FixedSourceKind::kHostApp;
+    } else if (*kind == "control_center") {
+      parsed_kind = FixedSourceKind::kControlCenter;
+    } else {
+      return Error(path + ".source_kind", "只接受host_app或control_center");
+    }
+    parsed_sources.push_back({*source_id, parsed_kind});
+  }
+
+  return CommandConfig{
+      std::chrono::seconds{static_cast<long>(*timeout)},
+      std::chrono::days{static_cast<long>(*retention)},
+      std::chrono::seconds{static_cast<long>(*cleanup_interval)},
+      static_cast<std::size_t>(*cleanup_batch),
+      static_cast<std::size_t>(*max_inflight), std::move(parsed_sources)};
+}
+
 }  // namespace
 
 std::expected<AppConfig, std::string> LoadAppConfig(
@@ -243,7 +325,9 @@ std::expected<AppConfig, std::string> LoadAppConfig(
     if (!queues) return std::unexpected(queues.error());
     const auto device_state = ParseDeviceState(root, mqtt->keepalive);
     if (!device_state) return std::unexpected(device_state.error());
-    return AppConfig{*database, *mqtt, *logging, *queues, *device_state};
+    const auto command = ParseCommand(root);
+    if (!command) return std::unexpected(command.error());
+    return AppConfig{*database, *mqtt, *logging, *queues, *device_state, *command};
   } catch (const Json::exception&) {
     return Error("配置文件", "JSON 格式错误");
   } catch (const std::exception&) {

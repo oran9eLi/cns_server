@@ -7,6 +7,7 @@
 #include <expected>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "core/logging/logger.hpp"
 
@@ -48,12 +49,31 @@ struct DeviceStateConfig {
   std::chrono::seconds offline_timeout;
 };
 
+enum class FixedSourceKind { kHostApp, kControlCenter };
+
+struct FixedSourceConfig {
+  std::string source_id;
+  FixedSourceKind source_kind;
+
+  bool operator==(const FixedSourceConfig&) const = default;
+};
+
+struct CommandConfig {
+  std::chrono::seconds config_timeout{15};
+  std::chrono::days terminal_retention{30};
+  std::chrono::seconds cleanup_interval{3600};
+  std::size_t cleanup_batch_size{100};
+  std::size_t max_inflight_commands{256};
+  std::vector<FixedSourceConfig> fixed_sources;
+};
+
 struct AppConfig {
   DatabaseConfig database;
   MqttConfig mqtt;
   LoggingConfig logging;
   QueueConfig queues;
   DeviceStateConfig device_state;
+  CommandConfig command{};
 };
 
 std::expected<AppConfig, std::string> LoadAppConfig(

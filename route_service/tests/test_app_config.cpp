@@ -31,7 +31,19 @@ std::string ValidJson() {
   },
   "logging": {"level": "info"},
   "queues": {"mqtt_inbound_capacity": 256},
-  "device_state": {"telemetry_flush_interval_seconds": 5, "offline_timeout_seconds": 120}
+  "device_state": {"telemetry_flush_interval_seconds": 5, "offline_timeout_seconds": 120},
+  "command": {
+    "config_timeout_seconds": 15,
+    "terminal_retention_days": 30,
+    "cleanup_interval_seconds": 3600,
+    "cleanup_batch_size": 100,
+    "max_inflight_commands": 256,
+    "fixed_sources": [
+      {"source_id": "hardware-console", "source_kind": "host_app"},
+      {"source_id": "main-control", "source_kind": "control_center"},
+      {"source_id": "web-console", "source_kind": "host_app"}
+    ]
+  }
 })";
 }
 
@@ -87,6 +99,60 @@ TEST_CASE("完整配置准确解析为强类型结构") {
   CHECK(result->queues.mqtt_inbound_capacity == 256);
   CHECK(result->device_state.telemetry_flush_interval == std::chrono::seconds{5});
   CHECK(result->device_state.offline_timeout == std::chrono::seconds{120});
+  CHECK(result->command.config_timeout == std::chrono::seconds{15});
+  CHECK(result->command.terminal_retention == std::chrono::days{30});
+  CHECK(result->command.cleanup_interval == std::chrono::seconds{3600});
+  CHECK(result->command.cleanup_batch_size == 100);
+  CHECK(result->command.max_inflight_commands == 256);
+  REQUIRE(result->command.fixed_sources.size() == 3);
+  CHECK(result->command.fixed_sources[0].source_id == "hardware-console");
+  CHECK(result->command.fixed_sources[0].source_kind ==
+        cns::config::FixedSourceKind::kHostApp);
+  CHECK(result->command.fixed_sources[1].source_kind ==
+        cns::config::FixedSourceKind::kControlCenter);
+}
+
+TEST_CASE("命令配置拒绝重复来源与非法来源") {
+  auto duplicate = ValidJson();
+  Replace(duplicate, "main-control", "hardware-console");
+  CheckRejected(duplicate, "command.fixed_sources[1].source_id");
+
+  auto device = ValidJson();
+  Replace(device, "control_center", "device");
+  CheckRejected(device, "command.fixed_sources[1].source_kind");
+
+  auto invalid_id = ValidJson();
+  Replace(invalid_id, "hardware-console", "hardware/console");
+  CheckRejected(invalid_id, "command.fixed_sources[0].source_id");
+}
+
+TEST_CASE("命令配置严格校验未知字段和数值边界") {
+  const auto check = [](const std::string& token, const std::string& replacement,
+                        const std::string& path) {
+    auto json = ValidJson();
+    Replace(json, token, replacement);
+    CheckRejected(json, path);
+  };
+  for (const auto& [token, low, high, path] :
+       std::initializer_list<std::tuple<std::string, std::string, std::string,
+                                        std::string>>{
+           {"config_timeout_seconds\": 15", "config_timeout_seconds\": 0",
+            "config_timeout_seconds\": 301", "command.config_timeout_seconds"},
+           {"terminal_retention_days\": 30", "terminal_retention_days\": 0",
+            "terminal_retention_days\": 3651", "command.terminal_retention_days"},
+           {"cleanup_interval_seconds\": 3600", "cleanup_interval_seconds\": 59",
+            "cleanup_interval_seconds\": 86401", "command.cleanup_interval_seconds"},
+           {"cleanup_batch_size\": 100", "cleanup_batch_size\": 0",
+            "cleanup_batch_size\": 1001", "command.cleanup_batch_size"},
+           {"max_inflight_commands\": 256", "max_inflight_commands\": 0",
+            "max_inflight_commands\": 4097", "command.max_inflight_commands"}}) {
+    check(token, low, path);
+    check(token, high, path);
+  }
+  check("cleanup_batch_size\": 100", "cleanup_batch_size\": true",
+        "command.cleanup_batch_size");
+  check("max_inflight_commands\": 256",
+        "max_inflight_commands\": 256, \"unknown\": 1", "command.unknown");
 }
 
 TEST_CASE("新增配置成员具有兼容旧调用点的安全默认值") {

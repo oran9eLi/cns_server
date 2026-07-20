@@ -29,5 +29,26 @@
   "device_state": {
     "telemetry_flush_interval_seconds": 5,
     "offline_timeout_seconds": 120
+  },
+  "command": {
+    "config_timeout_seconds": 15,
+    "terminal_retention_days": 30,
+    "cleanup_interval_seconds": 3600,
+    "cleanup_batch_size": 100,
+    "max_inflight_commands": 256,
+    "fixed_sources": [
+      {
+        "source_id": "hardware-console",
+        "source_kind": "host_app"
+      },
+      {
+        "source_id": "main-control",
+        "source_kind": "control_center"
+      },
+      {
+        "source_id": "web-console",
+        "source_kind": "host_app"
+      }
+    ]
   }
 }
