@@ -120,7 +120,8 @@ std::expected<DatabaseConfig, std::string> ParseDatabase(const Json& root) {
 bool IsValidTopicNamespace(std::string_view value) {
   if (value.empty()) return false;
   return std::ranges::none_of(value, [](unsigned char character) {
-    return character == '/' || character == '+' || character == '#' ||
+    return character == '\0' || character == '/' || character == '+' ||
+           character == '#' ||
            std::isspace(character) != 0;
   });
 }

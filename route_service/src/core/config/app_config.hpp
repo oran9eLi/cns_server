@@ -19,7 +19,7 @@ struct DatabaseConfig {
   std::string user;
   std::string password;
   std::chrono::seconds connect_timeout;
-  std::chrono::seconds reconnect_interval{};
+  std::chrono::seconds reconnect_interval{5};
 };
 
 struct MqttConfig {
@@ -32,7 +32,7 @@ struct MqttConfig {
   std::chrono::seconds reconnect_delay;
   std::chrono::seconds reconnect_delay_max;
   std::string topic_namespace{};
-  std::size_t max_payload_bytes{};
+  std::size_t max_payload_bytes{262144};
 };
 
 struct LoggingConfig {

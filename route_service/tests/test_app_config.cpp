@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <string>
 #include <tuple>
+#include <utility>
 
 namespace {
 
@@ -88,6 +89,21 @@ TEST_CASE("完整配置准确解析为强类型结构") {
   CHECK(result->device_state.offline_timeout == std::chrono::seconds{120});
 }
 
+TEST_CASE("新增配置成员具有兼容旧调用点的安全默认值") {
+  const cns::config::DatabaseConfig database{};
+  const cns::config::MqttConfig mqtt{};
+  CHECK(database.reconnect_interval == std::chrono::seconds{5});
+  CHECK(mqtt.max_payload_bytes == 262144);
+
+  const cns::config::DatabaseConfig compatible_database{
+      "host", 5432, "name", "user", "password", std::chrono::seconds{5}};
+  const cns::config::MqttConfig compatible_mqtt{
+      "host", 1883, std::chrono::seconds{60}, "client", "", "",
+      std::chrono::seconds{1}, std::chrono::seconds{30}};
+  CHECK(compatible_database.reconnect_interval == std::chrono::seconds{5});
+  CHECK(compatible_mqtt.max_payload_bytes == 262144);
+}
+
 TEST_CASE("新增配置字段均为必填") {
   for (const auto& [from, to, path] : std::initializer_list<std::tuple<std::string, std::string, std::string>>{
            {R"(, "connect_timeout_seconds": 5,
@@ -106,8 +122,29 @@ TEST_CASE("device_state 严格拒绝缺失未知与错误类型") {
            {R"("telemetry_flush_interval_seconds": 5, )", "", "device_state.telemetry_flush_interval_seconds"},
            {R"(, "offline_timeout_seconds": 120)", "", "device_state.offline_timeout_seconds"},
            {R"("offline_timeout_seconds": 120)", R"("unknown": 1, "offline_timeout_seconds": 120)", "device_state.unknown"},
+           {R"("telemetry_flush_interval_seconds": 5)", R"("telemetry_flush_interval_seconds": "5")", "device_state.telemetry_flush_interval_seconds"},
            {R"("offline_timeout_seconds": 120)", R"("offline_timeout_seconds": "120")", "device_state.offline_timeout_seconds"}}) {
     auto json = ValidJson(); Replace(json, from, to); CheckRejected(json, path);
+  }
+}
+
+TEST_CASE("新增整数配置接受完整合法范围端点") {
+  for (const auto& [token, replacement] :
+       std::initializer_list<std::pair<std::string, std::string>>{
+           {"reconnect_interval_seconds\": 5", "reconnect_interval_seconds\": 1"},
+           {"reconnect_interval_seconds\": 5", "reconnect_interval_seconds\": 300"},
+           {"max_payload_bytes\": 262144", "max_payload_bytes\": 1024"},
+           {"max_payload_bytes\": 262144", "max_payload_bytes\": 1048576"},
+           {"telemetry_flush_interval_seconds\": 5", "telemetry_flush_interval_seconds\": 1"},
+           {"telemetry_flush_interval_seconds\": 5", "telemetry_flush_interval_seconds\": 60"},
+           {"offline_timeout_seconds\": 120", "offline_timeout_seconds\": 61"},
+           {"offline_timeout_seconds\": 120", "offline_timeout_seconds\": 86400"}}) {
+    auto json = ValidJson();
+    Replace(json, token, replacement);
+    const auto file = WriteConfig(json);
+    const auto result = cns::config::LoadAppConfig(file);
+    std::filesystem::remove(file);
+    CHECK(result.has_value());
   }
 }
 
@@ -129,6 +166,9 @@ TEST_CASE("MQTT namespace 必须是单个非空合法段") {
     auto json = ValidJson(); Replace(json, "cns_rpi", value); CheckRejected(json, "mqtt.topic_namespace");
   }
   auto json = ValidJson(); Replace(json, R"("topic_namespace": "cns_rpi")", R"("topic_namespace": true)");
+  CheckRejected(json, "mqtt.topic_namespace");
+  json = ValidJson();
+  Replace(json, "cns_rpi", R"(cns\u0000rpi)");
   CheckRejected(json, "mqtt.topic_namespace");
 }
 
