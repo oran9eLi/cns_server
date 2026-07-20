@@ -28,8 +28,8 @@ void DeviceIngress::Handle(mqtt::InboundMessage message) noexcept {
 
   std::lock_guard lock(mutex_);
   if (!enabled_) return;
-  ++rejected_count_;
-  rejected_bytes_ += payload_bytes;
+  rejected_count_ = SaturatingAdd(rejected_count_, 1);
+  rejected_bytes_ = SaturatingAdd(rejected_bytes_, payload_bytes);
   try {
     if (diagnostic_ && limiter_.ShouldEmit("mqtt_device_queue_full", steady_now_())) {
       diagnostic_("MQTT设备消息队列已满，已拒绝消息，次数=" +

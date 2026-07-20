@@ -4,10 +4,18 @@
 #include "core/runtime/device_ingress.hpp"
 
 #include <chrono>
+#include <limits>
 #include <string>
 #include <vector>
 
 using namespace std::chrono_literals;
+
+TEST_CASE("过载计数和字节数接近SIZE_MAX时饱和而不回绕") {
+  constexpr auto maximum = std::numeric_limits<std::size_t>::max();
+  CHECK(cns::runtime::SaturatingAdd(maximum - 1, 1) == maximum);
+  CHECK(cns::runtime::SaturatingAdd(maximum - 1, 2) == maximum);
+  CHECK(cns::runtime::SaturatingAdd(maximum, maximum) == maximum);
+}
 
 TEST_CASE("MQTT队列满只输出安全计数和字节数且按窗口限频") {
   auto now = std::chrono::steady_clock::time_point{};
