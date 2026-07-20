@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -33,6 +34,9 @@ struct Injection {
   std::size_t subscribe_attempt = 0;
   std::vector<std::string> unsubscriptions;
   std::vector<std::tuple<std::string, std::string, int, bool>> publications;
+  std::mutex stop_mutex;
+  std::condition_variable stop_changed;
+  std::vector<std::thread::id> loop_stop_threads;
 };
 
 Injection* active = nullptr;
@@ -75,6 +79,11 @@ extern "C" void __real_mosquitto_disconnect_callback_set(
 extern "C" void __real_mosquitto_message_callback_set(
     struct mosquitto*,
     void (*)(struct mosquitto*, void*, const struct mosquitto_message*));
+extern "C" int __real_mosquitto_connect_async(struct mosquitto*, const char*,
+                                                int, int);
+extern "C" int __real_mosquitto_loop_start(struct mosquitto*);
+extern "C" int __real_mosquitto_disconnect(struct mosquitto*);
+extern "C" int __real_mosquitto_loop_stop(struct mosquitto*, bool);
 
 extern "C" struct mosquitto* __wrap_mosquitto_new(const char* id,
                                                      bool clean_session,
@@ -122,6 +131,28 @@ extern "C" int __wrap_mosquitto_publish(struct mosquitto*, int*,
       topic, std::string{static_cast<const char*>(payload),
                          static_cast<std::size_t>(payloadlen)},
       qos, retain);
+  return MOSQ_ERR_SUCCESS;
+}
+
+extern "C" int __wrap_mosquitto_connect_async(struct mosquitto*, const char*,
+                                                int, int) {
+  return MOSQ_ERR_SUCCESS;
+}
+
+extern "C" int __wrap_mosquitto_loop_start(struct mosquitto*) {
+  return MOSQ_ERR_SUCCESS;
+}
+
+extern "C" int __wrap_mosquitto_disconnect(struct mosquitto*) {
+  return MOSQ_ERR_SUCCESS;
+}
+
+extern "C" int __wrap_mosquitto_loop_stop(struct mosquitto*, bool) {
+  {
+    std::lock_guard lock{active->stop_mutex};
+    active->loop_stop_threads.push_back(std::this_thread::get_id());
+  }
+  active->stop_changed.notify_all();
   return MOSQ_ERR_SUCCESS;
 }
 
@@ -344,6 +375,73 @@ TEST_CASE("handler异常不穿越C回调且中文错误限频") {
   CHECK(err.str().find("secret") == std::string::npos);
   CHECK(err.str().find("MQTT业务消息处理器异常") ==
         err.str().rfind("MQTT业务消息处理器异常"));
+}
+
+TEST_CASE("handler内Stop由非回调线程在回调返回后执行一次") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->Start().has_value());
+  const auto handler_thread = std::this_thread::get_id();
+  REQUIRE(client->ConfigureBusinessMessages(
+                    [&](cns::mqtt::InboundMessage) { client->Stop(); }, 64)
+              .has_value());
+  std::string payload = "{}";
+  mosquitto_message message{.mid = 1,
+                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .payload = payload.data(),
+                            .payloadlen = 2,
+                            .qos = 0,
+                            .retain = false};
+
+  injection.message_callback(nullptr, injection.context, &message);
+  {
+    std::unique_lock lock{injection.stop_mutex};
+    REQUIRE(injection.stop_changed.wait_for(lock, 500ms, [&] {
+      return !injection.loop_stop_threads.empty();
+    }));
+    CHECK(injection.loop_stop_threads.size() == 1);
+    CHECK(injection.loop_stop_threads.front() != handler_thread);
+  }
+}
+
+TEST_CASE("并发回调重复Stop只调度一次且不死锁") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->Start().has_value());
+  REQUIRE(client->ConfigureBusinessMessages(
+                    [&](cns::mqtt::InboundMessage) { client->Stop(); }, 64)
+              .has_value());
+  std::string payload = "{}";
+  mosquitto_message message{.mid = 1,
+                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .payload = payload.data(),
+                            .payloadlen = 2,
+                            .qos = 0,
+                            .retain = false};
+
+  std::thread first([&] {
+    injection.message_callback(nullptr, injection.context, &message);
+  });
+  std::thread second([&] {
+    injection.message_callback(nullptr, injection.context, &message);
+  });
+  first.join();
+  second.join();
+  {
+    std::unique_lock lock{injection.stop_mutex};
+    REQUIRE(injection.stop_changed.wait_for(lock, 500ms, [&] {
+      return !injection.loop_stop_threads.empty();
+    }));
+    CHECK(injection.loop_stop_threads.size() == 1);
+  }
 }
 
 TEST_CASE("状态事件使用QoS0且retain为false") {

@@ -191,6 +191,10 @@ target_link_options(test_mqtt_business PRIVATE
   LINKER:--wrap=mosquitto_subscribe
   LINKER:--wrap=mosquitto_unsubscribe
   LINKER:--wrap=mosquitto_publish
+  LINKER:--wrap=mosquitto_connect_async
+  LINKER:--wrap=mosquitto_loop_start
+  LINKER:--wrap=mosquitto_disconnect
+  LINKER:--wrap=mosquitto_loop_stop
 )
 add_test(NAME mqtt_business COMMAND test_mqtt_business)
 

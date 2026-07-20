@@ -22,6 +22,8 @@ extern "C" bool cns_runtime_wait_interruptibly(
 namespace cns::mqtt {
 namespace {
 
+thread_local const void* current_callback_state = nullptr;
+
 struct LibraryState {
   std::mutex mutex;
   std::size_t users = 0;
@@ -186,6 +188,28 @@ struct MqttClient::CallbackState {
     }
   }
 
+  void EnterCallback() {
+    std::lock_guard lock{callback_mutex};
+    ++active_callbacks;
+  }
+
+  void ExitCallback() {
+    {
+      std::lock_guard lock{callback_mutex};
+      --active_callbacks;
+    }
+    callbacks_finished.notify_all();
+  }
+
+  void WaitForCallbacks() {
+    std::unique_lock lock{callback_mutex};
+    callbacks_finished.wait(lock, [&] { return active_callbacks == 0; });
+  }
+
+  bool IsCurrentCallback() const noexcept {
+    return current_callback_state == this;
+  }
+
   std::mutex mutex;
   std::mutex subscription_mutex;
   logging::Logger* logger;
@@ -199,6 +223,25 @@ struct MqttClient::CallbackState {
   std::size_t connection_generation = 0;
   std::optional<std::size_t> registration_generation;
   std::optional<std::size_t> telemetry_generation;
+  std::mutex callback_mutex;
+  std::condition_variable callbacks_finished;
+  std::size_t active_callbacks = 0;
+};
+
+struct MqttClient::CallbackGuard {
+  explicit CallbackGuard(CallbackState& state_value)
+      : state(state_value), previous(current_callback_state) {
+    state.EnterCallback();
+    current_callback_state = &state;
+  }
+
+  ~CallbackGuard() {
+    current_callback_state = previous;
+    state.ExitCallback();
+  }
+
+  CallbackState& state;
+  const void* previous;
 };
 
 MqttClient::MqttClient(config::MqttConfig config, logging::Logger& logger)
@@ -247,6 +290,7 @@ std::expected<std::unique_ptr<MqttClient>, std::string> MqttClient::Create(
 
 MqttClient::~MqttClient() {
   Stop();
+  JoinDeferredStop();
   if (loop_started_.load(std::memory_order_acquire)) {
     callback_state_->DisableLogger();
     static_cast<void>(callback_state_.release());
@@ -265,6 +309,7 @@ MqttClient::~MqttClient() {
 }
 
 std::expected<void, std::string> MqttClient::Start() {
+  JoinDeferredStop();
   std::lock_guard lock{lifecycle_mutex_};
   if (loop_started_.load(std::memory_order_acquire)) return {};
 
@@ -321,6 +366,15 @@ std::expected<void, std::string> MqttClient::Start() {
 }
 
 void MqttClient::Stop() {
+  if (callback_state_->IsCurrentCallback()) {
+    RequestDeferredStop();
+    return;
+  }
+  StopNow();
+  JoinDeferredStop();
+}
+
+void MqttClient::StopNow() {
   std::lock_guard lock{lifecycle_mutex_};
   {
     std::lock_guard retry_lock{retry_mutex_};
@@ -353,6 +407,44 @@ void MqttClient::Stop() {
     loop_started_.store(false, std::memory_order_release);
   }
   callback_state_->connected.store(false, std::memory_order_release);
+}
+
+void MqttClient::RequestDeferredStop() {
+  std::lock_guard lock{callback_stop_mutex_};
+  if (callback_stop_scheduled_) return;
+  callback_stop_scheduled_ = true;
+  try {
+    callback_stop_thread_ = std::thread([this] {
+      callback_state_->WaitForCallbacks();
+      StopNow();
+    });
+  } catch (const std::system_error&) {
+    try {
+      callback_state_->WarnBusiness("mqtt_callback_stop_thread",
+                                    "MQTT回调请求停止线程启动失败");
+    } catch (...) {
+    }
+  }
+}
+
+void MqttClient::JoinDeferredStop() {
+  std::thread stop_thread;
+  {
+    std::lock_guard lock{callback_stop_mutex_};
+    if (!callback_stop_thread_.joinable()) {
+      callback_stop_scheduled_ = false;
+      return;
+    }
+    if (callback_stop_thread_.get_id() == std::this_thread::get_id()) {
+      return;
+    }
+    stop_thread = std::move(callback_stop_thread_);
+  }
+  stop_thread.join();
+  {
+    std::lock_guard lock{callback_stop_mutex_};
+    callback_stop_scheduled_ = false;
+  }
 }
 
 bool MqttClient::IsConnected() const noexcept {
@@ -444,6 +536,7 @@ std::expected<void, std::string> MqttClient::PublishStateEvent(
 void MqttClient::HandleConnect(struct mosquitto* client, void* context,
                                int result) {
   auto& state = *static_cast<CallbackState*>(context);
+  CallbackGuard callback_guard{state};
   try {
     if (result == 0) {
       state.Connected();
@@ -466,6 +559,7 @@ void MqttClient::HandleConnect(struct mosquitto* client, void* context,
 
 void MqttClient::HandleDisconnect(struct mosquitto*, void* context, int result) {
   auto& state = *static_cast<CallbackState*>(context);
+  CallbackGuard callback_guard{state};
   try {
     state.connected.store(false, std::memory_order_release);
     if (result != MOSQ_ERR_SUCCESS) state.WarnDisconnected(result);
@@ -477,6 +571,7 @@ void MqttClient::HandleLog(struct mosquitto*, void* context, int level,
                            const char* message) {
   static_cast<void>(message);
   auto& state = *static_cast<CallbackState*>(context);
+  CallbackGuard callback_guard{state};
   try {
     if ((level & MOSQ_LOG_ERR) != 0) {
       state.WarnLibraryEvent("mqtt_library_error", "MQTT库报告错误事件");
@@ -492,6 +587,7 @@ void MqttClient::HandleMessage(
     const struct mosquitto_message* message) {
   const auto received_at = std::chrono::system_clock::now();
   auto& state = *static_cast<CallbackState*>(context);
+  CallbackGuard callback_guard{state};
   try {
     state.Dispatch(message, received_at);
   } catch (...) {

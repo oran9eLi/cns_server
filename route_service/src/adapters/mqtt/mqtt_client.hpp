@@ -56,6 +56,7 @@ class MqttClient {
 
  private:
   struct CallbackState;
+  struct CallbackGuard;
   enum class RetryState { kIdle, kRunning, kFailed };
 
   MqttClient(config::MqttConfig config, logging::Logger& logger);
@@ -69,6 +70,9 @@ class MqttClient {
   void WarnDisconnected(int result);
   void RetryConnection();
   void FinishRetry(std::string error = {});
+  void StopNow();
+  void RequestDeferredStop();
+  void JoinDeferredStop();
 
   config::MqttConfig config_;
   std::unique_ptr<CallbackState> callback_state_;
@@ -82,6 +86,9 @@ class MqttClient {
   RetryState retry_state_ = RetryState::kIdle;
   std::string retry_error_;
   std::thread retry_thread_;
+  std::mutex callback_stop_mutex_;
+  bool callback_stop_scheduled_ = false;
+  std::thread callback_stop_thread_;
 };
 
 }  // namespace cns::mqtt
