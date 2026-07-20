@@ -9,6 +9,14 @@
 #include <utility>
 
 namespace cns::postgres {
+
+OperationFailureKind ClassifyOperationFailure(bool connection_open,
+                                              bool broken_connection) noexcept {
+  return broken_connection || !connection_open
+             ? OperationFailureKind::kUnavailable
+             : OperationFailureKind::kPermanent;
+}
+
 namespace {
 
 std::string QuoteConnectionValue(std::string_view value) {
@@ -186,7 +194,11 @@ PostgresStore::ReadAppliedMigrations() {
           {row[0].as<int>(), row[1].as<std::string>()});
     }
     return migrations;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("读取 PostgreSQL 迁移版本失败");
   } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
     return std::unexpected("读取 PostgreSQL 迁移版本失败");
   }
 }
@@ -303,11 +315,10 @@ std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
     transaction.commit();
     return record;
   } catch (const pqxx::broken_connection&) {
-    last_failure_kind_ = OperationFailureKind::kUnavailable;
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
     return std::unexpected("PostgreSQL 设备建档失败");
   } catch (const std::exception&) {
-    last_failure_kind_ = IsOpen() ? OperationFailureKind::kPermanent
-                                  : OperationFailureKind::kUnavailable;
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
     return std::unexpected("PostgreSQL 设备建档失败");
   }
 }
@@ -368,11 +379,10 @@ std::expected<void, std::string> PostgresStore::WriteDeviceState(
     transaction.commit();
     return {};
   } catch (const pqxx::broken_connection&) {
-    last_failure_kind_ = OperationFailureKind::kUnavailable;
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
     return std::unexpected("写入 PostgreSQL 设备状态失败");
   } catch (const std::exception&) {
-    last_failure_kind_ = IsOpen() ? OperationFailureKind::kPermanent
-                                  : OperationFailureKind::kUnavailable;
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
     return std::unexpected("写入 PostgreSQL 设备状态失败");
   }
 }

@@ -29,7 +29,7 @@ class ServiceEnvironment final : public runtime::ServiceOperations {
   std::expected<void, std::string> InstallSignalHandlers() override;
   std::expected<void, std::string> StartDeviceRuntime() override;
   void StopAcceptingDeviceMessages() override;
-  void StopDeviceRuntime() override;
+  bool StopDeviceRuntime(std::chrono::milliseconds timeout) override;
   std::expected<void, std::string> CreateMqtt() override;
   std::expected<void, std::string> StartMqtt() override;
   bool MqttHasTerminalFailure() const override;

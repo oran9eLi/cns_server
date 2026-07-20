@@ -1,6 +1,9 @@
 // 本文件实现两种运行模式共用的可测试进程生命周期编排。
 #include "core/runtime/service_runner.hpp"
 
+#include <exception>
+#include <stdexcept>
+
 namespace cns::runtime {
 namespace {
 
@@ -12,6 +15,75 @@ bool Failed(const std::expected<void, std::string>& result,
 }
 
 }  // namespace
+
+std::expected<void, std::string> StartDeviceRuntimeTransaction(
+    const DeviceRuntimeStartOperations& operations) noexcept {
+  auto rollback = [&operations] {
+    try {
+      operations.rollback();
+    } catch (...) {
+    }
+  };
+  try {
+    if (auto result = operations.configure_handler(); !result) {
+      const auto error = result.error();
+      rollback();
+      return std::unexpected(error);
+    }
+    if (auto result = operations.start_postgres_thread(); !result) {
+      const auto error = result.error();
+      rollback();
+      return std::unexpected(error);
+    }
+    if (auto result = operations.start_device_thread(); !result) {
+      const auto error = result.error();
+      rollback();
+      return std::unexpected(error);
+    }
+    return {};
+  } catch (const std::exception&) {
+    rollback();
+    return std::unexpected("启动设备运行时失败");
+  } catch (...) {
+    rollback();
+    return std::unexpected("启动设备运行时发生未知异常");
+  }
+}
+
+SelfOwnedRuntimeThread::~SelfOwnedRuntimeThread() {
+  if (thread_.joinable()) {
+    stop_source_.request_stop();
+    thread_.join();
+  }
+}
+
+void SelfOwnedRuntimeThread::Start(std::shared_ptr<void> runtime_owner,
+                                   Task task) {
+  if (thread_.joinable()) throw std::logic_error("运行时线程已经启动");
+  stop_source_ = std::stop_source{};
+  const auto token = stop_source_.get_token();
+  thread_ = std::thread(
+      [owner = std::move(runtime_owner), task = std::move(task), token] {
+        static_cast<void>(owner);
+        task(token);
+      });
+}
+
+void SelfOwnedRuntimeThread::RequestStop() noexcept {
+  stop_source_.request_stop();
+}
+
+void SelfOwnedRuntimeThread::Join() {
+  if (thread_.joinable()) thread_.join();
+}
+
+void SelfOwnedRuntimeThread::Detach() noexcept {
+  if (thread_.joinable()) thread_.detach();
+}
+
+bool SelfOwnedRuntimeThread::Joinable() const noexcept {
+  return thread_.joinable();
+}
 
 int RunService(const RunMode mode, ServiceOperations& operations) {
   if (Failed(operations.LoadConfig(), operations)) return 1;
@@ -34,10 +106,15 @@ int RunService(const RunMode mode, ServiceOperations& operations) {
   if (Failed(operations.LoadDeviceSnapshot(), operations)) return 1;
   if (Failed(operations.InstallSignalHandlers(), operations)) return 1;
   if (Failed(operations.CreateMqtt(), operations)) return 1;
-  if (Failed(operations.StartDeviceRuntime(), operations)) return 1;
+  if (Failed(operations.StartDeviceRuntime(), operations)) {
+    operations.StopAcceptingDeviceMessages();
+    static_cast<void>(operations.StopDeviceRuntime(
+        std::chrono::milliseconds{5000}));
+    return 1;
+  }
   if (Failed(operations.StartMqtt(), operations)) {
     operations.StopAcceptingDeviceMessages();
-    operations.StopDeviceRuntime();
+    static_cast<void>(operations.StopDeviceRuntime(std::chrono::milliseconds{5000}));
     operations.StopMqtt();
     return 1;
   }
@@ -51,7 +128,8 @@ int RunService(const RunMode mode, ServiceOperations& operations) {
     }
     if (mqtt_failure || callback_stop || operations.ShutdownRequested()) {
       operations.StopAcceptingDeviceMessages();
-      operations.StopDeviceRuntime();
+      static_cast<void>(operations.StopDeviceRuntime(
+          std::chrono::milliseconds{5000}));
       operations.StopMqtt();
       if (mqtt_failure) return 1;
       operations.Info("路由服务已停止");

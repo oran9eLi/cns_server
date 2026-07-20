@@ -21,6 +21,8 @@ class connection;
 namespace cns::postgres {
 
 enum class OperationFailureKind { kUnavailable, kPermanent };
+OperationFailureKind ClassifyOperationFailure(bool connection_open,
+                                              bool broken_connection) noexcept;
 
 struct ProvisionRequest {
   protocol::Registration registration;
@@ -75,6 +77,7 @@ class PostgresStore {
   std::expected<void, std::string> WriteDeviceState(
       const persistence::DesiredDeviceWrite& write);
   bool IsOpen() const noexcept;
+  /** 最近一次设备或迁移读取失败属于连接不可用还是永久数据错误。 */
   OperationFailureKind LastOperationFailureKind() const noexcept;
 
  private:

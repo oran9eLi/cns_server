@@ -59,6 +59,12 @@ class DeviceService {
   void PushDatabaseResult(DatabaseResult result);
   void Run(std::stop_token stop);
   void Close();
+  /** 等待已关闭 MQTT 输入被业务线程消费完。 */
+  bool WaitForInputDrained(std::chrono::milliseconds timeout);
+  /** 等待在途数据库结果及其派生写入形成的完整链路结束。 */
+  bool WaitForDatabaseIdle(std::chrono::milliseconds timeout);
+  /** 请求业务线程放弃已停止数据库运行时不可能再完成的在途工作。 */
+  void CancelOutstandingDatabaseWork();
 
   // 可确定驱动的测试入口；生产运行仍由 Run 独占调用。
   void ProcessReady(TimePoint system_now = std::chrono::system_clock::now());
@@ -81,6 +87,7 @@ class DeviceService {
   void Publish(PublishedState state) noexcept;
   void Diagnose(std::string message) noexcept;
   void Notify();
+  bool HasOutstandingDatabaseWork() const;
 
   device::DeviceRegistry& registry_;
   ProvisionSubmitter provision_;
@@ -100,6 +107,10 @@ class DeviceService {
   bool scan_initialized_ = false;
   bool database_unavailable_ = false;
   std::atomic_bool closed_{false};
+  std::atomic_bool input_drained_{false};
+  std::atomic_bool cancel_database_work_requested_{false};
+  std::atomic_bool processing_ready_{false};
+  std::atomic_size_t outstanding_database_work_{0};
   std::string topic_namespace_;
   std::chrono::seconds telemetry_interval_;
   std::chrono::seconds offline_timeout_;

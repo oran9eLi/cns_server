@@ -1,5 +1,6 @@
 #include "core/runtime/device_service.hpp"
 
+#include <algorithm>
 #include <utility>
 
 #include "core/mqtt_topic/device_topic.hpp"
@@ -66,11 +67,16 @@ void DeviceService::Run(std::stop_token stop) {
         std::lock_guard results_lock(results_mutex_);
         no_results = results_.empty();
       }
-      if (closed_ && mqtt_queue_.Size() == 0 && no_results) break;
+      if (closed_ && mqtt_queue_.Size() == 0) {
+        input_drained_ = true;
+        Notify();
+      }
+      if (input_drained_ && no_results && !HasOutstandingDatabaseWork()) break;
       std::unique_lock lock(wake_mutex_);
       wake_.wait_for(lock, stop, std::chrono::milliseconds{100}, [this] {
         std::lock_guard results_lock(results_mutex_);
-        return closed_ || mqtt_queue_.Size() != 0 || !results_.empty();
+        return (!input_drained_ && closed_) || mqtt_queue_.Size() != 0 ||
+               !results_.empty() || cancel_database_work_requested_;
       });
     }
     ProcessReady();
@@ -87,7 +93,33 @@ void DeviceService::Close() {
   Notify();
 }
 
+bool DeviceService::WaitForInputDrained(std::chrono::milliseconds timeout) {
+  std::unique_lock lock(wake_mutex_);
+  return wake_.wait_for(lock, timeout, [this] { return input_drained_.load(); });
+}
+
+bool DeviceService::WaitForDatabaseIdle(std::chrono::milliseconds timeout) {
+  std::unique_lock lock(wake_mutex_);
+  return wake_.wait_for(lock, timeout, [this] {
+    return outstanding_database_work_.load() == 0 && !processing_ready_.load();
+  });
+}
+
+void DeviceService::CancelOutstandingDatabaseWork() {
+  cancel_database_work_requested_ = true;
+  Notify();
+}
+
+bool DeviceService::HasOutstandingDatabaseWork() const {
+  return outstanding_database_work_.load() != 0;
+}
+
 void DeviceService::ProcessReady(TimePoint system_now) {
+  struct ProcessingGuard {
+    std::atomic_bool& processing;
+    ~ProcessingGuard() { processing = false; }
+  } guard{processing_ready_};
+  processing_ready_ = true;
   for (;;) {
     std::optional<DatabaseResult> result;
     {
@@ -97,6 +129,15 @@ void DeviceService::ProcessReady(TimePoint system_now) {
       results_.pop_front();
     }
     Handle(std::move(*result));
+  }
+  if (cancel_database_work_requested_.exchange(false)) {
+    for (auto& [vendor, candidate] : pending_) {
+      static_cast<void>(vendor);
+      candidate.submitted = false;
+    }
+    submitted_.clear();
+    outstanding_database_work_ = 0;
+    Notify();
   }
   while (mqtt_queue_.Size() != 0) {
     if (auto message = mqtt_queue_.WaitPop()) Handle(std::move(*message));
@@ -108,6 +149,7 @@ void DeviceService::ProcessReady(TimePoint system_now) {
         try {
           candidate.submitted = provision_(candidate.registration,
                                            candidate.received_at);
+          if (candidate.submitted) ++outstanding_database_work_;
           if (!candidate.submitted) Diagnose("数据库建档提交端口已关闭");
         } catch (const std::exception&) {
           candidate.submitted = false;
@@ -131,6 +173,7 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     next_scan_ = now + kOfflineScan;
   }
   DispatchWrites();
+  Notify();
 }
 
 std::size_t DeviceService::PendingRegistrationCount() const { return pending_.size(); }
@@ -149,12 +192,34 @@ void DeviceService::Handle(DatabaseResult result) {
           : state_event::ChangeReason::kTelemetry;
       Publish({*record, reason, true});
     }
+    for (const auto& [vendor, candidate] : pending_) {
+      static_cast<void>(vendor);
+      if (candidate.submitted) --outstanding_database_work_;
+    }
     pending_.clear();
+    Notify();
     Diagnose("数据库暂不可用，设备状态进入降级模式");
     return;
   }
   if (result.kind == DatabaseResult::Kind::kPermanentFailure) {
-    pending_.erase(result.vendor_id);
+    if (const auto pending = pending_.find(result.vendor_id);
+        pending != pending_.end()) {
+      if (pending->second.submitted) --outstanding_database_work_;
+      pending_.erase(pending);
+    }
+    if (result.vendor_id.empty()) {
+      for (const auto& [vendor, candidate] : pending_) {
+        static_cast<void>(vendor);
+        if (candidate.submitted) --outstanding_database_work_;
+      }
+      pending_.clear();
+      outstanding_database_work_ -= submitted_.size();
+      submitted_.clear();
+    } else {
+      if (submitted_.erase(result.vendor_id) != 0) {
+        --outstanding_database_work_;
+      }
+    }
     if (const auto* record = registry_.Find(result.vendor_id)) {
       degraded_[result.vendor_id] = std::max(record->revision, result.revision);
       const auto reason = last_reason_.contains(result.vendor_id)
@@ -163,6 +228,7 @@ void DeviceService::Handle(DatabaseResult result) {
       Publish({*record, reason, true});
     }
     Diagnose("数据库操作永久失败，已拒绝相关待处理操作");
+    Notify();
     return;
   }
   if (result.kind == DatabaseResult::Kind::kRecovered) {
@@ -181,13 +247,20 @@ void DeviceService::Handle(DatabaseResult result) {
   if (result.kind == DatabaseResult::Kind::kProvisioned && result.provisioned) {
     auto candidate = pending_.find(result.vendor_id);
     if (candidate == pending_.end()) return;
-    if (!registry_.AddProvisioned(std::move(*result.provisioned))) return;
+    const bool provision_was_outstanding = candidate->second.submitted;
+    if (!registry_.AddProvisioned(std::move(*result.provisioned))) {
+      if (provision_was_outstanding) --outstanding_database_work_;
+      Notify();
+      return;
+    }
     auto registration = candidate->second;
     pending_.erase(candidate);
     if (auto mutation = registry_.ApplyRegistration(registration.registration,
                                                      registration.received_at)) {
       Mark(std::move(*mutation));
     }
+    if (provision_was_outstanding) --outstanding_database_work_;
+    Notify();
     return;
   }
   if (result.kind == DatabaseResult::Kind::kWriteCompleted) {
@@ -195,6 +268,8 @@ void DeviceService::Handle(DatabaseResult result) {
     if (it != submitted_.end() && result.revision >= it->second.revision) {
       dirty_.Complete(it->second);
       submitted_.erase(it);
+      --outstanding_database_work_;
+      Notify();
     }
     const auto degraded = degraded_.find(result.vendor_id);
     if (degraded != degraded_.end() && result.revision >= degraded->second) {
@@ -299,6 +374,7 @@ bool DeviceService::SubmitWrite(persistence::DesiredDeviceWrite write) {
     Diagnose("数据库写入提交回调发生未知异常");
     return false;
   }
+  if (!submitted_.contains(vendor)) ++outstanding_database_work_;
   submitted_[vendor] = std::move(write);
   return true;
 }

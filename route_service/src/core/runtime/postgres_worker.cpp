@@ -76,6 +76,8 @@ void PostgresWorker::Run(std::stop_token stop) {
         }
       }
 
+      if (!reconnect && !provision && !write) continue;
+
       if (reconnect) {
         std::expected<void, DatabaseError> result;
         try {

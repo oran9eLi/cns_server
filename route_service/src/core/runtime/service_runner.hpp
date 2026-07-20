@@ -2,13 +2,48 @@
 #pragma once
 
 #include <cstddef>
+#include <chrono>
 #include <expected>
+#include <functional>
+#include <memory>
+#include <stop_token>
+#include <thread>
 #include <string>
 #include <string_view>
 
 namespace cns::runtime {
 
 enum class RunMode { kNormal, kMigrateOnly };
+
+struct DeviceRuntimeStartOperations {
+  std::function<std::expected<void, std::string>()> configure_handler;
+  std::function<std::expected<void, std::string>()> start_postgres_thread;
+  std::function<std::expected<void, std::string>()> start_device_thread;
+  std::function<void()> rollback;
+};
+
+std::expected<void, std::string> StartDeviceRuntimeTransaction(
+    const DeviceRuntimeStartOperations& operations) noexcept;
+
+class SelfOwnedRuntimeThread {
+ public:
+  using Task = std::function<void(std::stop_token)>;
+  ~SelfOwnedRuntimeThread();
+  SelfOwnedRuntimeThread() = default;
+  SelfOwnedRuntimeThread(const SelfOwnedRuntimeThread&) = delete;
+  SelfOwnedRuntimeThread& operator=(const SelfOwnedRuntimeThread&) = delete;
+
+  /** 线程入口捕获 runtime_owner，detach 后仍保证任务访问对象存活。 */
+  void Start(std::shared_ptr<void> runtime_owner, Task task);
+  void RequestStop() noexcept;
+  void Join();
+  void Detach() noexcept;
+  [[nodiscard]] bool Joinable() const noexcept;
+
+ private:
+  std::stop_source stop_source_;
+  std::thread thread_;
+};
 
 /** 提供进程编排所需的最小外部操作集合。 */
 class ServiceOperations {
@@ -26,7 +61,8 @@ class ServiceOperations {
   virtual std::expected<void, std::string> InstallSignalHandlers() = 0;
   virtual std::expected<void, std::string> StartDeviceRuntime() = 0;
   virtual void StopAcceptingDeviceMessages() = 0;
-  virtual void StopDeviceRuntime() = 0;
+  /** 在总期限内协同排空；超时完成安全分离并返回 false。 */
+  virtual bool StopDeviceRuntime(std::chrono::milliseconds timeout) = 0;
   virtual std::expected<void, std::string> CreateMqtt() = 0;
   virtual std::expected<void, std::string> StartMqtt() = 0;
   virtual bool MqttHasTerminalFailure() const = 0;

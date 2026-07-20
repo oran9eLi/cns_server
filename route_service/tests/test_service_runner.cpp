@@ -5,9 +5,14 @@
 #include "core/runtime/service_runner.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <expected>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -50,7 +55,11 @@ class FakeOperations final : public cns::runtime::ServiceOperations {
   void StopAcceptingDeviceMessages() override {
     calls.emplace_back("停止接收设备消息");
   }
-  void StopDeviceRuntime() override { calls.emplace_back("排空设备运行时5秒"); }
+  bool StopDeviceRuntime(std::chrono::milliseconds timeout) override {
+    flush_timeout = timeout;
+    calls.emplace_back("排空设备运行时5秒");
+    return flush_succeeds;
+  }
   std::expected<void, std::string> CreateMqtt() override {
     return Call("创建MQTT");
   }
@@ -90,10 +99,116 @@ class FakeOperations final : public cns::runtime::ServiceOperations {
   bool fail_in_wait = false;
   bool shutdown_in_wait = false;
   bool callback_stop_requested = false;
+  bool flush_succeeds = true;
+  std::chrono::milliseconds flush_timeout{};
 };
 
 using cns::runtime::RunMode;
 using cns::runtime::RunService;
+using cns::runtime::DeviceRuntimeStartOperations;
+using cns::runtime::StartDeviceRuntimeTransaction;
+using cns::runtime::SelfOwnedRuntimeThread;
+
+TEST_CASE("设备运行时事务在handler配置失败时回滚且不启动线程") {
+  std::vector<std::string> calls;
+  DeviceRuntimeStartOperations operations{
+      .configure_handler = [&]() -> std::expected<void, std::string> {
+        calls.emplace_back("配置handler");
+        return std::unexpected("注入失败");
+      },
+      .start_postgres_thread = [&]() -> std::expected<void, std::string> {
+        calls.emplace_back("启动数据库线程");
+        return {};
+      },
+      .start_device_thread = [&]() -> std::expected<void, std::string> {
+        calls.emplace_back("启动业务线程");
+        return {};
+      },
+      .rollback = [&] { calls.emplace_back("回滚"); },
+  };
+
+  CHECK_FALSE(StartDeviceRuntimeTransaction(operations));
+  CHECK(calls == std::vector<std::string>{"配置handler", "回滚"});
+}
+
+TEST_CASE("设备运行时事务在第二线程失败时回滚第一线程") {
+  std::vector<std::string> calls;
+  DeviceRuntimeStartOperations operations{
+      .configure_handler = [&]() -> std::expected<void, std::string> {
+        calls.emplace_back("配置handler");
+        return {};
+      },
+      .start_postgres_thread = [&]() -> std::expected<void, std::string> {
+        calls.emplace_back("启动数据库线程");
+        return {};
+      },
+      .start_device_thread = [&]() -> std::expected<void, std::string> {
+        calls.emplace_back("启动业务线程");
+        return std::unexpected("注入失败");
+      },
+      .rollback = [&] { calls.emplace_back("回滚"); },
+  };
+
+  CHECK_FALSE(StartDeviceRuntimeTransaction(operations));
+  CHECK(calls == std::vector<std::string>{"配置handler", "启动数据库线程",
+                                          "启动业务线程", "回滚"});
+}
+
+TEST_CASE("设备运行时事务捕获线程构造异常并回滚") {
+  std::atomic_int rollbacks{0};
+  DeviceRuntimeStartOperations operations{
+      .configure_handler = []() -> std::expected<void, std::string> { return {}; },
+      .start_postgres_thread = []() -> std::expected<void, std::string> {
+        return {};
+      },
+      .start_device_thread = []() -> std::expected<void, std::string> {
+        throw std::runtime_error("注入线程构造异常");
+      },
+      .rollback = [&] { ++rollbacks; },
+  };
+
+  auto result = StartDeviceRuntimeTransaction(operations);
+  CHECK_FALSE(result);
+  CHECK(result.error() == "启动设备运行时失败");
+  CHECK(rollbacks == 1);
+}
+
+TEST_CASE("分离线程自持有运行时且外部桥失效后不回调") {
+  struct RuntimeOwner {
+    explicit RuntimeOwner(std::atomic_bool& destroyed_value)
+        : destroyed(destroyed_value) {}
+    ~RuntimeOwner() { destroyed = true; }
+    std::atomic_bool& destroyed;
+  };
+  struct ExternalState {
+    std::atomic_bool enabled{true};
+    std::atomic_int callbacks{0};
+  };
+  std::atomic_bool release{false};
+  std::atomic_bool destroyed{false};
+  auto owner = std::make_shared<RuntimeOwner>(destroyed);
+  auto external = std::make_shared<ExternalState>();
+  SelfOwnedRuntimeThread thread;
+  thread.Start(owner, [&, weak = std::weak_ptr<ExternalState>{external}](
+                          std::stop_token) {
+    while (!release) std::this_thread::yield();
+    if (const auto bridge = weak.lock(); bridge && bridge->enabled) {
+      ++bridge->callbacks;
+    }
+  });
+
+  external->enabled = false;
+  owner.reset();
+  thread.Detach();
+  release = true;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds{500};
+  while (!destroyed && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  CHECK(destroyed);
+  CHECK(external->callbacks == 0);
+}
 
 TEST_CASE("启动前置阶段任一失败都停止并返回非零") {
   for (const std::string failure : {"加载配置", "发现迁移", "连接数据库",
@@ -167,6 +282,20 @@ TEST_CASE("MQTT启动失败仍按设备运行时顺序清理") {
   CHECK(stop_runtime < stop_mqtt);
 }
 
+TEST_CASE("设备运行时部分启动失败仍调用幂等回滚") {
+  FakeOperations operations;
+  operations.fail_at = "启动设备运行时";
+
+  CHECK(RunService(RunMode::kNormal, operations) == 1);
+  CHECK(std::ranges::find(operations.calls, "停止接收设备消息") !=
+        operations.calls.end());
+  CHECK(std::ranges::find(operations.calls, "排空设备运行时5秒") !=
+        operations.calls.end());
+  CHECK(operations.flush_timeout == std::chrono::milliseconds{5000});
+  CHECK(std::ranges::find(operations.calls, "启动MQTT") ==
+        operations.calls.end());
+}
+
 TEST_CASE("MQTT后台终止失败停止客户端并返回非零") {
   FakeOperations operations;
   operations.shutdown_requested = false;
@@ -193,7 +322,18 @@ TEST_CASE("正常退出先停止MQTT再记录停止并返回零") {
   REQUIRE(stop_mqtt != operations.calls.end());
   CHECK(stop_accepting < stop_runtime);
   CHECK(stop_runtime < stop_mqtt);
+  CHECK(operations.flush_timeout == std::chrono::milliseconds{5000});
   CHECK(operations.calls.back() == "信息:路由服务已停止");
+}
+
+TEST_CASE("设备运行时排空超时仍继续停止MQTT") {
+  FakeOperations operations;
+  operations.flush_succeeds = false;
+
+  CHECK(RunService(RunMode::kNormal, operations) == 0);
+  CHECK(operations.flush_timeout == std::chrono::milliseconds{5000});
+  CHECK(std::ranges::find(operations.calls, "停止MQTT") !=
+        operations.calls.end());
 }
 
 TEST_CASE("正常启动按迁移检查快照信号设备运行时和MQTT排序") {

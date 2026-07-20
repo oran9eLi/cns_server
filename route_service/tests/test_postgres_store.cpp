@@ -14,6 +14,17 @@ namespace {
 using cns::config::DatabaseConfig;
 using cns::postgres::BuildConnectionString;
 using cns::postgres::BuildSafeConnectionDescription;
+using cns::postgres::ClassifyOperationFailure;
+using cns::postgres::OperationFailureKind;
+
+TEST_CASE("PostgreSQL连接故障与可连接的数据故障分类不同") {
+  CHECK(ClassifyOperationFailure(false, true) ==
+        OperationFailureKind::kUnavailable);
+  CHECK(ClassifyOperationFailure(false, false) ==
+        OperationFailureKind::kUnavailable);
+  CHECK(ClassifyOperationFailure(true, false) ==
+        OperationFailureKind::kPermanent);
+}
 
 TEST_CASE("连接串包含完整参数并按 libpq 规则转义") {
   const DatabaseConfig config{"db host", 5433, "cns ' route", "route user",

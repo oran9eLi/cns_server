@@ -14,6 +14,7 @@
 #include "core/state_event/state_event.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <csignal>
 #include <iostream>
 #include <optional>
@@ -30,11 +31,12 @@ void HandleShutdownSignal(int) {
 
 class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
  public:
-  RuntimePostgresBridge(std::unique_ptr<postgres::PostgresStore>& store,
-                        const config::DatabaseConfig& config,
-                        logging::Logger& logger,
-                        const std::vector<migration::Migration>& migrations)
-      : store_(store), config_(config), logger_(logger), migrations_(migrations) {}
+  RuntimePostgresBridge(std::unique_ptr<postgres::PostgresStore> store,
+                        config::DatabaseConfig config,
+                        std::shared_ptr<logging::Logger> logger,
+                        std::vector<migration::Migration> migrations)
+      : store_(std::move(store)), config_(std::move(config)),
+        logger_(std::move(logger)), migrations_(std::move(migrations)) {}
 
   std::expected<device::DeviceRecord, runtime::DatabaseError> Provision(
       const protocol::Registration& registration,
@@ -52,15 +54,19 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
   }
 
   std::expected<void, runtime::DatabaseError> ReconnectAndValidate() override {
-    auto connected = postgres::PostgresStore::Connect(config_, logger_);
+    auto connected = postgres::PostgresStore::Connect(config_, *logger_);
     if (!connected) {
       return std::unexpected(runtime::DatabaseError{
           runtime::DatabaseError::Kind::kUnavailable, "数据库重连失败"});
     }
     auto applied = (*connected)->ReadAppliedMigrations();
     if (!applied) {
+      const auto kind = (*connected)->LastOperationFailureKind() ==
+                                postgres::OperationFailureKind::kUnavailable
+                            ? runtime::DatabaseError::Kind::kUnavailable
+                            : runtime::DatabaseError::Kind::kPermanent;
       return std::unexpected(runtime::DatabaseError{
-          runtime::DatabaseError::Kind::kUnavailable,
+          kind,
           "数据库重连后读取迁移版本失败"});
     }
     auto plan = migration::BuildMigrationPlan(
@@ -83,10 +89,157 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
     return {kind, std::move(context)};
   }
 
-  std::unique_ptr<postgres::PostgresStore>& store_;
-  const config::DatabaseConfig& config_;
-  logging::Logger& logger_;
-  const std::vector<migration::Migration>& migrations_;
+  std::unique_ptr<postgres::PostgresStore> store_;
+  config::DatabaseConfig config_;
+  std::shared_ptr<logging::Logger> logger_;
+  std::vector<migration::Migration> migrations_;
+};
+
+struct RuntimeExternalBridge {
+  std::mutex mutex;
+  mqtt::MqttClient* mqtt = nullptr;
+  logging::Logger* logger = nullptr;
+  std::string topic_namespace;
+  bool enabled = true;
+
+  void Disable() noexcept {
+    std::lock_guard lock(mutex);
+    enabled = false;
+    mqtt = nullptr;
+    logger = nullptr;
+  }
+
+  void Diagnose(std::string_view message) noexcept {
+    std::lock_guard lock(mutex);
+    if (!enabled || logger == nullptr) return;
+    try { logger->Error(message); } catch (...) {}
+  }
+
+  void Publish(runtime::PublishedState published) noexcept {
+    std::lock_guard lock(mutex);
+    if (!enabled || mqtt == nullptr || logger == nullptr) return;
+    try {
+      state_event::Snapshot snapshot{
+          .vendor_id = published.record.vendor_id,
+          .school_name = published.record.school_name,
+          .dcdw_label = published.record.dcdw_label,
+          .online = published.record.status == device::Status::kOnline,
+          .last_seen_at = published.record.last_seen_at,
+          .telemetry_received_at = published.record.telemetry_received_at,
+          .latest_telemetry = published.record.latest_telemetry,
+          .degraded = published.degraded,
+      };
+      const auto payload = state_event::BuildStateEvent(
+          snapshot, published.reason, std::chrono::system_clock::now()).dump();
+      auto result = mqtt->PublishStateEvent(
+          mqtt_topic::StateEventTopic(topic_namespace,
+                                      published.record.vendor_id),
+          payload);
+      if (!result) logger->Error("发布设备状态事件失败");
+    } catch (...) {
+      try { logger->Error("发布设备状态事件发生异常"); } catch (...) {}
+    }
+  }
+};
+
+struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
+  config::AppConfig config;
+  device::DeviceRegistry registry;
+  std::vector<persistence::DesiredDeviceWrite> startup_writes;
+  std::unique_ptr<RuntimePostgresBridge> store;
+  std::unique_ptr<runtime::PostgresWorker> worker;
+  std::unique_ptr<runtime::DeviceService> service;
+  std::weak_ptr<RuntimeExternalBridge> external;
+  runtime::SelfOwnedRuntimeThread database_thread;
+  runtime::SelfOwnedRuntimeThread business_thread;
+
+  void Initialize() {
+    const std::weak_ptr<RuntimeBundle> weak_self = shared_from_this();
+    worker = std::make_unique<runtime::PostgresWorker>(
+        *store,
+        [weak_self](runtime::DatabaseResult result) {
+          if (const auto self = weak_self.lock(); self && self->service) {
+            self->service->PushDatabaseResult(std::move(result));
+          }
+        },
+        [weak_self] {
+          const auto self = weak_self.lock();
+          if (!self) return;
+          const auto bridge = self->external.lock();
+          if (!bridge) return;
+          std::lock_guard lock(bridge->mutex);
+          if (!bridge->enabled || bridge->mqtt == nullptr) return;
+          auto replay = bridge->mqtt->ReplayRetainedRegistrations(
+              self->config.mqtt.topic_namespace);
+          if (!replay && bridge->logger) {
+            bridge->logger->Error("重放设备注册消息失败");
+          }
+        },
+        [] { return std::chrono::steady_clock::now(); },
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Diagnose(message);
+        },
+        config.database.reconnect_interval);
+    service = std::make_unique<runtime::DeviceService>(
+        registry,
+        [weak_self](protocol::Registration registration,
+                    runtime::TimePoint at) {
+          const auto self = weak_self.lock();
+          return self && self->worker &&
+                 self->worker->SubmitProvision(std::move(registration), at);
+        },
+        [weak_self](persistence::DesiredDeviceWrite write) {
+          const auto self = weak_self.lock();
+          return self && self->worker &&
+                 self->worker->SubmitWrite(std::move(write));
+        },
+        [weak = external](runtime::PublishedState published) {
+          if (const auto bridge = weak.lock()) bridge->Publish(std::move(published));
+        },
+        [] { return std::chrono::steady_clock::now(); },
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Diagnose(message);
+        },
+        config.queues.mqtt_inbound_capacity, config.mqtt.topic_namespace,
+        config.device_state.telemetry_flush_interval,
+        config.device_state.offline_timeout);
+  }
+
+  std::expected<void, std::string> StartDatabaseThread() {
+    const auto self = shared_from_this();
+    database_thread.Start(self, [this](std::stop_token stop) {
+      worker->Run(stop);
+    });
+    return {};
+  }
+
+  std::expected<void, std::string> StartBusinessThread() {
+    const auto self = shared_from_this();
+    business_thread.Start(self, [this](std::stop_token stop) {
+      service->Run(stop);
+    });
+    for (auto& write : startup_writes) {
+      static_cast<void>(worker->SubmitWrite(std::move(write)));
+    }
+    startup_writes.clear();
+    return {};
+  }
+
+  void RequestStop() noexcept {
+    business_thread.RequestStop();
+    database_thread.RequestStop();
+    if (service) service->CancelOutstandingDatabaseWork();
+  }
+
+  void Join() {
+    database_thread.Join();
+    business_thread.Join();
+  }
+
+  void Detach() noexcept {
+    database_thread.Detach();
+    business_thread.Detach();
+  }
 };
 
 }  // namespace
@@ -100,7 +253,7 @@ struct ServiceEnvironment::State {
   std::filesystem::path config_path;
   std::filesystem::path migrations_path;
   std::optional<config::AppConfig> config;
-  std::unique_ptr<logging::Logger> logger;
+  std::shared_ptr<logging::Logger> logger;
   std::vector<migration::Migration> available;
   std::unique_ptr<postgres::PostgresStore> store;
   std::vector<migration::AppliedMigration> applied;
@@ -108,11 +261,8 @@ struct ServiceEnvironment::State {
   std::unique_ptr<mqtt::MqttClient> mqtt;
   device::DeviceRegistry registry;
   std::vector<persistence::DesiredDeviceWrite> startup_writes;
-  std::unique_ptr<RuntimePostgresBridge> runtime_store;
-  std::unique_ptr<runtime::PostgresWorker> postgres_worker;
-  std::unique_ptr<runtime::DeviceService> device_service;
-  std::jthread postgres_thread;
-  std::jthread device_thread;
+  std::shared_ptr<RuntimeExternalBridge> external_bridge;
+  std::shared_ptr<RuntimeBundle> runtime_bundle;
   bool accepting_device_messages = false;
   bool device_runtime_stopped = true;
 };
@@ -124,7 +274,7 @@ ServiceEnvironment::ServiceEnvironment(std::filesystem::path config_path,
 
 ServiceEnvironment::~ServiceEnvironment() {
   StopAcceptingDeviceMessages();
-  StopDeviceRuntime();
+  static_cast<void>(StopDeviceRuntime(std::chrono::milliseconds{5000}));
   StopMqtt();
 }
 
@@ -136,7 +286,7 @@ std::expected<void, std::string> ServiceEnvironment::LoadConfig() {
 }
 
 void ServiceEnvironment::InitializeLogger() {
-  state_->logger = std::make_unique<logging::Logger>(
+  state_->logger = std::make_shared<logging::Logger>(
       state_->config->logging.level, std::cout, std::cerr);
 }
 
@@ -219,83 +369,77 @@ std::expected<void, std::string> ServiceEnvironment::CreateMqtt() {
 }
 
 std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
-  state_->runtime_store = std::make_unique<RuntimePostgresBridge>(
-      state_->store, state_->config->database, *state_->logger,
-      state_->available);
-  state_->postgres_worker = std::make_unique<runtime::PostgresWorker>(
-      *state_->runtime_store,
-      [this](runtime::DatabaseResult result) {
-        if (state_->device_service) {
-          state_->device_service->PushDatabaseResult(std::move(result));
-        }
-      },
-      [this] {
-        auto replay = state_->mqtt->ReplayRetainedRegistrations(
-            state_->config->mqtt.topic_namespace);
-        if (!replay) state_->logger->Error("重放设备注册消息失败");
-      },
-      [] { return std::chrono::steady_clock::now(); },
-      [this](std::string message) { state_->logger->Error(message); },
-      state_->config->database.reconnect_interval);
-  state_->device_service = std::make_unique<runtime::DeviceService>(
-      state_->registry,
-      [this](protocol::Registration registration, runtime::TimePoint at) {
-        return state_->postgres_worker->SubmitProvision(std::move(registration),
-                                                        at);
-      },
-      [this](persistence::DesiredDeviceWrite write) {
-        return state_->postgres_worker->SubmitWrite(std::move(write));
-      },
-      [this](runtime::PublishedState published) {
-        state_event::Snapshot snapshot{
-            .vendor_id = published.record.vendor_id,
-            .school_name = published.record.school_name,
-            .dcdw_label = published.record.dcdw_label,
-            .online = published.record.status == device::Status::kOnline,
-            .last_seen_at = published.record.last_seen_at,
-            .telemetry_received_at = published.record.telemetry_received_at,
-            .latest_telemetry = published.record.latest_telemetry,
-            .degraded = published.degraded,
-        };
-        const auto payload = state_event::BuildStateEvent(
-            snapshot, published.reason, std::chrono::system_clock::now()).dump();
-        auto result = state_->mqtt->PublishStateEvent(
-            mqtt_topic::StateEventTopic(state_->config->mqtt.topic_namespace,
-                                        published.record.vendor_id),
-            payload);
-        if (!result) state_->logger->Error("发布设备状态事件失败");
-      },
-      [] { return std::chrono::steady_clock::now(); },
-      [this](std::string message) { state_->logger->Error(message); },
-      state_->config->queues.mqtt_inbound_capacity,
-      state_->config->mqtt.topic_namespace,
-      state_->config->device_state.telemetry_flush_interval,
-      state_->config->device_state.offline_timeout);
-  auto configured = state_->mqtt->ConfigureBusinessMessages(
-      [this](mqtt::InboundMessage message) {
-        if (state_->device_service) {
-          static_cast<void>(state_->device_service->TryPush(std::move(message)));
-        }
-      },
-      state_->config->mqtt.max_payload_bytes);
-  if (!configured) return std::unexpected(configured.error());
-  auto subscribed = state_->mqtt->SubscribeDeviceMessages(
-      state_->config->mqtt.topic_namespace);
-  if (!subscribed) return std::unexpected(subscribed.error());
+  try {
+    state_->external_bridge = std::make_shared<RuntimeExternalBridge>();
+    state_->external_bridge->mqtt = state_->mqtt.get();
+    state_->external_bridge->logger = state_->logger.get();
+    state_->external_bridge->topic_namespace =
+        state_->config->mqtt.topic_namespace;
 
-  state_->device_runtime_stopped = false;
-  state_->accepting_device_messages = true;
-  state_->postgres_thread = std::jthread(
-      [this](std::stop_token stop) { state_->postgres_worker->Run(stop); });
-  state_->device_thread = std::jthread(
-      [this](std::stop_token stop) { state_->device_service->Run(stop); });
-  for (auto& write : state_->startup_writes) {
-    if (!state_->postgres_worker->SubmitWrite(std::move(write))) {
-      state_->logger->Error("启动阶段离线状态提交失败");
+    auto bundle = std::make_shared<RuntimeBundle>();
+    bundle->config = *state_->config;
+    bundle->registry = std::move(state_->registry);
+    bundle->startup_writes = std::move(state_->startup_writes);
+    bundle->external = state_->external_bridge;
+    bundle->store = std::make_unique<RuntimePostgresBridge>(
+        std::move(state_->store), state_->config->database, state_->logger,
+        state_->available);
+    bundle->Initialize();
+    state_->runtime_bundle = bundle;
+    state_->device_runtime_stopped = false;
+    state_->accepting_device_messages = true;
+
+    runtime::DeviceRuntimeStartOperations start_operations{
+        .configure_handler = [this, weak = std::weak_ptr<RuntimeBundle>{bundle}]()
+            -> std::expected<void, std::string> {
+          auto configured = state_->mqtt->ConfigureBusinessMessages(
+              [weak](mqtt::InboundMessage message) {
+                if (const auto runtime = weak.lock(); runtime && runtime->service) {
+                  static_cast<void>(runtime->service->TryPush(std::move(message)));
+                }
+              },
+              state_->config->mqtt.max_payload_bytes);
+          if (!configured) return std::unexpected(configured.error());
+          return state_->mqtt->SubscribeDeviceMessages(
+              state_->config->mqtt.topic_namespace);
+        },
+        .start_postgres_thread = [bundle]() {
+          return bundle->StartDatabaseThread();
+        },
+        .start_device_thread = [bundle]() {
+          return bundle->StartBusinessThread();
+        },
+        .rollback = [this, bundle] {
+          bundle->RequestStop();
+          bundle->Join();
+          if (state_->external_bridge) state_->external_bridge->Disable();
+          state_->runtime_bundle.reset();
+          state_->device_runtime_stopped = true;
+          state_->accepting_device_messages = false;
+        },
+    };
+    return runtime::StartDeviceRuntimeTransaction(start_operations);
+  } catch (const std::exception&) {
+    if (state_->runtime_bundle) {
+      state_->runtime_bundle->RequestStop();
+      state_->runtime_bundle->Join();
+      state_->runtime_bundle.reset();
     }
+    if (state_->external_bridge) state_->external_bridge->Disable();
+    state_->device_runtime_stopped = true;
+    state_->accepting_device_messages = false;
+    return std::unexpected("启动设备运行时失败");
+  } catch (...) {
+    if (state_->runtime_bundle) {
+      state_->runtime_bundle->RequestStop();
+      state_->runtime_bundle->Join();
+      state_->runtime_bundle.reset();
+    }
+    if (state_->external_bridge) state_->external_bridge->Disable();
+    state_->device_runtime_stopped = true;
+    state_->accepting_device_messages = false;
+    return std::unexpected("启动设备运行时发生未知异常");
   }
-  state_->startup_writes.clear();
-  return {};
 }
 
 void ServiceEnvironment::StopAcceptingDeviceMessages() {
@@ -306,24 +450,42 @@ void ServiceEnvironment::StopAcceptingDeviceMessages() {
         {}, state_->config->mqtt.max_payload_bytes);
     if (!result && state_->logger) state_->logger->Error("停止接收设备消息失败");
   }
-  if (state_->device_service) state_->device_service->Close();
+  if (state_->runtime_bundle && state_->runtime_bundle->service) {
+    state_->runtime_bundle->service->Close();
+  }
 }
 
-void ServiceEnvironment::StopDeviceRuntime() {
-  if (!state_ || state_->device_runtime_stopped) return;
+bool ServiceEnvironment::StopDeviceRuntime(std::chrono::milliseconds timeout) {
+  if (!state_ || state_->device_runtime_stopped) return true;
   state_->device_runtime_stopped = true;
-  if (state_->device_thread.joinable()) state_->device_thread.join();
-  if (state_->postgres_worker) {
-    const bool flushed = state_->postgres_worker->FlushAndStop(
-        std::chrono::seconds{5});
-    if (!flushed) {
-      state_->logger->Error(
-          "数据库排空超时，未持久化设备数量：" +
-          std::to_string(state_->postgres_worker->PendingDeviceCount()));
-      state_->postgres_thread.request_stop();
-    }
+  const auto bundle = state_->runtime_bundle;
+  if (!bundle) return true;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  const auto remaining = [&] {
+    return std::max(std::chrono::milliseconds{0},
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        deadline - std::chrono::steady_clock::now()));
+  };
+  const bool input_drained = bundle->service->WaitForInputDrained(remaining());
+  const bool database_idle = input_drained &&
+      bundle->service->WaitForDatabaseIdle(remaining());
+  const bool flushed = database_idle &&
+      bundle->worker->FlushAndStop(remaining());
+  if (input_drained && database_idle && flushed) {
+    bundle->Join();
+    if (state_->external_bridge) state_->external_bridge->Disable();
+    state_->runtime_bundle.reset();
+    return true;
   }
-  if (state_->postgres_thread.joinable()) state_->postgres_thread.join();
+
+  const auto pending = bundle->worker->PendingDeviceCount();
+  state_->logger->Error("数据库排空超时，未持久化设备数量：" +
+                        std::to_string(pending));
+  if (state_->external_bridge) state_->external_bridge->Disable();
+  bundle->RequestStop();
+  bundle->Detach();
+  state_->runtime_bundle.reset();
+  return false;
 }
 
 std::expected<void, std::string> ServiceEnvironment::StartMqtt() {
