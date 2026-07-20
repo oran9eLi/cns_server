@@ -30,23 +30,37 @@ bool FieldHasWork(const auto& field) {
 }  // namespace
 
 void DirtyState::Mark(DesiredDeviceWrite write) {
+  Mark(std::move(write), std::chrono::steady_clock::now());
+}
+
+void DirtyState::Mark(DesiredDeviceWrite write,
+                      std::chrono::steady_clock::time_point marked_at) {
   const auto vendor_id = write.record.vendor_id;
-  auto [it, inserted] = entries_.try_emplace(
-      vendor_id, Entry{.record = write.record,
-                       .revision = write.revision,
-                       .metadata = {},
-                       .status = {},
-                       .telemetry = {},
-                       .urgency = Urgency::kTelemetryBatch,
-                       .marked_at = std::chrono::steady_clock::now()});
+  auto it = entries_.find(vendor_id);
+  const bool inserted = it == entries_.end();
+  if (inserted) {
+    it = entries_.emplace(
+        vendor_id, Entry{.record = std::move(write.record),
+                         .revision = write.revision,
+                         .metadata = {},
+                         .status = {},
+                         .telemetry = {},
+                         .urgency = Urgency::kTelemetryBatch,
+                         .marked_at = marked_at})
+             .first;
+  }
   auto& entry = it->second;
   if (!inserted && write.revision >= entry.revision) {
     entry.record = std::move(write.record);
     entry.revision = write.revision;
   }
+  const bool telemetry_was_dirty = entry.telemetry.dirty_revision != 0;
   MarkField(entry.metadata, write.write_metadata, write.revision);
   MarkField(entry.status, write.write_status, write.revision);
   MarkField(entry.telemetry, write.write_telemetry, write.revision);
+  if (write.write_telemetry && !telemetry_was_dirty) {
+    entry.marked_at = marked_at;
+  }
   if (write.urgency == Urgency::kImmediate) {
     entry.urgency = Urgency::kImmediate;
   }
@@ -61,19 +75,21 @@ std::vector<DesiredDeviceWrite> DirtyState::TakeTelemetryDue(
   return TakeMatching(false, now, interval);
 }
 
-void DirtyState::Complete(std::string_view vendor_id, std::uint64_t revision) {
-  const auto it = entries_.find(std::string{vendor_id});
+void DirtyState::Complete(const DesiredDeviceWrite& write) {
+  const auto it = entries_.find(write.record.vendor_id);
   if (it == entries_.end()) {
     return;
   }
-  auto complete = [revision](FieldState& field) {
-    if (field.in_flight_revision <= revision) {
+  auto complete = [revision = write.revision](FieldState& field,
+                                               bool selected) {
+    if (selected && field.in_flight_revision != 0 &&
+        field.in_flight_revision <= revision) {
       field.in_flight_revision = 0;
     }
   };
-  complete(it->second.metadata);
-  complete(it->second.status);
-  complete(it->second.telemetry);
+  complete(it->second.metadata, write.write_metadata);
+  complete(it->second.status, write.write_status);
+  complete(it->second.telemetry, write.write_telemetry);
   if (!HasWork(it->second)) {
     entries_.erase(it);
   }
@@ -81,14 +97,19 @@ void DirtyState::Complete(std::string_view vendor_id, std::uint64_t revision) {
 
 void DirtyState::Restore(DesiredDeviceWrite write) {
   const auto vendor_id = write.record.vendor_id;
-  auto [it, inserted] = entries_.try_emplace(
-      vendor_id, Entry{.record = write.record,
-                       .revision = write.revision,
-                       .metadata = {},
-                       .status = {},
-                       .telemetry = {},
-                       .urgency = Urgency::kTelemetryBatch,
-                       .marked_at = std::chrono::steady_clock::now()});
+  auto it = entries_.find(vendor_id);
+  const bool inserted = it == entries_.end();
+  if (inserted) {
+    it = entries_.emplace(
+        vendor_id, Entry{.record = std::move(write.record),
+                         .revision = write.revision,
+                         .metadata = {},
+                         .status = {},
+                         .telemetry = {},
+                         .urgency = Urgency::kTelemetryBatch,
+                         .marked_at = std::chrono::steady_clock::now()})
+             .first;
+  }
   auto& entry = it->second;
   if (!inserted && write.revision >= entry.revision) {
     entry.record = std::move(write.record);

@@ -27,3 +27,20 @@
 ## 顾虑
 
 - 当前类按调用方串行调度同一 vendor 的持久化结果设计；接口本身不携带单次请求 ID，不适合对同 vendor 并发完成多个相同 revision 的写请求。
+
+## 复审修复
+
+- 为 `Mark` 增加可注入 `steady_clock::time_point` 的重载；telemetry 每次从非 dirty 变为 dirty 时，以本次 Mark 时间重启批次等待。
+- `Complete` 改为接收本次 `Take` 返回的 `DesiredDeviceWrite`，只完成其字段集合，与 `Restore` 对称；同 vendor、同 revision 的分字段请求互不清理。
+- Immediate 只合并仍为 dirty 的 telemetry，不重复携带已经 Take 且 in-flight 的 telemetry。
+- 首次创建 vendor Entry 时 move `DeviceRecord`，避免 JSON 等字段的无谓深拷贝。
+- 已同步任务 4 简报与里程碑二实施计划中的内部接口。
+
+### 复审 TDD 与验证证据
+
+- RED：接口脚手架完成后运行真实 `dirty_state`，9 个用例中新增 3 个按预期失败，原有 6 个通过。
+- GREEN：`dirty_state` 通过；全量测试 20/20 通过；`git diff --check` 通过。
+
+### 复审后顾虑
+
+- 无已知功能顾虑；每次完成仍以 `Take` 返回值作为 completion token，调用方必须原样保留其字段集合。

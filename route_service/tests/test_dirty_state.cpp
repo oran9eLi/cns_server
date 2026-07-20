@@ -81,10 +81,11 @@ TEST_CASE("旧完成结果不清除期间到达的新 revision") {
   DirtyState state;
   state.Mark(Write("vendor-a", 1, false, true, false,
                    Urgency::kImmediate));
-  REQUIRE(state.TakeImmediate().size() == 1);
+  const auto old_write = state.TakeImmediate();
+  REQUIRE(old_write.size() == 1);
   state.Mark(Write("vendor-a", 2, false, true, false,
                    Urgency::kImmediate));
-  state.Complete("vendor-a", 1);
+  state.Complete(old_write.front());
   const auto writes = state.TakeImmediate();
   REQUIRE(writes.size() == 1);
   CHECK(writes.front().revision == 2);
@@ -119,7 +120,57 @@ TEST_CASE("普通 telemetry 批次在间隔到期前不降级为立即任务") {
   REQUIRE(first_batch.size() == 1);
   state.Mark(Write("vendor-a", 2, false, false, true));
   const auto next_batch_started = std::chrono::steady_clock::now();
-  state.Complete("vendor-a", first_batch.front().revision);
+  state.Complete(first_batch.front());
   CHECK(state.TakeTelemetryDue(next_batch_started + 4s, 5s).empty());
   CHECK(state.TakeTelemetryDue(next_batch_started + 5s, 5s).size() == 1);
+}
+
+TEST_CASE("新 telemetry 从非 dirty 变 dirty 时重新开始批次等待") {
+  DirtyState state;
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  state.Mark(Write("vendor-a", 1, false, true, false,
+                   Urgency::kImmediate),
+             t0);
+  REQUIRE(state.TakeImmediate().size() == 1);
+
+  state.Mark(Write("vendor-a", 2, false, false, true), t0 + 1h);
+  CHECK(state.TakeTelemetryDue(t0 + 1h, 5s).empty());
+  CHECK(state.TakeTelemetryDue(t0 + 1h + 4s, 5s).empty());
+  CHECK(state.TakeTelemetryDue(t0 + 1h + 5s, 5s).size() == 1);
+}
+
+TEST_CASE("同 vendor 同 revision 的分开字段请求完成互不清理") {
+  DirtyState state;
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  state.Mark(Write("vendor-a", 7, false, false, true), t0);
+  const auto telemetry = state.TakeTelemetryDue(t0 + 5s, 5s);
+  REQUIRE(telemetry.size() == 1);
+
+  state.Mark(Write("vendor-a", 7, false, true, false,
+                   Urgency::kImmediate),
+             t0 + 6s);
+  const auto status = state.TakeImmediate();
+  REQUIRE(status.size() == 1);
+  state.Complete(status.front());
+  state.Restore(telemetry.front());
+
+  const auto retry = state.TakeTelemetryDue(t0 + 12s, 5s);
+  REQUIRE(retry.size() == 1);
+  CHECK(retry.front().write_telemetry);
+  CHECK_FALSE(retry.front().write_status);
+}
+
+TEST_CASE("在途 telemetry 不因后来的立即 status 重复提交") {
+  DirtyState state;
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  state.Mark(Write("vendor-a", 1, false, false, true), t0);
+  REQUIRE(state.TakeTelemetryDue(t0 + 5s, 5s).size() == 1);
+
+  state.Mark(Write("vendor-a", 2, false, true, false,
+                   Urgency::kImmediate),
+             t0 + 6s);
+  const auto status = state.TakeImmediate();
+  REQUIRE(status.size() == 1);
+  CHECK(status.front().write_status);
+  CHECK_FALSE(status.front().write_telemetry);
 }

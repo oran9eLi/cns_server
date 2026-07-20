@@ -26,11 +26,13 @@ struct DesiredDeviceWrite {
 class DirtyState {
  public:
   void Mark(DesiredDeviceWrite write);
+  void Mark(DesiredDeviceWrite write,
+            std::chrono::steady_clock::time_point marked_at);
   std::vector<DesiredDeviceWrite> TakeImmediate();
   std::vector<DesiredDeviceWrite> TakeTelemetryDue(
       std::chrono::steady_clock::time_point now,
       std::chrono::seconds interval);
-  void Complete(std::string_view vendor_id, std::uint64_t revision);
+  void Complete(const DesiredDeviceWrite& write);
   void Restore(DesiredDeviceWrite write);
   std::size_t Size() const;
 
