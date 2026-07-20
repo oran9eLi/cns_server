@@ -70,6 +70,7 @@ enable_testing()
 add_library(route_core STATIC
   src/core/cli/command_line.cpp
   src/core/config/app_config.cpp
+  src/core/device/device_registry.cpp
   src/core/logging/logger.cpp
   src/core/mqtt_topic/device_topic.cpp
   src/core/protocol/device_message.cpp
@@ -130,6 +131,11 @@ add_executable(test_device_message tests/test_device_message.cpp)
 target_link_libraries(test_device_message PRIVATE route_core doctest::doctest)
 target_compile_options(test_device_message PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME device_message COMMAND test_device_message)
+
+add_executable(test_device_registry tests/test_device_registry.cpp)
+target_link_libraries(test_device_registry PRIVATE route_core doctest::doctest)
+target_compile_options(test_device_registry PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME device_registry COMMAND test_device_registry)
 
 add_executable(test_state_event tests/test_state_event.cpp)
 target_link_libraries(test_state_event PRIVATE route_core doctest::doctest)
