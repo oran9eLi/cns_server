@@ -83,10 +83,10 @@ V1 阶段核心职责：
 
 ## 当前状态
 
-- 项目边界已确认。
+- 里程碑一“工程基础与数据库骨架”已实现并完成本机验收；现场 PostgreSQL、Mosquitto、迁移重复执行和信号退出尚未验证，等待用户授权。
 - Route Service V1 设计已逐节确认，书面规格见 `docs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
-- 书面规格已复核，全局里程碑路线见 `docs/2026-07-18-路由服务V1实施计划.md`；里程碑一设计和详细实施计划已经确认，下一步从最新 `main` 重建实施工作树并按 TDD 编码。
+- 书面规格已复核，全局里程碑路线见 `docs/2026-07-18-路由服务V1实施计划.md`；当前尚未实现 registration、telemetry、ACK、业务 topic、设备在线状态、遥测合并写库、实时状态事件及配置/飞控命令路由。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。每个里程碑的设计和详细计划直接在 `main` 编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `main` 建立实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入 `main` 后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。
 
@@ -97,3 +97,49 @@ V1 阶段核心职责：
 - 数据库迁移必须版本化、幂等且可重复执行，不得依赖手工修改生产表。
 - 测试数据必须使用独立标识并可清理，不得破坏服务器已有设备与命令记录。
 - 最终数据库保留在服务器，数据库数据目录、密码和现场配置不进入 Git。
+
+## Ubuntu 构建与本机测试
+
+安装系统依赖（Ubuntu 包名）：
+
+```bash
+sudo apt install build-essential cmake pkg-config libmosquitto-dev libpqxx-dev nlohmann-json3-dev doctest-dev
+```
+
+本工程不通过 CMake 联网下载依赖。当前兼容层要求 Linux、GNU 工具链、binutils 提供的 `readelf`、libmosquitto 2.0.22 和 libpqxx 7.10.x。
+
+从仓库根目录执行干净构建和全部本机测试：
+
+```bash
+cmake -S route_service -B route_service/build-fresh -DCMAKE_BUILD_TYPE=Debug
+cmake --build route_service/build-fresh -j2
+ctest --test-dir route_service/build-fresh --output-on-failure
+```
+
+## 配置与运行
+
+先复制示例配置到仓库外的现场路径，再替换数据库密码等部署值；不得把真实配置提交到 Git：
+
+```bash
+sudo install -d -m 0750 /etc/cns
+sudo install -m 0600 route_service/config/route_service.example.json /etc/cns/route_service.json
+```
+
+显式迁移只在 `--migrate-only` 模式执行：
+
+```bash
+route_service/build-fresh/route_service \
+  --config /etc/cns/route_service.json \
+  --migrations "$(pwd)/route_service/migrations" \
+  --migrate-only
+```
+
+正常模式只检查数据库迁移版本，不自动修改数据库：
+
+```bash
+route_service/build-fresh/route_service \
+  --config /etc/cns/route_service.json \
+  --migrations "$(pwd)/route_service/migrations"
+```
+
+里程碑一当前能力包括严格配置与命令行解析、中文单行日志、有界队列、PostgreSQL 只向前迁移、正常/仅迁移模式、MQTT 自动重连骨架和信号有序退出。它不包含任何设备 registration、telemetry、ACK、业务订阅/发布、在线状态、遥测写库或命令路由功能。

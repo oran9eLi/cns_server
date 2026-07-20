@@ -18,6 +18,8 @@ cns_server/
 
 当前优先实施的核心服务。它以 MQTT 客户端身份连接 Mosquitto，消费设备注册、遥测和命令 ACK，以 PostgreSQL 作为权威持久化存储，并向目标设备发布规范化命令。
 
+当前状态：里程碑一“工程基础与数据库骨架”已实现并完成本机验收；现场 PostgreSQL、Mosquitto、迁移重复执行和信号退出尚未验证，等待用户授权。设备注册、遥测和命令路由仍属于后续里程碑。
+
 详细边界见 `route_service/README.md`。具体架构、表结构和实现步骤必须先经过设计文档与实施计划确认。
 
 ### backend_service
