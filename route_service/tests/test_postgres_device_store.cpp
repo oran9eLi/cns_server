@@ -7,13 +7,16 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <unistd.h>
 
 namespace {
 
@@ -25,6 +28,32 @@ std::string StoreSource() {
   return {std::istreambuf_iterator<char>{input},
           std::istreambuf_iterator<char>{}};
 }
+
+struct DatabaseRowsGuard {
+  pqxx::connection& connection;
+  std::string vendor;
+  std::string school;
+  std::string conflict_school;
+
+  ~DatabaseRowsGuard() {
+    try {
+      pqxx::work transaction{connection};
+      transaction.exec("DELETE FROM command_sources WHERE source_id = $1",
+                       pqxx::params{vendor});
+      transaction.exec("DELETE FROM device_latest_states WHERE vendor_id = $1",
+                       pqxx::params{vendor});
+      transaction.exec("DELETE FROM devices WHERE vendor_id = $1",
+                       pqxx::params{vendor});
+      transaction.exec(
+          "DELETE FROM schools WHERE school_name IN ($1, $2) "
+          "AND NOT EXISTS (SELECT 1 FROM devices "
+          "WHERE devices.school_id = schools.school_id)",
+          pqxx::params{school, conflict_school});
+      transaction.commit();
+    } catch (const std::exception&) {
+    }
+  }
+};
 
 TEST_CASE("设备接口提供建档请求和打开状态查询") {
   using Store = cns::postgres::PostgresStore;
@@ -73,6 +102,25 @@ TEST_CASE("遥测校验仅约束被请求写入的JSON且错误不回显payload"
   CHECK(cns::postgres::ValidateDeviceWrite(write).has_value());
 }
 
+TEST_CASE("加载遥测只接受JSON对象且安全隐藏原文") {
+  CHECK_FALSE(cns::postgres::ParseDeviceTelemetry(std::nullopt).value()
+                  .has_value());
+  const auto object =
+      cns::postgres::ParseDeviceTelemetry(std::string{R"({"value":1})"});
+  REQUIRE(object.has_value());
+  REQUIRE(object->has_value());
+  CHECK(object->value().at("value") == 1);
+
+  const auto array = cns::postgres::ParseDeviceTelemetry(
+      std::string{R"(["secret-load-payload"])"});
+  REQUIRE_FALSE(array.has_value());
+  CHECK(array.error().find("secret-load-payload") == std::string::npos);
+  const auto invalid = cns::postgres::ParseDeviceTelemetry(
+      std::string{"secret-load-payload"});
+  REQUIRE_FALSE(invalid.has_value());
+  CHECK(invalid.error().find("secret-load-payload") == std::string::npos);
+}
+
 TEST_CASE("系统时间以整数微秒精确往返") {
   using cns::postgres::FromUnixMicroseconds;
   using cns::postgres::ToUnixMicroseconds;
@@ -80,10 +128,28 @@ TEST_CASE("系统时间以整数微秒精确往返") {
                                 1'234'567'890'123, -1'234'567'890'123};
   for (const std::int64_t value : cases) {
     CAPTURE(value);
-    CHECK(ToUnixMicroseconds(FromUnixMicroseconds(value)) == value);
+    const auto time = FromUnixMicroseconds(value);
+    REQUIRE(time.has_value());
+    CHECK(ToUnixMicroseconds(*time) == value);
+  }
+  constexpr std::int64_t exact_integer_limit = 1LL << 53;
+  for (const std::int64_t value : {exact_integer_limit - 1,
+                                   exact_integer_limit,
+                                   exact_integer_limit + 1,
+                                   -exact_integer_limit + 1,
+                                   -exact_integer_limit,
+                                   -exact_integer_limit - 1}) {
+    CAPTURE(value);
+    const auto time = FromUnixMicroseconds(value);
+    REQUIRE(time.has_value());
+    CHECK(ToUnixMicroseconds(*time) == value);
   }
   CHECK(ToUnixMicroseconds(cns::device::TimePoint{1234ms + 567us}) ==
         1'234'567);
+  CHECK_FALSE(FromUnixMicroseconds(std::numeric_limits<std::int64_t>::max())
+                  .has_value());
+  CHECK_FALSE(FromUnixMicroseconds(std::numeric_limits<std::int64_t>::min())
+                  .has_value());
 }
 
 TEST_CASE("加载设备使用学校设备和最新状态的全量连接") {
@@ -125,8 +191,21 @@ TEST_CASE("状态写入参数化并由数据库转换JSONB和时间") {
   const std::string source = StoreSource();
 
   CHECK(source.find("$6::jsonb") != std::string::npos);
-  CHECK(source.find("TIMESTAMPTZ 'epoch' + $4 * INTERVAL '1 microsecond'") !=
+  CHECK(source.find("$4::bigint / 1000000 * INTERVAL '1 second'") !=
         std::string::npos);
+  CHECK(source.find("$4::bigint % 1000000 * INTERVAL '1 microsecond'") !=
+        std::string::npos);
+  CHECK(source.find("$7::bigint / 1000000 * INTERVAL '1 second'") !=
+        std::string::npos);
+  CHECK(source.find("$7::bigint % 1000000 * INTERVAL '1 microsecond'") !=
+        std::string::npos);
+  CHECK(source.find("$3::bigint / 1000000 * INTERVAL '1 second'") !=
+        std::string::npos);
+  CHECK(source.find("$3::bigint % 1000000 * INTERVAL '1 microsecond'") !=
+        std::string::npos);
+  CHECK(source.find("$3 * INTERVAL '1 microsecond'") == std::string::npos);
+  CHECK(source.find("$4 * INTERVAL '1 microsecond'") == std::string::npos);
+  CHECK(source.find("$7 * INTERVAL '1 microsecond'") == std::string::npos);
   CHECK(source.find("extract(epoch FROM st.last_seen_at)::numeric * 1000000") !=
         std::string::npos);
   CHECK(source.find("duration<double>") == std::string::npos);
@@ -177,31 +256,44 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
   CHECK((*store)->IsOpen());
   CHECK((*store)->LoadDevices().has_value());
 
-  constexpr std::string_view vendor = "codex-task5-no-role";
   pqxx::connection cleanup_connection{
       cns::postgres::BuildConnectionString(config)};
-  const auto cleanup = [&] {
-    pqxx::work transaction{cleanup_connection};
-    transaction.exec("DELETE FROM command_sources WHERE source_id = $1",
-                     pqxx::params{vendor});
-    transaction.exec("DELETE FROM device_latest_states WHERE vendor_id = $1",
-                     pqxx::params{vendor});
-    transaction.exec("DELETE FROM devices WHERE vendor_id = $1",
-                     pqxx::params{vendor});
-    transaction.exec(
-        "DELETE FROM schools WHERE school_name IN ($1, $2) "
-        "AND NOT EXISTS (SELECT 1 FROM devices "
-        "WHERE devices.school_id = schools.school_id)",
-        pqxx::params{"codex-task5-school-a", "codex-task5-school-b"});
-    transaction.commit();
-  };
-  cleanup();
+  const auto token = static_cast<std::uint64_t>(
+                         std::chrono::steady_clock::now()
+                             .time_since_epoch()
+                             .count()) ^
+                     static_cast<std::uint64_t>(::getpid());
+  std::ostringstream vendor_builder;
+  vendor_builder << "t5" << std::hex << std::setw(18) << std::setfill('0')
+                 << token;
+  const std::string vendor = vendor_builder.str();
+  REQUIRE(vendor.size() == 20);
+  const std::string school = "codex-task5-school-" + vendor;
+  const std::string conflict_school = school + "-conflict";
+  {
+    pqxx::read_transaction transaction{cleanup_connection};
+    REQUIRE(transaction
+                .exec("SELECT count(*) FROM devices WHERE vendor_id = $1",
+                      pqxx::params{vendor})
+                .one_field()
+                .as<int>() == 0);
+    REQUIRE(
+        transaction
+            .exec("SELECT count(*) FROM schools WHERE school_name IN ($1, $2)",
+                  pqxx::params{school, conflict_school})
+            .one_field()
+            .as<int>() == 0);
+  }
+  DatabaseRowsGuard cleanup{cleanup_connection, vendor, school,
+                            conflict_school};
+
+  const auto first_time = cns::postgres::FromUnixMicroseconds(1'234'567);
+  REQUIRE(first_time.has_value());
 
   const auto first = (*store)->ProvisionDevice({
-      .registration = {std::string{vendor},
-                       cns::protocol::RegistrationStatus::kOnline,
-                       "codex-task5-school-a", std::nullopt},
-      .received_at = cns::postgres::FromUnixMicroseconds(1'234'567)});
+      .registration = {vendor, cns::protocol::RegistrationStatus::kOnline,
+                       school, std::nullopt},
+      .received_at = *first_time});
   REQUIRE(first.has_value());
   CHECK_FALSE(first->dcdw_label.has_value());
   REQUIRE(first->last_seen_at.has_value());
@@ -220,14 +312,15 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
   auto telemetry_write = no_op;
   telemetry_write.write_telemetry = true;
   telemetry_write.record.latest_telemetry = nlohmann::json{{"value", 7}};
-  telemetry_write.record.telemetry_received_at =
-      cns::postgres::FromUnixMicroseconds(2'345'678);
+  const auto telemetry_time = cns::postgres::FromUnixMicroseconds(2'345'678);
+  REQUIRE(telemetry_time.has_value());
+  telemetry_write.record.telemetry_received_at = *telemetry_time;
   CHECK((*store)->WriteDeviceState(telemetry_write).has_value());
   auto loaded = (*store)->LoadDevices();
   REQUIRE(loaded.has_value());
   const auto loaded_record = std::find_if(
       loaded->begin(), loaded->end(),
-      [](const cns::device::DeviceRecord& record) {
+      [&vendor](const cns::device::DeviceRecord& record) {
         return record.vendor_id == vendor;
       });
   REQUIRE(loaded_record != loaded->end());
@@ -250,20 +343,36 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
         pqxx::params{vendor});
     transaction.commit();
   }
+  const auto conflict_time = cns::postgres::FromUnixMicroseconds(9'999'999);
+  REQUIRE(conflict_time.has_value());
   const auto conflict = (*store)->ProvisionDevice({
-      .registration = {std::string{vendor},
-                       cns::protocol::RegistrationStatus::kOffline,
-                       "codex-task5-school-b", "should-not-replace"},
-      .received_at = cns::postgres::FromUnixMicroseconds(9'999'999)});
+      .registration = {vendor, cns::protocol::RegistrationStatus::kOffline,
+                       conflict_school, "should-not-replace"},
+      .received_at = *conflict_time});
   REQUIRE(conflict.has_value());
-  CHECK(conflict->school_name == "codex-task5-school-a");
+  CHECK(conflict->school_name == school);
   CHECK_FALSE(conflict->dcdw_label.has_value());
   CHECK(conflict->status == cns::device::Status::kOnline);
-  pqxx::read_transaction verify{cleanup_connection};
-  CHECK_FALSE(verify.exec("SELECT enabled FROM command_sources WHERE source_id = $1",
-                          pqxx::params{vendor}).one_field().as<bool>());
-  verify.commit();
-  cleanup();
+  {
+    pqxx::read_transaction verify{cleanup_connection};
+    CHECK_FALSE(
+        verify
+            .exec("SELECT enabled FROM command_sources WHERE source_id = $1",
+                  pqxx::params{vendor})
+            .one_field()
+            .as<bool>());
+  }
+  {
+    pqxx::work transaction{cleanup_connection};
+    transaction.exec(
+        "UPDATE device_latest_states SET latest_telemetry = $2::jsonb "
+        "WHERE vendor_id = $1",
+        pqxx::params{vendor, "[\"secret-load-payload\"]"});
+    transaction.commit();
+  }
+  const auto invalid_load = (*store)->LoadDevices();
+  REQUIRE_FALSE(invalid_load.has_value());
+  CHECK(invalid_load.error().find("secret-load-payload") == std::string::npos);
 }
 
 }  // namespace

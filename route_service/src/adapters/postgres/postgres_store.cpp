@@ -42,13 +42,22 @@ device::Status DeviceStatus(std::string_view status) {
 
 std::expected<device::DeviceRecord, std::string> DeviceFromRow(
     const pqxx::row& row) {
-  std::optional<nlohmann::json> telemetry;
-  if (!row[7].is_null()) {
-    nlohmann::json parsed = nlohmann::json::parse(row[7].as<std::string>());
-    if (!parsed.is_object()) {
-      return std::unexpected("读取 PostgreSQL 设备失败：遥测必须为对象");
-    }
-    telemetry = std::move(parsed);
+  auto telemetry = ParseDeviceTelemetry(
+      row[7].is_null()
+          ? std::nullopt
+          : std::optional<std::string>{row[7].as<std::string>()});
+  if (!telemetry) return std::unexpected(telemetry.error());
+  std::optional<device::TimePoint> last_seen;
+  if (!row[6].is_null()) {
+    auto parsed = FromUnixMicroseconds(row[6].as<std::int64_t>());
+    if (!parsed) return std::unexpected(parsed.error());
+    last_seen = *parsed;
+  }
+  std::optional<device::TimePoint> telemetry_received;
+  if (!row[8].is_null()) {
+    auto parsed = FromUnixMicroseconds(row[8].as<std::int64_t>());
+    if (!parsed) return std::unexpected(parsed.error());
+    telemetry_received = *parsed;
   }
   return device::DeviceRecord{
       .vendor_id = row[0].as<std::string>(),
@@ -59,16 +68,9 @@ std::expected<device::DeviceRecord, std::string> DeviceFromRow(
                         : std::optional{row[3].as<std::string>()},
       .model_version = row[4].as<std::string>(),
       .status = DeviceStatus(row[5].as<std::string>()),
-      .last_seen_at = row[6].is_null()
-                          ? std::nullopt
-                          : std::optional{FromUnixMicroseconds(
-                                row[6].as<std::int64_t>())},
-      .latest_telemetry = std::move(telemetry),
-      .telemetry_received_at =
-          row[8].is_null()
-              ? std::nullopt
-              : std::optional{
-                    FromUnixMicroseconds(row[8].as<std::int64_t>())},
+      .last_seen_at = last_seen,
+      .latest_telemetry = std::move(*telemetry),
+      .telemetry_received_at = telemetry_received,
       .revision = 0,
   };
 }
@@ -89,14 +91,40 @@ std::expected<void, std::string> ValidateDeviceWrite(
   return {};
 }
 
+std::expected<std::optional<nlohmann::json>, std::string> ParseDeviceTelemetry(
+    const std::optional<std::string>& text) {
+  if (!text) return std::optional<nlohmann::json>{};
+  try {
+    nlohmann::json parsed = nlohmann::json::parse(*text);
+    if (!parsed.is_object()) {
+      return std::unexpected("读取 PostgreSQL 设备失败：遥测必须为对象");
+    }
+    return std::optional<nlohmann::json>{std::move(parsed)};
+  } catch (const nlohmann::json::exception&) {
+    return std::unexpected("读取 PostgreSQL 设备失败：遥测 JSON 无效");
+  }
+}
+
 std::int64_t ToUnixMicroseconds(device::TimePoint time) noexcept {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              time.time_since_epoch())
       .count();
 }
 
-device::TimePoint FromUnixMicroseconds(std::int64_t microseconds) noexcept {
-  return device::TimePoint{std::chrono::microseconds{microseconds}};
+std::expected<device::TimePoint, std::string> FromUnixMicroseconds(
+    std::int64_t microseconds) noexcept {
+  constexpr auto minimum = std::chrono::duration_cast<std::chrono::microseconds>(
+                               device::TimePoint::duration::min())
+                               .count();
+  constexpr auto maximum = std::chrono::duration_cast<std::chrono::microseconds>(
+                               device::TimePoint::duration::max())
+                               .count();
+  if (microseconds < minimum || microseconds > maximum) {
+    return std::unexpected("PostgreSQL 设备时间超出系统时钟范围");
+  }
+  return device::TimePoint{
+      std::chrono::duration_cast<device::TimePoint::duration>(
+          std::chrono::microseconds{microseconds})};
 }
 
 std::string BuildSafeConnectionDescription(const config::DatabaseConfig& config) {
@@ -243,7 +271,9 @@ std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
     transaction.exec(R"sql(
       INSERT INTO device_latest_states (vendor_id, status, last_seen_at)
       VALUES ($1, $2,
-              TIMESTAMPTZ 'epoch' + $3 * INTERVAL '1 microsecond')
+              TIMESTAMPTZ 'epoch'
+                + $3::bigint / 1000000 * INTERVAL '1 second'
+                + $3::bigint % 1000000 * INTERVAL '1 microsecond')
       ON CONFLICT (vendor_id) DO NOTHING
     )sql", pqxx::params{request.registration.vendor_id,
                         online ? "online" : "offline", last_seen});
@@ -304,12 +334,16 @@ std::expected<void, std::string> PostgresStore::WriteDeviceState(
         UPDATE device_latest_states SET
           status = CASE WHEN $2 THEN $3 ELSE status END,
           last_seen_at = CASE WHEN $2 THEN
-            TIMESTAMPTZ 'epoch' + $4 * INTERVAL '1 microsecond'
+            TIMESTAMPTZ 'epoch'
+              + $4::bigint / 1000000 * INTERVAL '1 second'
+              + $4::bigint % 1000000 * INTERVAL '1 microsecond'
             ELSE last_seen_at END,
           latest_telemetry =
             CASE WHEN $5 THEN $6::jsonb ELSE latest_telemetry END,
           telemetry_received_at = CASE WHEN $5 THEN
-            TIMESTAMPTZ 'epoch' + $7 * INTERVAL '1 microsecond'
+            TIMESTAMPTZ 'epoch'
+              + $7::bigint / 1000000 * INTERVAL '1 second'
+              + $7::bigint % 1000000 * INTERVAL '1 microsecond'
             ELSE telemetry_received_at END,
           updated_at = CURRENT_TIMESTAMP
         WHERE vendor_id = $1

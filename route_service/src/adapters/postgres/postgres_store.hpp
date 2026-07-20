@@ -36,8 +36,11 @@ DeviceWritePlan PlanDeviceWrite(bool write_metadata, bool write_status,
                                 bool write_telemetry) noexcept;
 std::expected<void, std::string> ValidateDeviceWrite(
     const persistence::DesiredDeviceWrite& write);
+std::expected<std::optional<nlohmann::json>, std::string> ParseDeviceTelemetry(
+    const std::optional<std::string>& text);
 std::int64_t ToUnixMicroseconds(device::TimePoint time) noexcept;
-device::TimePoint FromUnixMicroseconds(std::int64_t microseconds) noexcept;
+std::expected<device::TimePoint, std::string> FromUnixMicroseconds(
+    std::int64_t microseconds) noexcept;
 
 /** 构造不包含密码和完整连接串的安全连接描述。 */
 std::string BuildSafeConnectionDescription(const config::DatabaseConfig& config);

@@ -32,3 +32,11 @@
 - 时间转换改为 C++ `int64_t` 微秒；SQL 读取使用 numeric 乘一百万后转 bigint，写入使用 epoch 加整数微秒 interval，避免 C++ double epoch。
 - 新增整数微秒正负/毫秒/微秒边界往返测试，以及遥测校验纯函数测试；错误不会回显 payload。
 - 显式数据库子用例扩展为无角色号建档、JSONB/时间往返、no-op、非 object 拒绝、冲突实际值及禁用来源保持，并清理专用测试数据。
+
+## 第二次审查修复追加
+
+- TIMESTAMPTZ 写入拆分为 bigint 微秒的整秒商与微秒余数，禁止将完整 epoch 微秒值经 float8 interval 运算。
+- `FromUnixMicroseconds` 改为返回 `expected` 并检查 `system_clock` 范围；覆盖正负 `2^53-1`、`2^53`、`2^53+1` 精确往返和越界拒绝。
+- 抽取 `ParseDeviceTelemetry` 纯函数，默认测试直接覆盖 object、array、无效 JSON、NULL 以及安全错误文本。
+- 显式数据库测试每次生成唯一合法 20 字符 vendor 与唯一学校，先断言不存在；随后由 RAII guard 在任何退出路径按外键顺序定向清理本次标识。
+- 显式数据库测试通过 SQL 写入本次设备的 array JSONB，直接验证 `LoadDevices` 启动加载失败且错误不泄露 payload。
