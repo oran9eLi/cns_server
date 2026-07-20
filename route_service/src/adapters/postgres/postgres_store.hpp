@@ -25,6 +25,20 @@ struct ProvisionRequest {
   std::chrono::system_clock::time_point received_at;
 };
 
+struct DeviceWritePlan {
+  bool update_metadata;
+  bool update_latest_state;
+
+  bool operator==(const DeviceWritePlan&) const = default;
+};
+
+DeviceWritePlan PlanDeviceWrite(bool write_metadata, bool write_status,
+                                bool write_telemetry) noexcept;
+std::expected<void, std::string> ValidateDeviceWrite(
+    const persistence::DesiredDeviceWrite& write);
+std::int64_t ToUnixMicroseconds(device::TimePoint time) noexcept;
+device::TimePoint FromUnixMicroseconds(std::int64_t microseconds) noexcept;
+
 /** 构造不包含密码和完整连接串的安全连接描述。 */
 std::string BuildSafeConnectionDescription(const config::DatabaseConfig& config);
 
