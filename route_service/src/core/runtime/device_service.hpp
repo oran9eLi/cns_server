@@ -63,6 +63,7 @@ class DeviceService {
   bool WaitForInputDrained(std::chrono::milliseconds timeout);
   /** 等待在途数据库结果及其派生写入形成的完整链路结束。 */
   bool WaitForDatabaseIdle(std::chrono::milliseconds timeout);
+  void SetBeforeDatabaseIdleWaitHookForTesting(std::function<void()> hook);
   /** 请求业务线程放弃已停止数据库运行时不可能再完成的在途工作。 */
   void CancelOutstandingDatabaseWork();
 
@@ -88,6 +89,11 @@ class DeviceService {
   void Diagnose(std::string message) noexcept;
   void Notify();
   bool HasOutstandingDatabaseWork() const;
+  bool IsInputDrained() const;
+  void SetInputDrained();
+  void SetProcessingReady(bool value);
+  void AdjustOutstandingDatabaseWork(std::ptrdiff_t delta);
+  void ResetOutstandingDatabaseWork();
 
   device::DeviceRegistry& registry_;
   ProvisionSubmitter provision_;
@@ -107,10 +113,11 @@ class DeviceService {
   bool scan_initialized_ = false;
   bool database_unavailable_ = false;
   std::atomic_bool closed_{false};
-  std::atomic_bool input_drained_{false};
+  bool input_drained_ = false;
   std::atomic_bool cancel_database_work_requested_{false};
-  std::atomic_bool processing_ready_{false};
-  std::atomic_size_t outstanding_database_work_{0};
+  bool processing_ready_ = false;
+  std::size_t outstanding_database_work_ = 0;
+  std::function<void()> before_database_idle_wait_for_testing_;
   std::string topic_namespace_;
   std::chrono::seconds telemetry_interval_;
   std::chrono::seconds offline_timeout_;

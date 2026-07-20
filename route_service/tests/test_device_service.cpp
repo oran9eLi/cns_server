@@ -185,6 +185,40 @@ TEST_CASE("database idle waiter wakes immediately after chained processing finis
   CHECK(elapsed < 500ms);
 }
 
+TEST_CASE("database idle transition cannot be lost between predicate and wait") {
+  cns::device::DeviceRegistry registry;
+  DeviceService service(
+      registry,
+      [](Registration, cns::runtime::TimePoint) { return true; },
+      [](DesiredDeviceWrite) { return true; },
+      [](cns::runtime::PublishedState) {},
+      [] { return std::chrono::steady_clock::time_point{}; });
+  REQUIRE(service.TryPush(Message(std::string{"cns/"} + kNew + "/registration",
+                                  RegistrationJson(kNew))));
+  service.ProcessReady();
+
+  std::latch predicate_checked{1};
+  std::latch permit_wait{1};
+  service.SetBeforeDatabaseIdleWaitHookForTesting([&] {
+    predicate_checked.count_down();
+    permit_wait.wait();
+  });
+  auto waiter = std::async(std::launch::async, [&] {
+    const auto started = std::chrono::steady_clock::now();
+    const bool result = service.WaitForDatabaseIdle(2s);
+    return std::pair{result, std::chrono::steady_clock::now() - started};
+  });
+  predicate_checked.wait();
+  service.PushDatabaseResult({DatabaseResult::Kind::kUnavailable, kNew, 0,
+                              std::nullopt, {}});
+  auto completion = std::async(std::launch::async, [&] { service.ProcessReady(); });
+  permit_wait.count_down();
+  completion.get();
+  const auto [idle_result, elapsed] = waiter.get();
+  CHECK(idle_result);
+  CHECK(elapsed < 500ms);
+}
+
 TEST_CASE("database results have priority over MQTT and unavailable clears pending") {
   Harness h;
   auto service = h.Make();
