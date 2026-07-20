@@ -103,7 +103,7 @@ V1 阶段核心职责：
 安装系统依赖（Ubuntu 包名）：
 
 ```bash
-sudo apt install build-essential cmake pkg-config libmosquitto-dev libpqxx-dev nlohmann-json3-dev doctest-dev
+sudo apt install build-essential cmake pkg-config binutils libmosquitto-dev libpqxx-dev nlohmann-json3-dev doctest-dev
 ```
 
 本工程不通过 CMake 联网下载依赖。当前兼容层要求 Linux、GNU 工具链、binutils 提供的 `readelf`、libmosquitto 2.0.22 和 libpqxx 7.10.x。
@@ -118,17 +118,21 @@ ctest --test-dir route_service/build-fresh --output-on-failure
 
 ## 配置与运行
 
-先复制示例配置到仓库外的现场路径，再替换数据库密码等部署值；不得把真实配置提交到 Git：
+先由用户确认专用服务账户和组，再以该身份复制示例配置到仓库外的现场路径并替换数据库密码等部署值；不得把真实配置提交到 Git。下面两个占位值必须先替换，配置文件所有者与运行进程身份必须一致：
 
 ```bash
-sudo install -d -m 0750 /etc/cns
-sudo install -m 0600 route_service/config/route_service.example.json /etc/cns/route_service.json
+service_user='<用户确认的专用服务账户>'
+service_group='<用户确认的专用服务组>'
+sudo install -d -o "$service_user" -g "$service_group" -m 0750 /etc/cns
+sudo install -o "$service_user" -g "$service_group" -m 0600 \
+  route_service/config/route_service.example.json /etc/cns/route_service.json
 ```
 
 显式迁移只在 `--migrate-only` 模式执行：
 
 ```bash
-route_service/build-fresh/route_service \
+service_user='<用户确认的专用服务账户>'
+sudo -u "$service_user" route_service/build-fresh/route_service \
   --config /etc/cns/route_service.json \
   --migrations "$(pwd)/route_service/migrations" \
   --migrate-only
@@ -137,7 +141,8 @@ route_service/build-fresh/route_service \
 正常模式只检查数据库迁移版本，不自动修改数据库：
 
 ```bash
-route_service/build-fresh/route_service \
+service_user='<用户确认的专用服务账户>'
+sudo -u "$service_user" route_service/build-fresh/route_service \
   --config /etc/cns/route_service.json \
   --migrations "$(pwd)/route_service/migrations"
 ```
