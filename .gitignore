@@ -8,3 +8,5 @@ backend_service/protocol/node_modules/
 backend_service/protocol/dist/
 npm-debug.log*
 .backend_service.pid
+.frontend_dev.pids
+.logs/

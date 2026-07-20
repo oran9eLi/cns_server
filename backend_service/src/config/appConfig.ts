@@ -17,6 +17,14 @@ export const AppConfigSchema = z
         level: z.enum(["debug", "info", "warn", "error"]).default("info")
       })
       .strict()
+      .default({}),
+    database: z
+      .object({
+        connection_string: z.string().url().optional(),
+        max_connections: z.number().int().min(1).max(50).default(10),
+        ssl: z.boolean().default(false)
+      })
+      .strict()
       .default({})
   })
   .strict();

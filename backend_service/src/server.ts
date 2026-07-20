@@ -2,17 +2,33 @@ import Fastify from "fastify";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createCommandStore } from "./commands/createCommandStore.js";
 import { getConfigPathFromEnv } from "./config/env.js";
-import { loadAppConfig } from "./config/appConfig.js";
+import { AppConfigSchema, loadAppConfig, type AppConfig } from "./config/appConfig.js";
+import { createDeviceStore } from "./devices/createDeviceStore.js";
+import { registerDeviceRoutes } from "./devices/deviceRoutes.js";
 import { registerHealthRoutes } from "./health/healthRoutes.js";
 import { createLogger } from "./logging/logger.js";
+import { createWebSocketHub } from "./realtime/webSocketHub.js";
 
-export async function buildServer() {
+export async function buildServer(config: AppConfig = AppConfigSchema.parse({})) {
   const app = Fastify({
     logger: false
   });
+  const realtime = createWebSocketHub();
+  const devices = createDeviceStore(config);
+  const commands = createCommandStore(config);
 
-  await registerHealthRoutes(app);
+  await realtime.register(app);
+  await registerHealthRoutes(app, {
+    databaseStatus: () => devices.dependencyStatus()
+  });
+  await registerDeviceRoutes(app, { commands, devices, realtime });
+
+  app.addHook("onClose", async () => {
+    await devices.close();
+    await commands.close();
+  });
 
   return app;
 }
@@ -20,7 +36,7 @@ export async function buildServer() {
 async function main() {
   const config = await loadAppConfig(getConfigPathFromEnv());
   const logger = createLogger(config);
-  const app = await buildServer();
+  const app = await buildServer(config);
 
   const close = async (signal: NodeJS.Signals) => {
     logger.info("收到退出信号，正在关闭后端服务", { signal });
