@@ -2,9 +2,13 @@
 #pragma once
 
 #include "core/config/app_config.hpp"
+#include "core/device/device_registry.hpp"
 #include "core/logging/logger.hpp"
 #include "core/migration/migration_plan.hpp"
+#include "core/persistence/dirty_state.hpp"
+#include "core/protocol/device_message.hpp"
 
+#include <chrono>
 #include <expected>
 #include <memory>
 #include <string>
@@ -15,6 +19,11 @@ class connection;
 }
 
 namespace cns::postgres {
+
+struct ProvisionRequest {
+  protocol::Registration registration;
+  std::chrono::system_clock::time_point received_at;
+};
 
 /** 构造不包含密码和完整连接串的安全连接描述。 */
 std::string BuildSafeConnectionDescription(const config::DatabaseConfig& config);
@@ -40,6 +49,13 @@ class PostgresStore {
   /** 在一个事务内执行迁移 SQL 并记录对应版本。 */
   std::expected<void, std::string> ApplyMigration(
       const migration::Migration& migration);
+
+  std::expected<std::vector<device::DeviceRecord>, std::string> LoadDevices();
+  std::expected<device::DeviceRecord, std::string> ProvisionDevice(
+      const ProvisionRequest& request);
+  std::expected<void, std::string> WriteDeviceState(
+      const persistence::DesiredDeviceWrite& write);
+  bool IsOpen() const noexcept;
 
  private:
   explicit PostgresStore(std::unique_ptr<pqxx::connection> connection,

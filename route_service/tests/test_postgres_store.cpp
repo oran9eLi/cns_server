@@ -57,4 +57,14 @@ TEST_CASE("迁移版本表的检查读取和写入都锁定 public schema") {
         std::string::npos);
 }
 
+TEST_CASE("设备存储错误处理不回显异常文本") {
+  std::ifstream input{CNS_POSTGRES_STORE_SOURCE_FILE};
+  REQUIRE(input.is_open());
+  const std::string source{std::istreambuf_iterator<char>{input},
+                           std::istreambuf_iterator<char>{}};
+
+  CHECK(source.find("exception.what()") == std::string::npos);
+  CHECK(source.find("exception.what(") == std::string::npos);
+}
+
 }  // namespace

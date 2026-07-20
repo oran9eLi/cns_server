@@ -222,6 +222,15 @@ target_compile_definitions(test_postgres_store PRIVATE
 
 add_test(NAME postgres_store COMMAND test_postgres_store)
 
+add_executable(test_postgres_device_store tests/test_postgres_device_store.cpp)
+target_link_libraries(test_postgres_device_store PRIVATE route_adapters doctest::doctest)
+target_compile_options(test_postgres_device_store PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(test_postgres_device_store PRIVATE
+  CNS_POSTGRES_STORE_SOURCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/src/adapters/postgres/postgres_store.cpp"
+)
+
+add_test(NAME postgres_device_store COMMAND test_postgres_device_store)
+
 add_executable(test_pqxx_compat tests/test_pqxx_compat.cpp)
 target_link_libraries(test_pqxx_compat PRIVATE pqxx_compat)
 target_compile_options(test_pqxx_compat PRIVATE -Wall -Wextra -Wpedantic -Werror)
