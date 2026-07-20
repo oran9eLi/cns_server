@@ -53,6 +53,37 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
     return std::unexpected(Classify("数据库状态写入失败"));
   }
 
+  std::expected<std::optional<command::CommandRecord>, runtime::DatabaseError>
+  FindCommand(std::string_view source_id, std::string_view request_id) override {
+    auto result = store_->FindCommand(source_id, request_id);
+    if (result) return std::move(*result);
+    return std::unexpected(Classify("数据库命令查询失败"));
+  }
+
+  std::expected<command::CommandRecord, runtime::DatabaseError> InsertCommand(
+      const command::CommandRecord& command) override {
+    auto result = store_->InsertCommand(command);
+    if (result) return std::move(*result);
+    return std::unexpected(Classify("数据库命令写入失败"));
+  }
+
+  std::expected<command::CommandRecord, runtime::DatabaseError>
+  TransitionCommand(std::string_view command_id,
+                    command::CommandStatus expected,
+                    command::CommandStatus desired,
+                    const command::CommandUpdate& update) override {
+    auto result = store_->TransitionCommand(command_id, expected, desired, update);
+    if (result) return std::move(*result);
+    return std::unexpected(Classify("数据库命令状态转换失败"));
+  }
+
+  std::expected<std::size_t, runtime::DatabaseError> CleanupCommands(
+      command::TimePoint before, std::size_t batch_size) override {
+    auto result = store_->DeleteExpiredTerminalCommands(before, batch_size);
+    if (result) return *result;
+    return std::unexpected(Classify("数据库命令清理失败"));
+  }
+
   std::expected<void, runtime::DatabaseError> ReconnectAndValidate() override {
     auto connected = postgres::PostgresStore::Connect(config_, info_sink_);
     if (!connected) {
@@ -186,7 +217,8 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         [weak = external](std::string message) {
           if (const auto bridge = weak.lock()) bridge->Diagnose(message);
         },
-        config.database.reconnect_interval);
+        config.database.reconnect_interval, [](runtime::CommandDatabaseResult) {},
+        config.command.max_inflight_commands);
     service = std::make_unique<runtime::DeviceService>(
         registry,
         [weak_self](protocol::Registration registration,

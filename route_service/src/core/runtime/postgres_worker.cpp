@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <type_traits>
 #include <utility>
 
 namespace cns::runtime {
@@ -16,9 +17,12 @@ constexpr auto kWritePermanent = "数据库写入永久失败";
 
 PostgresWorker::PostgresWorker(StorePort& store, ResultSink results,
     ReplayRequest replay, SteadyNow steady_now, DiagnosticSink diagnostic,
-    std::chrono::seconds reconnect_interval)
+    std::chrono::seconds reconnect_interval,
+    CommandResultSink command_results, std::size_t max_inflight_commands)
     : store_(store), results_(std::move(results)), replay_(std::move(replay)),
       steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)),
+      command_results_(std::move(command_results)),
+      max_inflight_commands_(max_inflight_commands),
       reconnect_interval_(reconnect_interval) {}
 
 bool PostgresWorker::SubmitProvision(protocol::Registration registration,
@@ -41,12 +45,26 @@ bool PostgresWorker::SubmitWrite(persistence::DesiredDeviceWrite write) {
   return true;
 }
 
+bool PostgresWorker::SubmitCommand(std::uint64_t operation_id,
+                                   CommandDatabaseTask task) {
+  std::lock_guard lock(mutex_);
+  if (!accepting_ || command_operations_.contains(operation_id) ||
+      command_operations_.size() >= max_inflight_commands_) {
+    return false;
+  }
+  command_operations_.insert(operation_id);
+  commands_.emplace_back(operation_id, std::move(task));
+  changed_.notify_one();
+  return true;
+}
+
 void PostgresWorker::Run(std::stop_token stop) {
   std::stop_callback callback(stop, [this] { changed_.notify_all(); });
   try {
     for (;;) {
       std::optional<ProvisionTask> provision;
       std::optional<persistence::DesiredDeviceWrite> write;
+      std::optional<std::pair<std::uint64_t, CommandDatabaseTask>> command_task;
       bool reconnect = false;
       {
         std::unique_lock lock(mutex_);
@@ -63,6 +81,9 @@ void PostgresWorker::Run(std::stop_token stop) {
         if (unavailable_) {
           if (steady_now_() < reconnect_at_) continue;
           reconnect = true;
+        } else if (!commands_.empty()) {
+          command_task = std::move(commands_.front());
+          commands_.pop_front();
         } else if (!provisions_.empty()) {
           auto node = provisions_.extract(provisions_.begin());
           provisioning_.insert(node.key());
@@ -76,7 +97,7 @@ void PostgresWorker::Run(std::stop_token stop) {
         }
       }
 
-      if (!reconnect && !provision && !write) continue;
+      if (!reconnect && !command_task && !provision && !write) continue;
 
       if (reconnect) {
         std::expected<void, DatabaseError> result;
@@ -105,6 +126,8 @@ void PostgresWorker::Run(std::stop_token stop) {
           accepting_ = false;
           provisions_.clear();
           writes_.clear();
+          commands_.clear();
+          command_operations_.clear();
           Finish();
           return;
         }
@@ -120,6 +143,59 @@ void PostgresWorker::Run(std::stop_token stop) {
         } catch (...) {
           Diagnose("registration retained replay 回调发生未知异常");
         }
+        continue;
+      }
+
+      if (command_task) {
+        std::expected<CommandDatabaseValue, DatabaseError> result =
+            std::unexpected(DatabaseError{DatabaseError::Kind::kPermanent,
+                                          "数据库命令端口异常"});
+        try {
+          result = std::visit(
+              [this](const auto& task)
+                  -> std::expected<CommandDatabaseValue, DatabaseError> {
+                using Task = std::decay_t<decltype(task)>;
+                if constexpr (std::is_same_v<Task, FindCommandTask>) {
+                  auto value = store_.FindCommand(task.source_id, task.request_id);
+                  if (!value) return std::unexpected(value.error());
+                  return CommandDatabaseValue{std::move(*value)};
+                } else if constexpr (std::is_same_v<Task, InsertCommandTask>) {
+                  auto value = store_.InsertCommand(task.command);
+                  if (!value) return std::unexpected(value.error());
+                  return CommandDatabaseValue{std::move(*value)};
+                } else if constexpr (std::is_same_v<Task, TransitionCommandTask>) {
+                  auto value = store_.TransitionCommand(
+                      task.command_id, task.expected, task.desired, task.update);
+                  if (!value) return std::unexpected(value.error());
+                  return CommandDatabaseValue{std::move(*value)};
+                } else {
+                  auto value = store_.CleanupCommands(task.before, task.batch_size);
+                  if (!value) return std::unexpected(value.error());
+                  return CommandDatabaseValue{*value};
+                }
+              },
+              command_task->second);
+        } catch (const std::exception&) {
+          result = std::unexpected(DatabaseError{
+              DatabaseError::Kind::kPermanent, "数据库命令端口异常"});
+        } catch (...) {
+          result = std::unexpected(DatabaseError{
+              DatabaseError::Kind::kPermanent, "数据库命令端口发生未知异常"});
+        }
+        if (!result && result.error().kind == DatabaseError::Kind::kUnavailable) {
+          std::lock_guard lock(mutex_);
+          unavailable_ = true;
+          reconnect_at_ = steady_now_() + reconnect_interval_;
+          commands_.push_front(std::move(*command_task));
+          provisions_.clear();
+          Diagnose("数据库命令操作暂不可用");
+          continue;
+        }
+        {
+          std::lock_guard lock(mutex_);
+          command_operations_.erase(command_task->first);
+        }
+        EmitCommand({command_task->first, std::move(result)});
         continue;
       }
 
@@ -245,6 +321,17 @@ void PostgresWorker::Emit(DatabaseResult result) noexcept {
   }
 }
 
+void PostgresWorker::EmitCommand(CommandDatabaseResult result) noexcept {
+  if (!command_results_) return;
+  try {
+    command_results_(std::move(result));
+  } catch (const std::exception&) {
+    Diagnose("数据库命令结果回调异常");
+  } catch (...) {
+    Diagnose("数据库命令结果回调发生未知异常");
+  }
+}
+
 void PostgresWorker::Diagnose(std::string message) noexcept {
   if (!diagnostic_) return;
   try { diagnostic_(std::move(message)); } catch (...) {}
@@ -278,6 +365,6 @@ void PostgresWorker::MergeWrite(persistence::DesiredDeviceWrite write) {
 }
 
 bool PostgresWorker::HasWork() const {
-  return !provisions_.empty() || !writes_.empty();
+  return !commands_.empty() || !provisions_.empty() || !writes_.empty();
 }
 }  // namespace cns::runtime

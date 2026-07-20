@@ -297,6 +297,11 @@ add_executable(test_device_service tests/test_device_service.cpp)
 target_link_libraries(test_device_service PRIVATE route_core doctest::doctest)
 target_compile_options(test_device_service PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME device_service COMMAND test_device_service)
+
+add_executable(test_command_postgres_worker tests/test_command_postgres_worker.cpp)
+target_link_libraries(test_command_postgres_worker PRIVATE route_core doctest::doctest)
+target_compile_options(test_command_postgres_worker PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME command_postgres_worker COMMAND test_command_postgres_worker)
 set_tests_properties(device_service PROPERTIES TIMEOUT 10)
 
 add_test(NAME pqxx_elf_symbols

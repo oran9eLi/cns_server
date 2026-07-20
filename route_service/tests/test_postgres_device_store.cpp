@@ -162,12 +162,19 @@ TEST_CASE("加载设备使用学校设备和最新状态的全量连接") {
 
 TEST_CASE("建档在单个工作事务写入四张表且不重新启用冲突来源") {
   const std::string source = StoreSource();
+  const auto provision_begin = source.find("PostgresStore::ProvisionDevice");
+  const auto provision_end = source.find("PostgresStore::WriteDeviceState",
+                                         provision_begin);
+  REQUIRE(provision_begin != std::string::npos);
+  REQUIRE(provision_end != std::string::npos);
+  const auto provision = source.substr(provision_begin,
+                                       provision_end - provision_begin);
 
   CHECK(source.find("INSERT INTO schools") != std::string::npos);
   CHECK(source.find("INSERT INTO devices") != std::string::npos);
   CHECK(source.find("INSERT INTO device_latest_states") != std::string::npos);
   CHECK(source.find("INSERT INTO command_sources") != std::string::npos);
-  CHECK(source.find("enabled = true") == std::string::npos);
+  CHECK(provision.find("enabled = true") == std::string::npos);
   CHECK(source.find("ON CONFLICT (source_id) DO NOTHING") != std::string::npos);
   CHECK(source.find("pqxx::params{request.registration.vendor_id, school_id,\n"
                     "                        request.registration.dcdw_label}") !=
