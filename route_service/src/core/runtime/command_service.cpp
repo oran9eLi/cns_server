@@ -104,6 +104,7 @@ void CommandService::CancelOutstandingWork() {
   database_results_.clear();
   publish_completions_.clear();
   operations_.clear();
+  outstanding_operations_.store(0, std::memory_order_release);
   publications_.clear();
 }
 
@@ -112,14 +113,15 @@ void CommandService::SetDatabaseAvailable(bool available) {
 }
 
 void CommandService::SetMqttAvailable(bool available) {
-  mqtt_available_ = available;
-  if (available) recovery_started_.clear();
+  const bool was_available =
+      mqtt_available_.exchange(available, std::memory_order_acq_rel);
+  if (available && !was_available) recovery_started_.clear();
 }
 
 void CommandService::LoadActive(std::vector<command::CommandRecord> commands) {
   if (commands.size() > max_inflight_commands_) {
     Diagnose("活动命令数量超过配置上限");
-    commands.resize(max_inflight_commands_);
+    return;
   }
   for (auto& record : commands) {
     const auto* source = sources_.Find(record.source_id);
@@ -144,10 +146,11 @@ void CommandService::OnTargetOnline(std::string_view vendor_id,
 
 bool CommandService::WaitForDatabaseIdle(std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (!operations_.empty() && std::chrono::steady_clock::now() < deadline) {
+  while (outstanding_operations_.load(std::memory_order_acquire) != 0 &&
+         std::chrono::steady_clock::now() < deadline) {
     std::this_thread::yield();
   }
-  return operations_.empty();
+  return outstanding_operations_.load(std::memory_order_acquire) == 0;
 }
 
 std::size_t CommandService::ActiveCommandCount() const {
@@ -209,7 +212,8 @@ void CommandService::Handle(mqtt::InboundMessage message,
            Error("database_unavailable", "数据库当前不可用"), now);
     return;
   }
-  if (operations_.size() + publications_.size() >= max_inflight_commands_) {
+  if (active_commands_.size() + operations_.size() + publications_.size() >=
+      max_inflight_commands_) {
     Reject(*source_id, *request_id, Error("server_busy", "服务器命令容量已满"),
            now);
     return;
@@ -233,6 +237,7 @@ void CommandService::Handle(CommandDatabaseResult result,
   if (found == operations_.end()) return;
   auto operation = std::move(found->second);
   operations_.erase(found);
+  outstanding_operations_.fetch_sub(1, std::memory_order_acq_rel);
   if (!result.value) {
     if (result.value.error().kind == DatabaseError::Kind::kUnavailable) {
       database_available_ = false;
@@ -546,6 +551,7 @@ bool CommandService::Submit(OperationKind kind, RequestContext context,
   if (!database_submitter_(operation_id, std::move(task))) return false;
   operations_.emplace(operation_id,
                       Operation{kind, std::move(context)});
+  outstanding_operations_.fetch_add(1, std::memory_order_release);
   return true;
 }
 

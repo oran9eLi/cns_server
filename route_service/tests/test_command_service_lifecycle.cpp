@@ -114,6 +114,14 @@ TEST_CASE("恢复pending命令沿用原command_id重发") {
   h.service.ProcessReady(kNow);
   REQUIRE(h.publishes.size() == 1);
   CHECK(nlohmann::json::parse(std::get<2>(h.publishes.front()))["command_id"] == kCommand);
+
+  h.service.SetMqttAvailable(true);
+  h.service.ProcessReady(kNow + 1s);
+  CHECK(h.publishes.size() == 1);
+  h.service.SetMqttAvailable(false);
+  h.service.SetMqttAvailable(true);
+  h.service.ProcessReady(kNow + 2s);
+  CHECK(h.publishes.size() == 2);
 }
 
 TEST_CASE("终态清理按周期单实例限量提交") {
@@ -127,4 +135,16 @@ TEST_CASE("终态清理按周期单实例限量提交") {
   CHECK(cleanup.before == kNow + 1s - std::chrono::days{30});
   h.service.ProcessReady(kNow + 2s);
   CHECK(h.db.size() == 1);
+}
+
+TEST_CASE("恢复集合超过上限时拒绝加载且活动命令计入受理容量") {
+  Harness h;
+  std::vector<cns::command::CommandRecord> too_many(257,
+      Active(cns::command::CommandStatus::kDispatched));
+  for (std::size_t index = 0; index < too_many.size(); ++index) {
+    too_many[index].command_id = "550e8400-e29b-41d4-a716-" +
+        std::string(12 - std::to_string(index).size(), '0') + std::to_string(index);
+  }
+  h.service.LoadActive(std::move(too_many));
+  CHECK(h.service.ActiveCommandCount() == 0);
 }

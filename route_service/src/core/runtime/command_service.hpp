@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <deque>
 #include <expected>
 #include <functional>
@@ -114,8 +115,9 @@ class CommandService {
   std::chrono::seconds cleanup_interval_;
   std::size_t cleanup_batch_size_;
   std::optional<command::TimePoint> next_cleanup_at_;
-  bool database_available_ = true;
-  bool mqtt_available_ = true;
+  std::atomic_size_t outstanding_operations_{0};
+  std::atomic_bool database_available_{true};
+  std::atomic_bool mqtt_available_{true};
   bool closed_ = false;
 };
 

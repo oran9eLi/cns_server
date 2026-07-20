@@ -299,6 +299,7 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         config.command.config_timeout, config.command.terminal_retention,
         config.command.cleanup_interval, config.command.cleanup_batch_size);
     command_service->LoadActive(std::move(active_commands));
+    command_service->SetMqttAvailable(false);
     command_ingress = std::make_shared<runtime::CommandIngress>(
         *command_service, config.mqtt.topic_namespace,
         [weak = external](std::string message) {
