@@ -70,6 +70,7 @@ enable_testing()
 add_library(route_core STATIC
   src/core/cli/command_line.cpp
   src/core/command/command_router.cpp
+  src/core/command/command_state.cpp
   src/core/command/source_request.cpp
   src/core/command/config_policy.cpp
   src/core/config/app_config.cpp
@@ -77,6 +78,7 @@ add_library(route_core STATIC
   src/core/logging/logger.cpp
   src/core/mqtt_topic/device_topic.cpp
   src/core/protocol/device_message.cpp
+  src/core/protocol/time_format.cpp
   src/core/state_event/state_event.cpp
   src/core/migration/migration.cpp
   src/core/migration/migration_plan.cpp
@@ -148,6 +150,11 @@ add_executable(test_command_router tests/test_command_router.cpp)
 target_link_libraries(test_command_router PRIVATE route_core doctest::doctest)
 target_compile_options(test_command_router PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME command_router COMMAND test_command_router)
+
+add_executable(test_command_state tests/test_command_state.cpp)
+target_link_libraries(test_command_state PRIVATE route_core doctest::doctest)
+target_compile_options(test_command_state PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME command_state COMMAND test_command_state)
 
 add_executable(test_device_registry tests/test_device_registry.cpp)
 target_link_libraries(test_device_registry PRIVATE route_core doctest::doctest)
