@@ -90,7 +90,8 @@ V1 阶段核心职责：
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
 - 里程碑二“设备注册与最新状态”已完成代码实现，包含 registration、telemetry、设备在线状态、最新值合并写库、数据库降级恢复和规范化状态事件；书面设计见 `docs/superpowers/specs/2026-07-20-里程碑二设备注册与最新状态设计.md`。
 - 干净构建、本机单元测试和一次性临时 PostgreSQL/Mosquitto 真实链路已通过，结果记录在 `docs/change_history/2026-07-20-里程碑二设备注册与最新状态验收.md`。树莓派和现场服务器验证仍延期，不得由本机结果推定通过。
-- ACK、配置命令和飞控命令路由仍属于后续里程碑。
+- 里程碑三“固定来源与配置命令”已完成代码实现、本机自动化测试和独立 PostgreSQL/Mosquitto 真实链路，验收记录见 `docs/change_history/2026-07-20-里程碑三固定来源与配置命令验收.md`。真实 RPi 和现场服务器验证仍待补充。
+- 飞控命令路由属于里程碑四，不复用配置命令的自动重发策略。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。
 
@@ -175,4 +176,16 @@ sudo -u "$service_user" route_service/build-fresh/route_service \
   --migrations "$(pwd)/route_service/migrations"
 ```
 
-当前能力包括里程碑一工程骨架以及里程碑二设备注册、最新遥测、在线状态、异步合并持久化和状态事件。ACK 与命令路由尚未实现。
+当前能力包括里程碑一工程骨架、里程碑二设备注册与最新状态，以及里程碑三固定来源、配置命令寻址/权限/幂等、QoS 2 下发、设备 ACK、超时、恢复与终态清理。飞控命令尚未实现。
+
+里程碑三非破坏性联调入口：
+
+```bash
+route_service/tests/integration/里程碑三配置命令本机联调.sh \
+  --config /仓库外/route_service.test.json \
+  --migrations "$(pwd)/route_service/migrations" \
+  --broker-host 127.0.0.1 --broker-port 18884 \
+  --binary "$(pwd)/route_service/build-fresh-m3/route_service" \
+  --database-url 'postgresql://测试用户:测试密码@127.0.0.1:测试端口/测试库' \
+  --source-id web-console --vendor-id A1b2C3d4E5f6G7h8I9j0
+```

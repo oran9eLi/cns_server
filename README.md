@@ -19,7 +19,7 @@ cns_server/
 
 当前优先实施的核心服务。它以 MQTT 客户端身份连接 Mosquitto，消费设备注册、遥测和命令 ACK，以 PostgreSQL 作为权威持久化存储，并向目标设备发布规范化命令。
 
-当前状态：里程碑一“工程基础与数据库骨架”已实现并完成本机验收；现场 PostgreSQL、Mosquitto、迁移重复执行和信号退出尚未验证，等待用户授权。设备注册、遥测和命令路由仍属于后续里程碑。
+当前状态：里程碑一、里程碑二已完成；里程碑三“固定来源与配置命令”已完成代码、本机自动化测试和独立 PostgreSQL/Mosquitto 真实链路。真实 RPi 和现场服务器仍需在对应提交上补充验收。
 
 详细边界见 `route_service/README.md`。具体架构、表结构和实现步骤必须先经过设计文档与实施计划确认。
 
@@ -69,6 +69,7 @@ React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/Web
 - 使用 C++23 单体 systemd 服务、libmosquitto、libpqxx、nlohmann/json 和 doctest。
 - PostgreSQL 将稳定设备元数据与高频最新状态分表，遥测以 JSONB 保存最新快照并默认每 5 秒合并写入。
 - route_service 通过 MQTT 发布 QoS 0、非 retained 的规范化实时状态事件，未来 backend_service 不直接把设备原始 telemetry 作为权威数据源。
+- 配置命令请求、设备下发和两侧 ACK 使用 QoS 2、非 retained；来源幂等键为 `(source_id, request_id)`，设备执行幂等键为服务器 UUID v4 `command_id`。
 - 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
 
