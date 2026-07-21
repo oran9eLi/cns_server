@@ -104,9 +104,13 @@ std::expected<command::CommandStatus, std::string> ParseCommandStatus(
     std::string_view status) {
   if (status == "pending") return command::CommandStatus::kPending;
   if (status == "dispatched") return command::CommandStatus::kDispatched;
+  if (status == "in_progress") return command::CommandStatus::kInProgress;
   if (status == "succeeded") return command::CommandStatus::kSucceeded;
   if (status == "failed") return command::CommandStatus::kFailed;
   if (status == "timeout") return command::CommandStatus::kTimeout;
+  if (status == "delivery_uncertain") {
+    return command::CommandStatus::kDeliveryUncertain;
+  }
   return std::unexpected("读取 PostgreSQL 命令失败：状态不受支持");
 }
 
@@ -713,8 +717,8 @@ PostgresStore::InsertCommand(const command::CommandRecord& command) {
         "SET request_id = EXCLUDED.request_id RETURNING " +
             std::string{kCommandColumns},
         pqxx::params{
-            command.command_id, std::string{ToString(command.command_type)},
-            command.source_id, command.request_id,
+            command.command_id, command.source_id, command.request_id,
+            std::string{ToString(command.command_type)},
             command.target_vendor_id, command.request_payload.dump(),
             CommandStatusText(command.status), command.error_code,
             command.error_message,
