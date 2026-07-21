@@ -19,7 +19,7 @@ cns_server/
 
 当前优先实施的核心服务。它以 MQTT 客户端身份连接 Mosquitto，消费设备注册、遥测和命令 ACK，以 PostgreSQL 作为权威持久化存储，并向目标设备发布规范化命令。
 
-当前状态：里程碑一至三已完成；里程碑四“飞控命令路由”已完成代码和本机自动化验收，独立 PostgreSQL/Mosquitto 联调及真实 RPi 飞控验证尚未执行。现场服务器部署与综合验收仍属于里程碑五。
+当前状态：里程碑一至四已完成并合入 `main`。里程碑五已确认采用私有 CA、MQTT TLS、每设备独立凭据、最小权限 ACL，以及云端 frps 到现场 frpc 的 TCP 透传；详细设计见 `route_service/docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`。现场服务器部署与综合验收仍待实施。
 
 详细边界见 `route_service/README.md`。具体架构、表结构和实现步骤必须先经过设计文档与实施计划确认。
 
@@ -72,6 +72,7 @@ React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/Web
 - 配置命令请求、设备下发和两侧 ACK 使用 QoS 2、非 retained；来源幂等键为 `(source_id, request_id)`，设备执行幂等键为服务器 UUID v4 `command_id`。
 - 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
+- 正式公网 MQTT 统一使用 TLS `8883`：树莓派按 `vendor_id` 使用独立凭据，Mosquitto 强制 ACL；云服务器 frps 只做 TCP 透传，现场 frpc 转发到回环地址的 Mosquitto，不在云端终止 MQTT TLS。
 
 完整设计见 `route_service/docs/2026-07-18-路由服务V1设计.md`。
 全局实施路线见 `route_service/docs/2026-07-18-路由服务V1实施计划.md`。
