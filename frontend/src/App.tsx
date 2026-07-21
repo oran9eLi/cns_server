@@ -27,6 +27,7 @@ import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient
 import {
   Activity,
   AlertTriangle,
+  BatteryCharging,
   Cpu,
   Gauge,
   LandPlot,
@@ -56,7 +57,13 @@ import type {
 import logo from "./assets/east-tech-logo.png";
 import { getDevice, getDevices, getHealth, postCommand } from "./api/client.js";
 import { useRealtime } from "./realtime/useRealtime.js";
-import { formatDateTime, formatNumber, readArray, readNumber } from "./utils/telemetry.js";
+import {
+  formatDateTime,
+  formatNumber,
+  mapTelemetry,
+  type TelemetryView
+} from "./utils/telemetry.js";
+import { createUuidV4 } from "./utils/uuid.js";
 
 const queryClient = new QueryClient();
 
@@ -280,7 +287,7 @@ function DeviceDetailPage({
     mutationFn: (request: DeviceCommandRequest) => postCommand(vendorId, request),
     onSuccess: () => {
       setCommandStatus("submitted");
-      api.info({ message: "命令已提交", description: "模拟器正在推送后续执行状态。" });
+      api.info({ message: "命令已提交", description: "正在等待路由和设备返回执行状态。" });
       queryClient.invalidateQueries({ queryKey: ["devices"] });
     },
     onError: (error) => {
@@ -308,6 +315,7 @@ function DeviceDetailPage({
   }
 
   const telemetry = device.latest_telemetry;
+  const telemetryView = mapTelemetry(telemetry);
   const commandInFlight = commandStatus !== null && ![
     "succeeded",
     "failed",
@@ -328,7 +336,7 @@ function DeviceDetailPage({
     commandMutation.mutate({
       ...request,
       session_id: sessionId,
-      client_request_id: crypto.randomUUID()
+      client_request_id: createUuidV4()
     } as DeviceCommandRequest);
   };
 
@@ -353,25 +361,29 @@ function DeviceDetailPage({
 
       <div className="detail-workspace">
         <section className="detail-main">
-          <FlightSnapshot device={device} lastEventAt={lastEventAt} />
+          <FlightSnapshot device={device} telemetry={telemetryView} lastEventAt={lastEventAt} />
 
           <div className="telemetry-grid">
             <TelemetryCard title="姿态" icon={<Gauge />} items={[
-              ["Roll", formatNumber(readNumber(telemetry, "attitude.roll_deg"), "°")],
-              ["Pitch", formatNumber(readNumber(telemetry, "attitude.pitch_deg"), "°")],
-              ["Yaw", formatNumber(readNumber(telemetry, "attitude.yaw_deg"), "°")]
+              ["Roll", formatNumber(telemetryView.attitude.roll, "°")],
+              ["Pitch", formatNumber(telemetryView.attitude.pitch, "°")],
+              ["Yaw", formatNumber(telemetryView.attitude.yaw, "°")]
             ]} />
             <TelemetryCard title="环境" icon={<Activity />} items={[
-              ["温度", formatNumber(readNumber(telemetry, "environment.temperature_c"), "℃")],
-              ["气压", formatNumber(readNumber(telemetry, "environment.pressure_hpa"), " hPa")],
-              ["高度", formatNumber(readNumber(telemetry, "environment.altitude_m"), " m")]
+              ["温度", formatNumber(telemetryView.environment.temperature, "℃")],
+              ["气压", formatNumber(telemetryView.environment.pressure, " hPa")],
+              ["高度", formatNumber(telemetryView.environment.altitude, " m")]
             ]} />
             <TelemetryCard title="链路" icon={<Wifi />} items={[
-              ["RSSI", formatNumber(readNumber(telemetry, "link.rssi_dbm"), " dBm", 0)],
-              ["丢包", formatNumber(readNumber(telemetry, "link.packet_loss_pct"), "%")],
-              ["延迟", formatNumber(readNumber(telemetry, "link.latency_ms"), " ms", 0)]
+              ["RSSI", formatNumber(telemetryView.link.rssi, " dBm", 0)],
+              ["丢包", formatNumber(telemetryView.link.packetLoss, "%")],
+              ["延迟", formatNumber(telemetryView.link.latency, " ms", 0)]
             ]} />
-            <MotorCard values={readArray(telemetry, "motors.pwm")} />
+            <MotorCard values={telemetryView.motors.pwm} />
+            <TelemetryCard title="电池" icon={<BatteryCharging />} items={[
+              ["电量", formatNumber(telemetryView.battery.remaining, "%", 0)],
+              ["电压", formatNumber(telemetryView.battery.voltage, " mV", 0)]
+            ]} />
           </div>
 
           <Card className="tool-surface">
@@ -508,13 +520,22 @@ function DeviceDetailPage({
   );
 }
 
-function FlightSnapshot({ device, lastEventAt }: { device: DeviceDetail; lastEventAt: string | null }) {
-  const telemetry = device.latest_telemetry;
-  const roll = readNumber(telemetry, "attitude.roll_deg") ?? 0;
-  const pitch = readNumber(telemetry, "attitude.pitch_deg") ?? 0;
-  const yaw = readNumber(telemetry, "attitude.yaw_deg") ?? 0;
-  const rssi = readNumber(telemetry, "link.rssi_dbm");
-  const linkQuality = rssi === null ? 0 : Math.max(0, Math.min(100, Math.round((rssi + 95) * 2)));
+function FlightSnapshot({
+  device,
+  telemetry,
+  lastEventAt
+}: {
+  device: DeviceDetail;
+  telemetry: TelemetryView;
+  lastEventAt: string | null;
+}) {
+  const { roll, pitch, yaw } = telemetry.attitude;
+  const visualRoll = roll ?? 0;
+  const visualPitch = pitch ?? 0;
+  const visualYaw = yaw ?? 0;
+  const linkQuality = telemetry.link.rssi === null
+    ? null
+    : Math.max(0, Math.min(100, Math.round((telemetry.link.rssi + 95) * 2)));
 
   return (
     <Card className="flight-snapshot">
@@ -525,8 +546,8 @@ function FlightSnapshot({ device, lastEventAt }: { device: DeviceDetail; lastEve
               <i key={mark} style={{ transform: `rotate(${mark}deg)` }} />
             ))}
           </div>
-          <div className="attitude-ball" style={{ transform: `rotate(${roll}deg)` }}>
-            <div className="attitude-horizon" style={{ transform: `translateY(${pitch * 1.7}px)` }}>
+          <div className="attitude-ball" style={{ transform: `rotate(${visualRoll}deg)` }}>
+            <div className="attitude-horizon" style={{ transform: `translateY(${visualPitch * 1.7}px)` }}>
               <span className="pitch-line is-top">10</span>
               <span className="pitch-line is-mid" />
               <span className="pitch-line is-bottom">10</span>
@@ -538,9 +559,9 @@ function FlightSnapshot({ device, lastEventAt }: { device: DeviceDetail; lastEve
             <span />
           </div>
           <div className="attitude-pointer" />
-          <span className="attitude-yaw">{Math.round(yaw)}°</span>
+          <span className="attitude-yaw">{yaw === null ? "--" : `${Math.round(yaw)}°`}</span>
         </div>
-        <CompassIndicator yaw={yaw} />
+        <CompassIndicator yaw={visualYaw} />
       </div>
       <div className="snapshot-copy">
         <Typography.Text className="section-eyebrow">实时状态</Typography.Text>
@@ -555,7 +576,9 @@ function FlightSnapshot({ device, lastEventAt }: { device: DeviceDetail; lastEve
       <div className="snapshot-metrics">
         <div>
           <small>链路质量</small>
-          <Progress percent={linkQuality} size="small" strokeColor="#132B88" />
+          {linkQuality === null
+            ? <Typography.Text type="secondary">--</Typography.Text>
+            : <Progress percent={linkQuality} size="small" strokeColor="#132B88" />}
         </div>
         <div>
           <small>设备状态</small>
@@ -695,8 +718,7 @@ function TelemetryCard({ title, icon, items }: { title: string; icon: React.Reac
   );
 }
 
-function MotorCard({ values }: { values: unknown[] | null }) {
-  const pwm = values?.map((value) => (typeof value === "number" ? value : null)) ?? [null, null, null, null];
+function MotorCard({ values }: { values: Array<number | null> }) {
   return (
     <Card className="telemetry-card motor-card">
       <div className="telemetry-head">
@@ -704,10 +726,10 @@ function MotorCard({ values }: { values: unknown[] | null }) {
         <strong>电机</strong>
       </div>
       <div className="motor-bars">
-        {pwm.map((value, index) => (
+        {values.map((value, index) => (
           <div key={index} className="motor-row">
             <small>M{index + 1}</small>
-            <div><i style={{ width: `${value ? Math.min(100, value / 20) : 0}%` }} /></div>
+            <div><i style={{ width: `${value === null ? 0 : Math.min(100, value / 20)}%` }} /></div>
             <span>{value ?? "--"}</span>
           </div>
         ))}

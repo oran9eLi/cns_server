@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1 --port 5173",
     "dev:backend": "vite --mode backend --host 127.0.0.1 --port 5173",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
-    "test": "npm run typecheck"
+    "test": "vitest run"
   },
   "dependencies": {
     "@cns/backend-protocol": "file:../backend_service/protocol",
