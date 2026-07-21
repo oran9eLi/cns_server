@@ -86,7 +86,13 @@ class PostgresStore {
   SyncAndLoadCommandSources(
       const std::vector<config::FixedSourceConfig>& configured_sources);
   std::expected<std::vector<command::CommandRecord>, std::string>
+  LoadActiveCommands(std::size_t limit);
+  /** 里程碑四生命周期接线完成前，仅供旧启动路径恢复配置命令。 */
+  std::expected<std::vector<command::CommandRecord>, std::string>
   LoadActiveConfigCommands(std::size_t limit);
+  std::expected<std::vector<command::CommandRecord>, std::string>
+  RecoverActiveControlCommands(command::TimePoint recovered_at,
+                               std::size_t limit);
   std::expected<std::optional<command::CommandRecord>, std::string> FindCommand(
       std::string_view source_id, std::string_view request_id);
   std::expected<command::CommandRecord, std::string> InsertCommand(

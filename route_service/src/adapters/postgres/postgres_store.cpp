@@ -121,13 +121,17 @@ std::expected<nlohmann::json, std::string> ParseCommandJson(
 
 std::expected<command::CommandRecord, std::string> CommandFromRow(
     const pqxx::row& row) {
-  auto status = ParseCommandStatus(row[5].as<std::string>());
+  auto type = command::ParseCommandType(row[1].as<std::string>());
+  if (!type) {
+    return std::unexpected("读取 PostgreSQL 命令失败：命令类型不受支持");
+  }
+  auto status = ParseCommandStatus(row[6].as<std::string>());
   if (!status) return std::unexpected(status.error());
-  auto request = ParseCommandJson(row[4]);
+  auto request = ParseCommandJson(row[5]);
   if (!request) return std::unexpected(request.error());
   std::optional<nlohmann::json> device_ack;
-  if (!row[8].is_null()) {
-    auto parsed = ParseCommandJson(row[8]);
+  if (!row[9].is_null()) {
+    auto parsed = ParseCommandJson(row[9]);
     if (!parsed) return std::unexpected(parsed.error());
     device_ack = std::move(*parsed);
   }
@@ -137,36 +141,36 @@ std::expected<command::CommandRecord, std::string> CommandFromRow(
     if (!parsed) return std::unexpected(parsed.error());
     return *parsed;
   };
-  auto created = time(9);
-  auto updated = time(11);
+  auto created = time(10);
+  auto updated = time(12);
   if (!created || !updated) {
     return std::unexpected("读取 PostgreSQL 命令失败：时间无效");
   }
   std::optional<command::TimePoint> dispatched;
   std::optional<command::TimePoint> completed;
-  if (!row[10].is_null()) {
-    auto parsed = time(10);
+  if (!row[11].is_null()) {
+    auto parsed = time(11);
     if (!parsed) return std::unexpected(parsed.error());
     dispatched = *parsed;
   }
-  if (!row[12].is_null()) {
-    auto parsed = time(12);
+  if (!row[13].is_null()) {
+    auto parsed = time(13);
     if (!parsed) return std::unexpected(parsed.error());
     completed = *parsed;
   }
   return command::CommandRecord{
-      row[0].as<std::string>(), row[1].as<std::string>(),
-      row[2].as<std::string>(),
-      row[3].is_null() ? std::nullopt
-                       : std::optional{row[3].as<std::string>()},
+      row[0].as<std::string>(), *type, row[2].as<std::string>(),
+      row[3].as<std::string>(),
+      row[4].is_null() ? std::nullopt
+                       : std::optional{row[4].as<std::string>()},
       std::move(*request), *status,
-      row[6].is_null() ? std::nullopt : std::optional{row[6].as<std::string>()},
       row[7].is_null() ? std::nullopt : std::optional{row[7].as<std::string>()},
+      row[8].is_null() ? std::nullopt : std::optional{row[8].as<std::string>()},
       std::move(device_ack), *created, dispatched, *updated, completed};
 }
 
 constexpr std::string_view kCommandColumns = R"sql(
-  command_id::text, source_id, request_id, target_vendor_id,
+  command_id::text, command_type, source_id, request_id, target_vendor_id,
   request_payload::text, status, error_code, error_message, device_ack::text,
   (extract(epoch FROM created_at)::numeric * 1000000)::bigint,
   (extract(epoch FROM dispatched_at)::numeric * 1000000)::bigint,
@@ -570,6 +574,36 @@ PostgresStore::SyncAndLoadCommandSources(
 }
 
 std::expected<std::vector<command::CommandRecord>, std::string>
+PostgresStore::LoadActiveCommands(std::size_t limit) {
+  if (limit > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+    return std::unexpected("读取 PostgreSQL 活动命令失败：数量超出范围");
+  }
+  try {
+    pqxx::read_transaction transaction{*connection_};
+    const auto rows = transaction.exec(
+        "SELECT " + std::string{kCommandColumns} +
+            " FROM commands WHERE status IN ('pending', 'dispatched', "
+            "'in_progress') "
+            "ORDER BY updated_at, command_id LIMIT $1",
+        pqxx::params{static_cast<std::int64_t>(limit)});
+    std::vector<command::CommandRecord> commands;
+    commands.reserve(rows.size());
+    for (const auto& row : rows) {
+      auto command = CommandFromRow(row);
+      if (!command) return std::unexpected(command.error());
+      commands.push_back(std::move(*command));
+    }
+    return commands;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("读取 PostgreSQL 活动命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("读取 PostgreSQL 活动命令失败");
+  }
+}
+
+std::expected<std::vector<command::CommandRecord>, std::string>
 PostgresStore::LoadActiveConfigCommands(std::size_t limit) {
   if (limit > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return std::unexpected("读取 PostgreSQL 活动命令失败：数量超出范围");
@@ -596,6 +630,46 @@ PostgresStore::LoadActiveConfigCommands(std::size_t limit) {
   } catch (const std::exception&) {
     last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
     return std::unexpected("读取 PostgreSQL 活动命令失败");
+  }
+}
+
+std::expected<std::vector<command::CommandRecord>, std::string>
+PostgresStore::RecoverActiveControlCommands(command::TimePoint recovered_at,
+                                             std::size_t limit) {
+  if (limit > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+    return std::unexpected("恢复 PostgreSQL 飞控命令失败：数量超出范围");
+  }
+  try {
+    pqxx::work transaction{*connection_};
+    const auto rows = transaction.exec(
+        "WITH active AS ("
+        "SELECT command_id FROM commands WHERE command_type = 'control' "
+        "AND status IN ('pending', 'dispatched', 'in_progress') "
+        "ORDER BY updated_at, command_id LIMIT $2 FOR UPDATE"
+        ") UPDATE commands SET status = 'delivery_uncertain', "
+        "error_code = 'control_delivery_uncertain', "
+        "error_message = '服务恢复后无法确认飞控命令是否已经执行', "
+        "updated_at = TIMESTAMPTZ 'epoch' + $1::bigint * INTERVAL '1 microsecond', "
+        "completed_at = TIMESTAMPTZ 'epoch' + $1::bigint * INTERVAL '1 microsecond' "
+        "WHERE command_id IN (SELECT command_id FROM active) RETURNING " +
+            std::string{kCommandColumns},
+        pqxx::params{ToUnixMicroseconds(recovered_at),
+                     static_cast<std::int64_t>(limit)});
+    std::vector<command::CommandRecord> commands;
+    commands.reserve(rows.size());
+    for (const auto& row : rows) {
+      auto command = CommandFromRow(row);
+      if (!command) return std::unexpected(command.error());
+      commands.push_back(std::move(*command));
+    }
+    transaction.commit();
+    return commands;
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("恢复 PostgreSQL 飞控命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("恢复 PostgreSQL 飞控命令失败");
   }
 }
 
@@ -629,17 +703,18 @@ PostgresStore::InsertCommand(const command::CommandRecord& command) {
         "INSERT INTO commands (command_id, source_id, request_id, "
         "command_type, target_vendor_id, request_payload, status, error_code, "
         "error_message, device_ack, created_at, dispatched_at, updated_at, "
-        "completed_at) VALUES ($1::uuid, $2, $3, 'config', $4, $5::jsonb, "
-        "$6, $7, $8, $9::jsonb, "
-        "TIMESTAMPTZ 'epoch' + $10::bigint * INTERVAL '1 microsecond', "
+        "completed_at) VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, "
+        "$7, $8, $9, $10::jsonb, "
         "TIMESTAMPTZ 'epoch' + $11::bigint * INTERVAL '1 microsecond', "
         "TIMESTAMPTZ 'epoch' + $12::bigint * INTERVAL '1 microsecond', "
-        "TIMESTAMPTZ 'epoch' + $13::bigint * INTERVAL '1 microsecond') "
+        "TIMESTAMPTZ 'epoch' + $13::bigint * INTERVAL '1 microsecond', "
+        "TIMESTAMPTZ 'epoch' + $14::bigint * INTERVAL '1 microsecond') "
         "ON CONFLICT (source_id, request_id) DO UPDATE "
         "SET request_id = EXCLUDED.request_id RETURNING " +
             std::string{kCommandColumns},
         pqxx::params{
-            command.command_id, command.source_id, command.request_id,
+            command.command_id, std::string{ToString(command.command_type)},
+            command.source_id, command.request_id,
             command.target_vendor_id, command.request_payload.dump(),
             CommandStatusText(command.status), command.error_code,
             command.error_message,
@@ -726,7 +801,7 @@ PostgresStore::DeleteExpiredTerminalCommands(command::TimePoint before,
     const auto rows = transaction.exec(R"sql(
       WITH expired AS (
         SELECT command_id FROM commands
-        WHERE status IN ('succeeded', 'failed', 'timeout')
+        WHERE status IN ('succeeded', 'failed', 'timeout', 'delivery_uncertain')
           AND completed_at IS NOT NULL
           AND completed_at < TIMESTAMPTZ 'epoch'
               + $1::bigint * INTERVAL '1 microsecond'

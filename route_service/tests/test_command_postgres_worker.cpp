@@ -18,7 +18,8 @@ using cns::runtime::PostgresWorker;
 
 cns::command::CommandRecord Record() {
   const auto at = cns::command::TimePoint{};
-  return {"550e8400-e29b-41d4-a716-446655440000", "web-console", "req-1",
+  return {"550e8400-e29b-41d4-a716-446655440000",
+          cns::command::CommandType::kConfig, "web-console", "req-1",
           std::nullopt, nlohmann::json::object(),
           cns::command::CommandStatus::kPending, std::nullopt, std::nullopt,
           std::nullopt, at, std::nullopt, at, std::nullopt};
@@ -74,6 +75,18 @@ struct FakeStore : PostgresWorker::StorePort {
       cns::command::TimePoint, std::size_t batch_size) override {
     Called();
     return batch_size;
+  }
+  std::expected<std::vector<cns::command::CommandRecord>, DatabaseError>
+  RecoverControlCommands(cns::command::TimePoint,
+                         std::size_t limit) override {
+    Called();
+    if (unavailable) return std::unexpected(
+        DatabaseError{DatabaseError::Kind::kUnavailable, "暂不可用"});
+    auto record = Record();
+    record.command_type = cns::command::CommandType::kControl;
+    record.status = cns::command::CommandStatus::kDeliveryUncertain;
+    return std::vector<cns::command::CommandRecord>(limit == 0 ? 0 : 1,
+                                                    std::move(record));
   }
 };
 
@@ -179,6 +192,29 @@ TEST_CASE("命令永久错误只结束当前操作且不触发重连") {
   REQUIRE_FALSE(results.front().value.has_value());
   CHECK(results.front().value.error().kind == DatabaseError::Kind::kPermanent);
   CHECK(store.Threads().size() == 1);
+}
+
+TEST_CASE("飞控恢复任务在工作线程返回完整收敛记录") {
+  FakeStore store;
+  std::vector<CommandDatabaseResult> results;
+  PostgresWorker worker(store, [](cns::runtime::DatabaseResult) {}, [] {},
+                        [] { return std::chrono::steady_clock::time_point{}; },
+                        {}, 5s, [&](CommandDatabaseResult result) {
+                          results.push_back(std::move(result));
+                        }, 2);
+  const auto recovered_at = cns::command::TimePoint{123s};
+  REQUIRE(worker.SubmitCommand(
+      8, cns::runtime::RecoverControlCommandsTask{recovered_at, 1}));
+  std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });
+  CHECK(worker.FlushAndStop(1s));
+  REQUIRE(results.size() == 1);
+  REQUIRE(results.front().value.has_value());
+  const auto* recovered = std::get_if<std::vector<cns::command::CommandRecord>>(
+      &results.front().value.value());
+  REQUIRE(recovered != nullptr);
+  REQUIRE(recovered->size() == 1);
+  CHECK(recovered->front().status ==
+        cns::command::CommandStatus::kDeliveryUncertain);
 }
 
 TEST_CASE("停机等待命令任务且超时不越线程调用存储") {

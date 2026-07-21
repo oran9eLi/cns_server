@@ -13,7 +13,8 @@
 TEST_CASE("PostgreSQL命令仓库公开完整来源命令与清理接口") {
   using Store = cns::postgres::PostgresStore;
   CHECK(std::is_member_function_pointer_v<decltype(&Store::SyncAndLoadCommandSources)>);
-  CHECK(std::is_member_function_pointer_v<decltype(&Store::LoadActiveConfigCommands)>);
+  CHECK(std::is_member_function_pointer_v<decltype(&Store::LoadActiveCommands)>);
+  CHECK(std::is_member_function_pointer_v<decltype(&Store::RecoverActiveControlCommands)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::FindCommand)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::InsertCommand)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::TransitionCommand)>);
@@ -77,7 +78,8 @@ TEST_CASE("显式启用时真实数据库完成来源同步命令迁移和限量
 
   const auto at = cns::command::TimePoint{std::chrono::seconds{1'700'000'000}};
   cns::command::CommandRecord command{
-      "550e8400-e29b-41d4-a716-446655440000", source, "req-1",
+      "550e8400-e29b-41d4-a716-446655440000",
+      cns::command::CommandType::kConfig, source, "req-1",
       std::nullopt, {{"schema_version", 1}, {"parameters", {{"heartbeat_interval_ms", 2000}}}},
       cns::command::CommandStatus::kPending, std::nullopt, std::nullopt,
       std::nullopt, at, std::nullopt, at, std::nullopt};
@@ -90,9 +92,29 @@ TEST_CASE("显式启用时真实数据库完成来源同步命令迁移和限量
   REQUIRE(found);
   REQUIRE(found->has_value());
   CHECK(found->value().request_payload == command.request_payload);
-  auto active = (*store)->LoadActiveConfigCommands(1);
+  CHECK(inserted->command_type == cns::command::CommandType::kConfig);
+
+  auto control = command;
+  control.command_id = "550e8400-e29b-41d4-a716-446655440001";
+  control.command_type = cns::command::CommandType::kControl;
+  control.request_id = "req-2";
+  control.request_payload = {{"schema_version", 1}, {"command", "takeoff"},
+                             {"parameters", nlohmann::json::object()}};
+  auto inserted_control = (*store)->InsertCommand(control);
+  REQUIRE(inserted_control);
+  CHECK(inserted_control->command_type == cns::command::CommandType::kControl);
+
+  auto active = (*store)->LoadActiveCommands(2);
   REQUIRE(active);
-  CHECK(active->size() == 1);
+  CHECK(active->size() == 2);
+
+  auto recovered = (*store)->RecoverActiveControlCommands(
+      at + std::chrono::seconds{1}, 1);
+  REQUIRE(recovered);
+  REQUIRE(recovered->size() == 1);
+  CHECK(recovered->front().status ==
+        cns::command::CommandStatus::kDeliveryUncertain);
+  CHECK(recovered->front().error_code == "control_delivery_uncertain");
 
   const cns::command::CommandUpdate update{
       "target_not_found", "目标设备不存在", std::nullopt, std::nullopt,

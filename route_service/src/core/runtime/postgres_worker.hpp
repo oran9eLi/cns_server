@@ -33,14 +33,19 @@ struct TransitionCommandTask {
   command::CommandStatus desired;
   command::CommandUpdate update;
 };
+struct RecoverControlCommandsTask {
+  command::TimePoint recovered_at;
+  std::size_t limit;
+};
 struct CleanupCommandsTask {
   command::TimePoint before;
   std::size_t batch_size;
 };
 using CommandDatabaseTask = std::variant<FindCommandTask, InsertCommandTask,
-    TransitionCommandTask, CleanupCommandsTask>;
+    TransitionCommandTask, RecoverControlCommandsTask, CleanupCommandsTask>;
 using CommandDatabaseValue = std::variant<std::monostate,
-    std::optional<command::CommandRecord>, command::CommandRecord, std::size_t>;
+    std::optional<command::CommandRecord>, command::CommandRecord,
+    std::vector<command::CommandRecord>, std::size_t>;
 struct CommandDatabaseResult {
   std::uint64_t operation_id;
   std::expected<CommandDatabaseValue, DatabaseError> value;
@@ -76,6 +81,11 @@ class PostgresWorker {
         command::TimePoint, std::size_t) {
       return std::unexpected(DatabaseError{DatabaseError::Kind::kPermanent,
                                            "命令清理端口未实现"});
+    }
+    virtual std::expected<std::vector<command::CommandRecord>, DatabaseError>
+    RecoverControlCommands(command::TimePoint, std::size_t) {
+      return std::unexpected(DatabaseError{
+          DatabaseError::Kind::kPermanent, "飞控命令恢复端口未实现"});
     }
   };
 

@@ -168,6 +168,12 @@ void PostgresWorker::Run(std::stop_token stop) {
                       task.command_id, task.expected, task.desired, task.update);
                   if (!value) return std::unexpected(value.error());
                   return CommandDatabaseValue{std::move(*value)};
+                } else if constexpr (
+                    std::is_same_v<Task, RecoverControlCommandsTask>) {
+                  auto value = store_.RecoverControlCommands(task.recovered_at,
+                                                              task.limit);
+                  if (!value) return std::unexpected(value.error());
+                  return CommandDatabaseValue{std::move(*value)};
                 } else {
                   auto value = store_.CleanupCommands(task.before, task.batch_size);
                   if (!value) return std::unexpected(value.error());

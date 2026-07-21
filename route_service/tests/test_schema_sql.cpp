@@ -254,6 +254,28 @@ TEST_CASE("003 只增加命令恢复与清理部分索引") {
   CHECK(ParseTables(ReadMigration("003_增加命令扫描索引.sql")).empty());
 }
 
+TEST_CASE("004 修正活动与终态索引且不修改业务数据") {
+  const auto scanned = ScanSupportedSql(
+      ReadMigration("004_修正命令活动与终态索引.sql"));
+  const auto sql = Normalize(scanned.text);
+  CHECK(sql.find("drop index if exists commands_active_updated_idx") !=
+        std::string::npos);
+  CHECK(sql.find("drop index if exists commands_terminal_completed_idx") !=
+        std::string::npos);
+  CHECK(sql.find("create index commands_active_updated_idx on commands "
+                 "(updated_at, command_id) where status in ('pending', "
+                 "'dispatched', 'in_progress')") != std::string::npos);
+  CHECK(sql.find("create index commands_terminal_completed_idx on commands "
+                 "(completed_at, command_id) where status in ('succeeded', "
+                 "'failed', 'timeout', 'delivery_uncertain') and completed_at "
+                 "is not null") != std::string::npos);
+  CHECK(ParseTables(scanned.text).empty());
+  for (const auto* forbidden : {"truncate", "drop table", "delete from"}) {
+    CAPTURE(forbidden);
+    CHECK(scanned.code.find(forbidden) == std::string::npos);
+  }
+}
+
 TEST_CASE("schools 字段和约束完整") {
   const auto table = ParseTables(ReadMigration("002_创建核心业务表.sql")).at("schools");
   CheckFieldNames(table, {"school_id", "school_name", "created_at"});
