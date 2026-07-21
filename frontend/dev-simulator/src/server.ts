@@ -120,6 +120,7 @@ app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
 
   const commandName = parsed.data.type === "control" ? parsed.data.command : null;
   const commandType = parsed.data.type;
+  const commandId = randomUUID();
   const statuses: CommandStatus[] = ["submitted", "dispatched", "in_progress", nextCommandResult];
   nextCommandResult = "succeeded";
 
@@ -129,6 +130,7 @@ app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
         type: "command.updated",
         schema_version: SCHEMA_VERSION,
         client_request_id: parsed.data.client_request_id,
+        command_id: commandId,
         vendor_id,
         command_type: commandType,
         command: commandName,
@@ -195,10 +197,14 @@ function broadcastDevice(device: DeviceDetail) {
     type: "device.state",
     schema_version: SCHEMA_VERSION,
     vendor_id: device.vendor_id,
+    school_name: device.school_name,
+    dcdw_label: device.dcdw_label,
     status: device.status,
+    event_at: new Date().toISOString(),
     last_seen_at: device.last_seen_at,
     telemetry_received_at: device.telemetry_received_at,
     latest_telemetry: device.latest_telemetry,
+    change_reason: "telemetry",
     degraded: device.degraded
   });
 

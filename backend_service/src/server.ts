@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createCommandStore } from "./commands/createCommandStore.js";
+import { createCommandTracker } from "./commands/commandTracker.js";
 import { getConfigPathFromEnv } from "./config/env.js";
 import { AppConfigSchema, loadAppConfig, type AppConfig } from "./config/appConfig.js";
 import { createDeviceStore } from "./devices/createDeviceStore.js";
@@ -10,24 +10,54 @@ import { registerDeviceRoutes } from "./devices/deviceRoutes.js";
 import { registerHealthRoutes } from "./health/healthRoutes.js";
 import { createLogger } from "./logging/logger.js";
 import { createWebSocketHub } from "./realtime/webSocketHub.js";
+import {
+  isTerminalRouteStatus,
+  toCommandUpdatedEvent,
+  toDeviceStateEvent
+} from "./route/routeProtocol.js";
+import { createRouteServiceGateway } from "./route/routeServiceGateway.js";
 
 export async function buildServer(config: AppConfig = AppConfigSchema.parse({})) {
   const app = Fastify({
     logger: false
   });
+  const logger = createLogger(config);
   const realtime = createWebSocketHub();
   const devices = createDeviceStore(config);
-  const commands = createCommandStore(config);
+  const commands = createCommandTracker(config.command.mapping_retention_ms);
+  const routeService = createRouteServiceGateway(config.mqtt, {
+    onDeviceState(message) {
+      realtime.broadcast(toDeviceStateEvent(message));
+    },
+    onCommandAck(message) {
+      if (!message.request_id) return;
+      const tracked = commands.get(message.request_id);
+      if (!tracked) {
+        logger.debug("Ignored command ACK without an active browser mapping", {
+          request_id: message.request_id
+        });
+        return;
+      }
+      realtime.sendToSession(tracked.sessionId, toCommandUpdatedEvent(message, tracked));
+      if (isTerminalRouteStatus(message.status)) {
+        commands.complete(message.request_id);
+      }
+    }
+  }, logger);
+
+  await routeService.start();
 
   await realtime.register(app);
   await registerHealthRoutes(app, {
-    databaseStatus: () => devices.dependencyStatus()
+    databaseStatus: () => devices.dependencyStatus(),
+    mqttStatus: () => routeService.dependencyStatus()
   });
-  await registerDeviceRoutes(app, { commands, devices, realtime });
+  await registerDeviceRoutes(app, { commands, devices, realtime, routeService });
 
   app.addHook("onClose", async () => {
     await devices.close();
-    await commands.close();
+    await routeService.close();
+    commands.close();
   });
 
   return app;
@@ -35,8 +65,8 @@ export async function buildServer(config: AppConfig = AppConfigSchema.parse({}))
 
 async function main() {
   const config = await loadAppConfig(getConfigPathFromEnv());
-  const logger = createLogger(config);
   const app = await buildServer(config);
+  const logger = createLogger(config);
 
   const close = async (signal: NodeJS.Signals) => {
     logger.info("收到退出信号，正在关闭后端服务", { signal });

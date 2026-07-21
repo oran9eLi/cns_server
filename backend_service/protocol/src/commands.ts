@@ -3,7 +3,6 @@ import { z } from "zod";
 import {
   DateTimeStringSchema,
   ErrorPayloadSchema,
-  JsonValueSchema,
   SchemaVersionSchema,
   VendorIdSchema
 } from "./common.js";
@@ -33,18 +32,30 @@ export const CommandStatusSchema = z.enum([
 
 export const RuntimeConfigParametersSchema = z
   .object({
-    telemetry_publish_interval_ms: z.number().int().min(100).max(60000).optional()
+    telemetry_publish_interval_ms: z.number().int().min(100).max(60000).optional(),
+    heartbeat_interval_ms: z.number().int().min(100).max(60000).optional(),
+    mqtt_reconnect_delay_s: z.number().int().min(1).max(3600).optional(),
+    mqtt_reconnect_delay_max_s: z.number().int().min(1).max(3600).optional()
   })
-  .catchall(JsonValueSchema)
+  .strict()
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one runtime config parameter is required."
-  });
+  })
+  .refine(
+    (value) =>
+      value.mqtt_reconnect_delay_s === undefined ||
+      value.mqtt_reconnect_delay_max_s === undefined ||
+      value.mqtt_reconnect_delay_s <= value.mqtt_reconnect_delay_max_s,
+    {
+      message: "MQTT reconnect delay must not exceed its maximum."
+    }
+  );
 
-export const PwmValueSchema = z.number().int().min(0).max(2000);
+export const PwmValueSchema = z.number().int().min(1000).max(2000);
 
 export const SetMotorPwmParametersSchema = z
   .object({
-    motor_pwm: z.tuple([
+    pwm_us: z.tuple([
       PwmValueSchema,
       PwmValueSchema,
       PwmValueSchema,
@@ -114,6 +125,7 @@ export const CommandUpdatedEventSchema = z
     type: z.literal("command.updated"),
     schema_version: SchemaVersionSchema,
     client_request_id: ClientRequestIdSchema,
+    command_id: z.string().uuid().nullable(),
     vendor_id: VendorIdSchema,
     command_type: CommandTypeSchema,
     command: ControlCommandNameSchema.nullable(),

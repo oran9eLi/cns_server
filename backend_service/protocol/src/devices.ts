@@ -9,6 +9,14 @@ import {
 
 export const DeviceStatusSchema = z.enum(["online", "offline"]);
 
+export const DeviceStateChangeReasonSchema = z.enum([
+  "registration_online",
+  "registration_offline",
+  "telemetry",
+  "activity_timeout",
+  "database_recovered"
+]);
+
 export const DeviceListQuerySchema = z
   .object({
     keyword: z.string().trim().min(1).max(128).optional(),
@@ -54,15 +62,20 @@ export const DeviceStateEventSchema = z
     type: z.literal("device.state"),
     schema_version: SchemaVersionSchema,
     vendor_id: VendorIdSchema,
+    school_name: z.string().min(1),
+    dcdw_label: z.string().min(1).nullable(),
     status: DeviceStatusSchema,
+    event_at: DateTimeStringSchema,
     last_seen_at: DateTimeStringSchema.nullable(),
     telemetry_received_at: DateTimeStringSchema.nullable(),
     latest_telemetry: JsonObjectSchema.nullable(),
+    change_reason: DeviceStateChangeReasonSchema,
     degraded: z.boolean()
   })
   .strict();
 
 export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
+export type DeviceStateChangeReason = z.infer<typeof DeviceStateChangeReasonSchema>;
 export type DeviceListQuery = z.infer<typeof DeviceListQuerySchema>;
 export type DeviceSummary = z.infer<typeof DeviceSummarySchema>;
 export type DeviceDetail = z.infer<typeof DeviceDetailSchema>;

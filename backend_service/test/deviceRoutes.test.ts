@@ -3,17 +3,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   CommandAcceptedResponseSchema,
-  CommandUpdatedEventSchema,
   DeviceDetailResponseSchema,
   DeviceListResponseSchema,
   type BackendWebSocketEvent
 } from "@cns/backend-protocol";
 
 import { registerDeviceRoutes } from "../src/devices/deviceRoutes.js";
-import { createInMemoryCommandStore } from "../src/commands/commandStore.js";
+import { createCommandTracker } from "../src/commands/commandTracker.js";
 import { createInMemoryDeviceStore } from "../src/devices/deviceStore.js";
 import { createSeedDevices } from "../src/devices/seedDevices.js";
 import type { WebSocketHub } from "../src/realtime/webSocketHub.js";
+import type { RouteServiceGateway } from "../src/route/routeServiceGateway.js";
 
 describe("设备接口", () => {
   it("返回符合协议的设备列表和详情", async () => {
@@ -31,14 +31,14 @@ describe("设备接口", () => {
 
     const detailResponse = await app.inject({
       method: "GET",
-      url: "/api/devices/CNS0000000000000001"
+      url: "/api/devices/CNS00000000000000001"
     });
 
     await app.close();
 
     expect(detailResponse.statusCode).toBe(200);
     expect(() => DeviceDetailResponseSchema.parse(detailResponse.json())).not.toThrow();
-    expect(detailResponse.json().item.vendor_id).toBe("CNS0000000000000001");
+    expect(detailResponse.json().item.vendor_id).toBe("CNS00000000000000001");
   });
 
   it("拒绝离线设备命令", async () => {
@@ -46,7 +46,7 @@ describe("设备接口", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/devices/CNS0000000000000003/commands",
+      url: "/api/devices/CNS00000000000000003/commands",
       payload: {
         session_id: "session_test",
         client_request_id: "00000000-0000-4000-8000-000000000001",
@@ -71,14 +71,14 @@ describe("设备接口", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/devices/CNS0000000000000001/commands",
+      url: "/api/devices/CNS00000000000000001/commands",
       payload: {
         session_id: "session_test",
         client_request_id: "00000000-0000-4000-8000-000000000002",
         type: "control",
         command: "set_motor_pwm",
         parameters: {
-          motor_pwm: [1000, 1010, 1020, 1030]
+          pwm_us: [1000, 1010, 1020, 1030]
         }
       }
     });
@@ -87,20 +87,14 @@ describe("设备接口", () => {
 
     expect(response.statusCode).toBe(202);
     expect(() => CommandAcceptedResponseSchema.parse(response.json())).not.toThrow();
-    expect(events.map((event) => event.type)).toEqual([
-      "command.updated",
-      "command.updated",
-      "command.updated"
-    ]);
-    expect(() => CommandUpdatedEventSchema.parse(events.at(-1))).not.toThrow();
-    expect(events.at(-1)).toMatchObject({
-      status: "succeeded",
-      client_request_id: "00000000-0000-4000-8000-000000000002"
-    });
+    expect(events).toEqual([]);
   });
 });
 
-async function buildDeviceTestServer(overrides: Partial<WebSocketHub> = {}) {
+async function buildDeviceTestServer(
+  overrides: Partial<WebSocketHub> = {},
+  routeOverrides: Partial<RouteServiceGateway> = {}
+) {
   const app = Fastify({ logger: false });
   const realtime: WebSocketHub = {
     register: async () => undefined,
@@ -111,9 +105,16 @@ async function buildDeviceTestServer(overrides: Partial<WebSocketHub> = {}) {
   };
 
   await registerDeviceRoutes(app, {
-    commands: createInMemoryCommandStore(),
+    commands: createCommandTracker(1000),
     devices: createInMemoryDeviceStore(createSeedDevices()),
-    realtime
+    realtime,
+    routeService: {
+      start: async () => undefined,
+      publishCommand: async () => undefined,
+      dependencyStatus: async () => "ready",
+      close: async () => undefined,
+      ...routeOverrides
+    }
   });
 
   return app;

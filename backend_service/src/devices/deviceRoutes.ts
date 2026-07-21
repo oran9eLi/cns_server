@@ -2,41 +2,39 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import {
-  CommandUpdatedEventSchema,
   DeviceCommandRequestSchema,
   DeviceDetailResponseSchema,
   DeviceListQuerySchema,
   DeviceListResponseSchema,
-  DeviceStateEventSchema,
   SCHEMA_VERSION,
+  VendorIdSchema,
   type CommandAcceptedResponse,
-  type CommandStatus,
-  type DeviceCommandRequest,
   type ErrorCode,
   type ErrorResponse
 } from "@cns/backend-protocol";
 
-import {
-  businessStatusFor,
-  toCommandRecord,
-  type CommandStore
-} from "../commands/commandStore.js";
+import type { CommandTracker } from "../commands/commandTracker.js";
 import type { WebSocketHub } from "../realtime/webSocketHub.js";
+import {
+  RouteServiceUnavailableError,
+  type RouteServiceGateway
+} from "../route/routeServiceGateway.js";
 import type { DeviceStore } from "./deviceStore.js";
 
 const DeviceParamsSchema = z.object({
-  vendor_id: z.string().min(1).max(64)
+  vendor_id: VendorIdSchema
 });
 
 export async function registerDeviceRoutes(
   app: FastifyInstance,
   dependencies: {
     devices: DeviceStore;
-    commands: CommandStore;
+    commands: CommandTracker;
     realtime: WebSocketHub;
+    routeService: RouteServiceGateway;
   }
 ): Promise<void> {
-  const { commands, devices, realtime } = dependencies;
+  const { commands, devices, realtime, routeService } = dependencies;
 
   app.get("/api/devices", async (request, reply) => {
     const query = DeviceListQuerySchema.safeParse(request.query);
@@ -44,10 +42,14 @@ export async function registerDeviceRoutes(
       return sendError(reply, 400, "invalid_parameter", "设备查询参数不符合协议");
     }
 
-    return DeviceListResponseSchema.parse({
-      schema_version: SCHEMA_VERSION,
-      items: await devices.list(query.data)
-    });
+    try {
+      return DeviceListResponseSchema.parse({
+        schema_version: SCHEMA_VERSION,
+        items: await devices.list(query.data)
+      });
+    } catch {
+      return sendError(reply, 503, "database_unavailable", "设备数据库暂不可用");
+    }
   });
 
   app.get("/api/devices/:vendor_id", async (request, reply) => {
@@ -56,15 +58,19 @@ export async function registerDeviceRoutes(
       return sendError(reply, 400, "invalid_parameter", "设备编号不符合协议");
     }
 
-    const item = await devices.get(params.data.vendor_id);
-    if (!item) {
-      return sendError(reply, 404, "not_found", "未找到设备");
-    }
+    try {
+      const item = await devices.get(params.data.vendor_id);
+      if (!item) {
+        return sendError(reply, 404, "not_found", "未找到设备");
+      }
 
-    return DeviceDetailResponseSchema.parse({
-      schema_version: SCHEMA_VERSION,
-      item
-    });
+      return DeviceDetailResponseSchema.parse({
+        schema_version: SCHEMA_VERSION,
+        item
+      });
+    } catch {
+      return sendError(reply, 503, "database_unavailable", "设备数据库暂不可用");
+    }
   });
 
   app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
@@ -78,7 +84,12 @@ export async function registerDeviceRoutes(
       return sendError(reply, 400, "invalid_parameter", "命令参数不符合协议");
     }
 
-    const item = await devices.get(params.data.vendor_id);
+    let item;
+    try {
+      item = await devices.get(params.data.vendor_id);
+    } catch {
+      return sendError(reply, 503, "database_unavailable", "设备数据库暂不可用");
+    }
     if (!item) {
       return sendError(reply, 404, "not_found", "未找到设备");
     }
@@ -88,29 +99,27 @@ export async function registerDeviceRoutes(
     if (!realtime.hasSession(command.data.session_id)) {
       return sendError(reply, 409, "websocket_session_required", "当前 WebSocket 会话不可用，请刷新页面后重试");
     }
-
-    const acceptedAt = new Date().toISOString();
-    await commands.create(toCommandRecord(params.data.vendor_id, command.data, acceptedAt));
-    await emitCommandStatus(commands, realtime, params.data.vendor_id, command.data, "submitted", acceptedAt);
-    await emitCommandStatus(commands, realtime, params.data.vendor_id, command.data, "dispatched");
-
-    if (command.data.type === "control" && command.data.command === "set_motor_pwm") {
-      const updated = await devices.setMotorPwm(params.data.vendor_id, command.data.parameters.motor_pwm);
-      if (updated) {
-        realtime.broadcast(DeviceStateEventSchema.parse({
-          type: "device.state",
-          schema_version: SCHEMA_VERSION,
-          vendor_id: updated.vendor_id,
-          status: updated.status,
-          last_seen_at: updated.last_seen_at,
-          telemetry_received_at: updated.telemetry_received_at,
-          latest_telemetry: updated.latest_telemetry,
-          degraded: updated.degraded
-        }));
-      }
+    if ((await routeService.dependencyStatus()) !== "ready") {
+      return sendError(reply, 503, "mqtt_unavailable", "MQTT 连接暂不可用");
     }
 
-    await emitCommandStatus(commands, realtime, params.data.vendor_id, command.data, "succeeded");
+    const acceptedAt = new Date().toISOString();
+    commands.register(command.data.client_request_id, {
+      sessionId: command.data.session_id,
+      vendorId: params.data.vendor_id,
+      commandType: command.data.type,
+      command: command.data.type === "control" ? command.data.command : null
+    });
+
+    try {
+      await routeService.publishCommand(params.data.vendor_id, command.data);
+    } catch (error) {
+      commands.forget(command.data.client_request_id);
+      const message = error instanceof RouteServiceUnavailableError
+        ? error.message
+        : "命令发布到 route_service 失败";
+      return sendError(reply, 503, "mqtt_unavailable", message);
+    }
 
     return reply.code(202).send({
       schema_version: SCHEMA_VERSION,
@@ -120,30 +129,6 @@ export async function registerDeviceRoutes(
       server_time: acceptedAt
     } satisfies CommandAcceptedResponse);
   });
-}
-
-async function emitCommandStatus(
-  commands: CommandStore,
-  realtime: WebSocketHub,
-  vendorId: string,
-  command: DeviceCommandRequest,
-  status: CommandStatus,
-  updatedAt = new Date().toISOString()
-): Promise<void> {
-  const businessStatus = businessStatusFor(status);
-  await commands.updateStatus(command.session_id, command.client_request_id, status, businessStatus, null);
-  realtime.sendToSession(command.session_id, CommandUpdatedEventSchema.parse({
-    type: "command.updated",
-    schema_version: SCHEMA_VERSION,
-    client_request_id: command.client_request_id,
-    vendor_id: vendorId,
-    command_type: command.type,
-    command: command.type === "control" ? command.command : null,
-    status,
-    business_status: businessStatus,
-    error: null,
-    updated_at: updatedAt
-  }));
 }
 
 function sendError(

@@ -10,17 +10,25 @@ export async function registerHealthRoutes(
   app: FastifyInstance,
   dependencies: {
     databaseStatus: () => Promise<DependencyStatus>;
+    mqttStatus: () => Promise<DependencyStatus>;
   } = {
-    databaseStatus: async () => "not_configured"
+    databaseStatus: async () => "not_configured",
+    mqttStatus: async () => "not_configured"
   }
 ): Promise<void> {
-  app.get("/api/health", async (): Promise<HealthResponse> => ({
-    schema_version: SCHEMA_VERSION,
-    status: (await dependencies.databaseStatus()) === "unavailable" ? "degraded" : "ok",
-    server_time: new Date().toISOString(),
-    dependencies: {
-      database: await dependencies.databaseStatus(),
-      mqtt: "not_configured"
-    }
-  }));
+  app.get("/api/health", async (): Promise<HealthResponse> => {
+    const [database, mqtt] = await Promise.all([
+      dependencies.databaseStatus(),
+      dependencies.mqttStatus()
+    ]);
+    return {
+      schema_version: SCHEMA_VERSION,
+      status: database === "unavailable" || mqtt === "unavailable" ? "degraded" : "ok",
+      server_time: new Date().toISOString(),
+      dependencies: {
+        database,
+        mqtt
+      }
+    };
+  });
 }

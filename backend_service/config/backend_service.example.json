@@ -8,8 +8,24 @@
     "level": "info"
   },
   "database": {
-    "connection_string": "postgres://cns_backend:change-me@127.0.0.1:5432/cns_server",
+    "connection_string": "postgres://cns_backend_read:change-me@127.0.0.1:5432/cns",
     "max_connections": 10,
     "ssl": false
+  },
+  "mqtt": {
+    "protocol": "mqtt",
+    "host": "127.0.0.1",
+    "port": 1883,
+    "client_id": "cns-backend-service",
+    "username": "",
+    "password": "",
+    "topic_namespace": "cns_rpi",
+    "source_id": "web-console",
+    "connect_timeout_ms": 10000,
+    "publish_timeout_ms": 5000,
+    "reconnect_period_ms": 1000
+  },
+  "command": {
+    "mapping_retention_ms": 60000
   }
 }

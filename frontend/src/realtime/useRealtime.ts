@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   BackendWebSocketEventSchema,
@@ -19,6 +19,7 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
   const [commandEvents, setCommandEvents] = useState<CommandUpdatedEvent[]>([]);
+  const latestDeviceEventAt = useRef(new Map<string, string>());
 
   useEffect(() => {
     let closed = false;
@@ -34,11 +35,16 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
       });
 
       socket.addEventListener("message", (message) => {
-        const parsed = BackendWebSocketEventSchema.safeParse(JSON.parse(String(message.data)));
+        let payload: unknown;
+        try {
+          payload = JSON.parse(String(message.data));
+        } catch {
+          return;
+        }
+        const parsed = BackendWebSocketEventSchema.safeParse(payload);
         if (!parsed.success) return;
 
         const event = parsed.data;
-        setLastEventAt(new Date().toISOString());
 
         if (event.type === "session.ready") {
           setSessionId(event.session_id);
@@ -46,6 +52,11 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
         }
 
         if (event.type === "device.state") {
+          const previousEventAt = latestDeviceEventAt.current.get(event.vendor_id);
+          if (previousEventAt && previousEventAt >= event.event_at) return;
+          latestDeviceEventAt.current.set(event.vendor_id, event.event_at);
+          setLastEventAt(event.event_at);
+
           queryClient.setQueriesData<DeviceListResponse>({ queryKey: ["devices"] }, (current) => {
             if (!current) return current;
             return {
@@ -54,6 +65,8 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
                 item.vendor_id === event.vendor_id
                   ? {
                       ...item,
+                      school_name: event.school_name,
+                      dcdw_label: event.dcdw_label,
                       status: event.status,
                       last_seen_at: event.last_seen_at,
                       telemetry_received_at: event.telemetry_received_at,
@@ -70,6 +83,8 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
               ...current,
               item: {
                 ...current.item,
+                school_name: event.school_name,
+                dcdw_label: event.dcdw_label,
                 status: event.status,
                 last_seen_at: event.last_seen_at,
                 telemetry_received_at: event.telemetry_received_at,
@@ -81,6 +96,7 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
           return;
         }
 
+        setLastEventAt(event.updated_at);
         setCommandEvents((events) => [event, ...events].slice(0, 16));
       });
 

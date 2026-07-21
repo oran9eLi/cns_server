@@ -2,15 +2,12 @@ import type {
   DeviceDetail,
   DeviceListQuery,
   DeviceSummary,
-  DependencyStatus,
-  JsonValue
+  DependencyStatus
 } from "@cns/backend-protocol";
 
 export interface DeviceStore {
   list(query: DeviceListQuery): Promise<DeviceSummary[]>;
   get(vendorId: string): Promise<DeviceDetail | null>;
-  updateTelemetry(vendorId: string, telemetry: Record<string, JsonValue>): Promise<DeviceDetail | null>;
-  setMotorPwm(vendorId: string, motorPwm: [number, number, number, number]): Promise<DeviceDetail | null>;
   dependencyStatus(): Promise<DependencyStatus>;
   close(): Promise<void>;
 }
@@ -27,32 +24,6 @@ export function createInMemoryDeviceStore(initialDevices: DeviceDetail[]): Devic
     async get(vendorId) {
       const device = devices.get(vendorId);
       return device ? structuredClone(device) : null;
-    },
-    async updateTelemetry(vendorId, telemetry) {
-      const device = devices.get(vendorId);
-      if (!device) return null;
-
-      const now = new Date().toISOString();
-      device.latest_telemetry = structuredClone(telemetry);
-      device.telemetry_received_at = now;
-      device.last_seen_at = now;
-      device.status = "online";
-      device.degraded = false;
-      return structuredClone(device);
-    },
-    async setMotorPwm(vendorId, motorPwm) {
-      const device = devices.get(vendorId);
-      if (!device) return null;
-
-      device.latest_telemetry = {
-        ...(device.latest_telemetry ?? {}),
-        motors: {
-          ...readObject(device.latest_telemetry?.motors),
-          pwm: motorPwm
-        }
-      };
-      device.telemetry_received_at = new Date().toISOString();
-      return structuredClone(device);
     },
     async dependencyStatus() {
       return "not_configured";
@@ -88,11 +59,4 @@ function toSummary(device: DeviceDetail): DeviceSummary {
     telemetry_received_at: device.telemetry_received_at,
     degraded: device.degraded
   };
-}
-
-function readObject(value: JsonValue | undefined): Record<string, JsonValue> {
-  if (!value || Array.isArray(value) || typeof value !== "object") {
-    return {};
-  }
-  return value;
 }

@@ -6,7 +6,7 @@ export const SchemaVersionSchema = z.literal(SCHEMA_VERSION);
 
 export const DateTimeStringSchema = z.string().datetime({ offset: true });
 
-export const VendorIdSchema = z.string().min(1).max(64);
+export const VendorIdSchema = z.string().length(20).regex(/^[A-Za-z0-9]+$/);
 
 export type JsonValue =
   | null
@@ -29,18 +29,11 @@ export const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 
 export const JsonObjectSchema = z.record(JsonValueSchema);
 
-export const ErrorCodeSchema = z.enum([
-  "bad_request",
-  "invalid_parameter",
-  "not_found",
-  "websocket_session_required",
-  "idempotency_conflict",
-  "target_offline",
-  "database_unavailable",
-  "mqtt_unavailable",
-  "service_unavailable",
-  "internal_error"
-]);
+export const ErrorCodeSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9._-]+$/);
 
 export const ErrorPayloadSchema = z
   .object({

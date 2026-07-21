@@ -75,6 +75,7 @@ export function App() {
 function ConsoleShell() {
   const realtime = useRealtime(useQueryClient());
   const health = useQuery({ queryKey: ["health"], queryFn: getHealth, refetchInterval: 10000 });
+  const mqttReady = health.data?.dependencies.mqtt === "ready";
 
   return (
     <Layout className="console-shell">
@@ -93,6 +94,9 @@ function ConsoleShell() {
             </Tag>
             <Tag color={health.data?.status === "ok" ? "blue" : "warning"} icon={<Activity size={14} />}>
               服务 {health.data?.status ?? "检查中"}
+            </Tag>
+            <Tag color={mqttReady ? "success" : "warning"} icon={<Radio size={14} />}>
+              路由 {mqttReady ? "已连接" : "不可用"}
             </Tag>
           </Space>
         </header>
@@ -114,6 +118,7 @@ function ConsoleShell() {
                 <DeviceDetailPage
                   sessionId={realtime.sessionId}
                   connected={realtime.connected}
+                  mqttReady={mqttReady}
                   commandEvents={realtime.commandEvents}
                   lastEventAt={realtime.lastEventAt}
                 />
@@ -249,11 +254,13 @@ function DeviceListPage() {
 function DeviceDetailPage({
   sessionId,
   connected,
+  mqttReady,
   commandEvents,
   lastEventAt
 }: {
   sessionId: string | null;
   connected: boolean;
+  mqttReady: boolean;
   commandEvents: CommandUpdatedEvent[];
   lastEventAt: string | null;
 }) {
@@ -301,7 +308,13 @@ function DeviceDetailPage({
   }
 
   const telemetry = device.latest_telemetry;
-  const disabled = !connected || !sessionId || device.status !== "online" || commandMutation.isPending;
+  const commandInFlight = commandStatus !== null && ![
+    "succeeded",
+    "failed",
+    "timeout",
+    "delivery_uncertain"
+  ].includes(commandStatus);
+  const disabled = !connected || !mqttReady || !sessionId || device.status !== "online" || commandMutation.isPending || commandInFlight;
 
   type DraftCommandRequest =
     | Omit<ConfigCommandRequest, "session_id" | "client_request_id">
@@ -387,24 +400,49 @@ function DeviceDetailPage({
         </section>
 
         <aside className="detail-side">
-          <CommandReadiness connected={connected} sessionId={sessionId} device={device} />
+          <CommandReadiness connected={connected} mqttReady={mqttReady} sessionId={sessionId} device={device} />
 
           <Card className="command-panel" title="运行时配置">
-            <Form layout="vertical" initialValues={{ interval: 2000 }}>
+            <Form layout="vertical" initialValues={{ interval: 2000, heartbeat: 5000, reconnectDelay: 1, reconnectMax: 30 }}>
               <Form.Item label="遥测上报周期（ms）" name="interval">
                 <InputNumber min={100} max={60000} step={100} style={{ width: "100%" }} />
               </Form.Item>
+              <Row gutter={8}>
+                <Col span={12}>
+                  <Form.Item label="心跳周期（ms）" name="heartbeat">
+                    <InputNumber min={100} max={60000} step={100} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="MQTT 重连初值（s）" name="reconnectDelay">
+                    <InputNumber min={1} max={3600} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="MQTT 重连上限（s）" name="reconnectMax">
+                    <InputNumber min={1} max={3600} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+              </Row>
               <Form.Item shouldUpdate>
-                {({ getFieldValue }) => (
+                {({ getFieldsValue }) => (
                   <Button
                     block
                     type="primary"
                     icon={<Send size={16} />}
                     disabled={disabled}
-                    onClick={() => submit({
-                      type: "config",
-                      parameters: { telemetry_publish_interval_ms: Number(getFieldValue("interval")) }
-                    })}
+                    onClick={() => {
+                      const values = getFieldsValue();
+                      submit({
+                        type: "config",
+                        parameters: {
+                          telemetry_publish_interval_ms: Number(values.interval),
+                          heartbeat_interval_ms: Number(values.heartbeat),
+                          mqtt_reconnect_delay_s: Number(values.reconnectDelay),
+                          mqtt_reconnect_delay_max_s: Number(values.reconnectMax)
+                        }
+                      });
+                    }}
                   >
                     下发配置
                   </Button>
@@ -419,7 +457,7 @@ function DeviceDetailPage({
                 {["m1", "m2", "m3", "m4"].map((name, index) => (
                   <Col span={12} key={name}>
                     <Form.Item label={`PWM ${index + 1}`} name={name}>
-                      <InputNumber min={0} max={2000} step={10} style={{ width: "100%" }} />
+                      <InputNumber min={1000} max={2000} step={10} style={{ width: "100%" }} />
                     </Form.Item>
                   </Col>
                 ))}
@@ -435,7 +473,7 @@ function DeviceDetailPage({
                       submit({
                         type: "control",
                         command: "set_motor_pwm",
-                        parameters: { motor_pwm: [values.m1, values.m2, values.m3, values.m4] }
+                        parameters: { pwm_us: [values.m1, values.m2, values.m3, values.m4] }
                       });
                     }}
                   >
@@ -556,15 +594,18 @@ function CompassIndicator({ yaw }: { yaw: number }) {
 
 function CommandReadiness({
   connected,
+  mqttReady,
   sessionId,
   device
 }: {
   connected: boolean;
+  mqttReady: boolean;
   sessionId: string | null;
   device: DeviceDetail;
 }) {
   const items = [
     ["实时连接", connected],
+    ["路由连接", mqttReady],
     ["会话令牌", Boolean(sessionId)],
     ["目标在线", device.status === "online"],
     ["非降级态", !device.degraded]

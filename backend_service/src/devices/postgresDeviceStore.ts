@@ -35,17 +35,18 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
         `
           select
             d.vendor_id,
-            s.name as school_name,
+            s.school_name,
             d.dcdw_label,
             d.model_version,
-            d.status,
             d.provisioned_at,
-            d.last_seen_at,
-            d.telemetry_received_at,
-            d.latest_telemetry,
-            d.degraded
+            state.status,
+            state.last_seen_at,
+            state.telemetry_received_at,
+            state.latest_telemetry,
+            false as degraded
           from devices d
-          join schools s on s.id = d.school_id
+          join schools s on s.school_id = d.school_id
+          join device_latest_states state on state.vendor_id = d.vendor_id
           ${where}
           order by d.school_id asc, d.vendor_id asc
         `,
@@ -59,82 +60,21 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
         `
           select
             d.vendor_id,
-            s.name as school_name,
+            s.school_name,
             d.dcdw_label,
             d.model_version,
-            d.status,
             d.provisioned_at,
-            d.last_seen_at,
-            d.telemetry_received_at,
-            d.latest_telemetry,
-            d.degraded
+            state.status,
+            state.last_seen_at,
+            state.telemetry_received_at,
+            state.latest_telemetry,
+            false as degraded
           from devices d
-          join schools s on s.id = d.school_id
+          join schools s on s.school_id = d.school_id
+          join device_latest_states state on state.vendor_id = d.vendor_id
           where d.vendor_id = $1
         `,
         [vendorId]
-      );
-
-      const row = result.rows[0];
-      return row ? toDetail(row) : null;
-    },
-    async updateTelemetry(vendorId, telemetry) {
-      const result = await pool.query<DeviceRow>(
-        `
-          update devices
-          set
-            latest_telemetry = $2::jsonb,
-            telemetry_received_at = now(),
-            last_seen_at = now(),
-            status = 'online',
-            degraded = false,
-            updated_at = now()
-          where vendor_id = $1
-          returning
-            vendor_id,
-            (select name from schools where id = devices.school_id) as school_name,
-            dcdw_label,
-            model_version,
-            status,
-            provisioned_at,
-            last_seen_at,
-            telemetry_received_at,
-            latest_telemetry,
-            degraded
-        `,
-        [vendorId, JSON.stringify(telemetry)]
-      );
-
-      const row = result.rows[0];
-      return row ? toDetail(row) : null;
-    },
-    async setMotorPwm(vendorId, motorPwm) {
-      const result = await pool.query<DeviceRow>(
-        `
-          update devices
-          set
-            latest_telemetry = jsonb_set(
-              coalesce(latest_telemetry, '{}'::jsonb),
-              '{motors,pwm}',
-              $2::jsonb,
-              true
-            ),
-            telemetry_received_at = now(),
-            updated_at = now()
-          where vendor_id = $1
-          returning
-            vendor_id,
-            (select name from schools where id = devices.school_id) as school_name,
-            dcdw_label,
-            model_version,
-            status,
-            provisioned_at,
-            last_seen_at,
-            telemetry_received_at,
-            latest_telemetry,
-            degraded
-        `,
-        [vendorId, JSON.stringify(motorPwm)]
       );
 
       const row = result.rows[0];
@@ -163,19 +103,19 @@ function buildListWhere(query: DeviceListQuery): { where: string; values: unknow
     clauses.push(`(
       lower(d.vendor_id) like $${values.length}
       or lower(coalesce(d.dcdw_label, '')) like $${values.length}
-      or lower(s.name) like $${values.length}
+      or lower(s.school_name) like $${values.length}
       or lower(d.model_version) like $${values.length}
     )`);
   }
 
   if (query.school_name) {
     values.push(query.school_name);
-    clauses.push(`s.name = $${values.length}`);
+    clauses.push(`s.school_name = $${values.length}`);
   }
 
   if (query.status) {
     values.push(query.status);
-    clauses.push(`d.status = $${values.length}`);
+    clauses.push(`state.status = $${values.length}`);
   }
 
   return {

@@ -4,14 +4,14 @@ export function createSeedDevices(): DeviceDetail[] {
   const now = new Date().toISOString();
 
   return [
-    createDevice("CNS0000000000000001", "DCDW-001", "东创航空实训中心", "CNS v1.0", "online", now),
-    createDevice("CNS0000000000000002", "DCDW-002", "东创航空实训中心", "CNS v1.1", "online", now),
-    createDevice("CNS0000000000000003", "DCDW-003", "东创航空实训中心", "CNS v1.0", "offline", "2026-07-20T13:30:00.000+08:00"),
-    createDevice("CNS0000000000000004", null, "东创航空实训中心", "CNS v1.1", "online", now, true),
-    createDevice("CNS0000000000000005", "DCDW-101", "华东无人系统学院", "CNS v1.0", "online", now),
-    createDevice("CNS0000000000000006", "DCDW-102", "华东无人系统学院", "CNS v1.1", "offline", "2026-07-20T12:45:00.000+08:00"),
-    createDevice("CNS0000000000000007", "DCDW-103", "华东无人系统学院", "CNS v1.0", "online", now),
-    createDevice("CNS0000000000000008", null, "华东无人系统学院", "CNS v1.1", "online", "2026-07-20T12:15:00.000+08:00", true)
+    createDevice("CNS00000000000000001", "DCDW-001", "东创航空实训中心", "CNS v1.0", "online", now),
+    createDevice("CNS00000000000000002", "DCDW-002", "东创航空实训中心", "CNS v1.1", "online", now),
+    createDevice("CNS00000000000000003", "DCDW-003", "东创航空实训中心", "CNS v1.0", "offline", "2026-07-20T13:30:00.000+08:00"),
+    createDevice("CNS00000000000000004", null, "东创航空实训中心", "CNS v1.1", "online", now, true),
+    createDevice("CNS00000000000000005", "DCDW-101", "华东无人系统学院", "CNS v1.0", "online", now),
+    createDevice("CNS00000000000000006", "DCDW-102", "华东无人系统学院", "CNS v1.1", "offline", "2026-07-20T12:45:00.000+08:00"),
+    createDevice("CNS00000000000000007", "DCDW-103", "华东无人系统学院", "CNS v1.0", "online", now),
+    createDevice("CNS00000000000000008", null, "华东无人系统学院", "CNS v1.1", "online", "2026-07-20T12:15:00.000+08:00", true)
   ];
 }
 
