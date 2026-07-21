@@ -11,7 +11,7 @@ std::string FormatUtcRfc3339Millis(
   const auto days = std::chrono::floor<std::chrono::days>(milliseconds);
   const std::chrono::year_month_day date{days};
   const std::chrono::hh_mm_ss time{milliseconds - days};
-  std::array<char, 25> output{};
+  std::array<char, 32> output{};
   std::snprintf(output.data(), output.size(),
                 "%04d-%02u-%02uT%02lld:%02lld:%02lld.%03lldZ",
                 static_cast<int>(date.year()),
