@@ -28,11 +28,12 @@ const char* StatusText(CommandStatus status) {
 }
 
 nlohmann::json BaseAck(nlohmann::json request_id, nlohmann::json command_id,
-                       CommandStatus status, TimePoint occurred_at) {
+                       CommandType command_type, CommandStatus status,
+                       TimePoint occurred_at) {
   return {{"schema_version", 1},
           {"request_id", std::move(request_id)},
           {"command_id", std::move(command_id)},
-          {"command_type", "config"},
+          {"command_type", ToString(command_type)},
           {"status", StatusText(status)},
           {"business_status", nullptr},
           {"occurred_at", protocol::FormatUtcRfc3339Millis(occurred_at)}};
@@ -49,11 +50,20 @@ bool IsTerminal(CommandStatus status) noexcept {
 bool CanTransition(CommandStatus from, CommandStatus to) noexcept {
   if (from == CommandStatus::kPending) {
     return to == CommandStatus::kDispatched || to == CommandStatus::kFailed ||
-           to == CommandStatus::kTimeout;
+           to == CommandStatus::kTimeout ||
+           to == CommandStatus::kDeliveryUncertain;
   }
   if (from == CommandStatus::kDispatched) {
-    return to == CommandStatus::kSucceeded || to == CommandStatus::kFailed ||
-           to == CommandStatus::kTimeout;
+    return to == CommandStatus::kInProgress ||
+           to == CommandStatus::kSucceeded || to == CommandStatus::kFailed ||
+           to == CommandStatus::kTimeout ||
+           to == CommandStatus::kDeliveryUncertain;
+  }
+  if (from == CommandStatus::kInProgress) {
+    return to == CommandStatus::kInProgress ||
+           to == CommandStatus::kSucceeded || to == CommandStatus::kFailed ||
+           to == CommandStatus::kTimeout ||
+           to == CommandStatus::kDeliveryUncertain;
   }
   return false;
 }
@@ -68,8 +78,8 @@ IdempotencyResult CompareRequest(const CommandRecord& existing,
 nlohmann::json BuildSourceAck(const CommandRecord& command,
                               const std::optional<ResolvedTarget>& target,
                               TimePoint occurred_at) {
-  auto ack = BaseAck(command.request_id, command.command_id, command.status,
-                     occurred_at);
+  auto ack = BaseAck(command.request_id, command.command_id,
+                     command.command_type, command.status, occurred_at);
   if (target) {
     ack["target"] = {{"vendor_id", target->vendor_id},
                      {"school_name", target->school_name},
@@ -77,7 +87,12 @@ nlohmann::json BuildSourceAck(const CommandRecord& command,
                                           ? nlohmann::json(*target->dcdw_label)
                                           : nlohmann::json(nullptr)}};
   }
-  if (command.error_code) {
+  if (command.command_type == CommandType::kControl &&
+      command.status == CommandStatus::kDeliveryUncertain) {
+    ack["error"] = {
+        {"code", "control_delivery_uncertain"},
+        {"message", "服务恢复后无法确认飞控命令是否已经执行"}};
+  } else if (command.error_code) {
     ack["error"] = {{"code", *command.error_code},
                     {"message", command.error_message
                                     ? nlohmann::json(*command.error_message)
@@ -89,11 +104,23 @@ nlohmann::json BuildSourceAck(const CommandRecord& command,
         status != device_ack.end() && status->is_string()) {
       ack["business_status"] = *status;
     }
-    ack["device"] = {
-        {"restart_required", device_ack.value("restart_required", false)},
-        {"error_code", device_ack.contains("error_code")
-                           ? device_ack["error_code"]
-                           : nlohmann::json(nullptr)}};
+    if (command.command_type == CommandType::kConfig) {
+      ack["device"] = {
+          {"restart_required", device_ack.value("restart_required", false)},
+          {"error_code", device_ack.contains("error_code")
+                             ? device_ack["error_code"]
+                             : nlohmann::json(nullptr)}};
+    } else {
+      auto device = nlohmann::json::object();
+      for (const auto field : {"command", "mavlink_command", "result",
+                               "result_code", "progress", "result_param2",
+                               "error_code"}) {
+        if (device_ack.contains(field)) {
+          device[field] = device_ack[field];
+        }
+      }
+      ack["device"] = std::move(device);
+    }
   }
   return ack;
 }
@@ -103,7 +130,8 @@ nlohmann::json BuildPrePersistenceRejection(
     TimePoint occurred_at) {
   auto ack = BaseAck(request_id ? nlohmann::json(*request_id)
                                 : nlohmann::json(nullptr),
-                     nullptr, CommandStatus::kFailed, occurred_at);
+                     nullptr, CommandType::kConfig, CommandStatus::kFailed,
+                     occurred_at);
   ack["error"] = {{"code", std::move(error.code)},
                   {"message", std::move(error.message)}};
   return ack;

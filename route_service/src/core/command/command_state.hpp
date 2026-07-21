@@ -17,6 +17,7 @@ using TimePoint = std::chrono::system_clock::time_point;
 
 struct CommandRecord {
   std::string command_id;
+  CommandType command_type{CommandType::kConfig};
   std::string source_id;
   std::string request_id;
   std::optional<std::string> target_vendor_id;

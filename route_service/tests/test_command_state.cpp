@@ -20,6 +20,7 @@ const auto kAt = std::chrono::sys_days{std::chrono::year{2026}/7/20} + 18h +
 
 CommandRecord Record(CommandStatus status) {
   return {.command_id = "550e8400-e29b-41d4-a716-446655440000",
+          .command_type = CommandType::kConfig,
           .source_id = "web-console",
           .request_id = "req-001",
           .target_vendor_id = "A1b2C3d4E5f6G7h8I9j0",
@@ -49,29 +50,50 @@ TEST_CASE("飞控进度是非终态而投递不确定是终态") {
   CHECK(cns::command::IsTerminal(CommandStatus::kDeliveryUncertain));
 }
 
-TEST_CASE("配置命令状态只允许规定方向迁移") {
+TEST_CASE("统一命令状态只允许规定方向迁移") {
   using cns::command::CanTransition;
-  CHECK(CanTransition(CommandStatus::kPending, CommandStatus::kDispatched));
-  CHECK(CanTransition(CommandStatus::kPending, CommandStatus::kFailed));
-  CHECK(CanTransition(CommandStatus::kPending, CommandStatus::kTimeout));
-  CHECK(CanTransition(CommandStatus::kDispatched, CommandStatus::kSucceeded));
-  CHECK(CanTransition(CommandStatus::kDispatched, CommandStatus::kFailed));
-  CHECK(CanTransition(CommandStatus::kDispatched, CommandStatus::kTimeout));
+  const std::array legal{
+      std::pair{CommandStatus::kPending, CommandStatus::kDispatched},
+      std::pair{CommandStatus::kPending, CommandStatus::kFailed},
+      std::pair{CommandStatus::kPending, CommandStatus::kTimeout},
+      std::pair{CommandStatus::kPending, CommandStatus::kDeliveryUncertain},
+      std::pair{CommandStatus::kDispatched, CommandStatus::kInProgress},
+      std::pair{CommandStatus::kDispatched, CommandStatus::kSucceeded},
+      std::pair{CommandStatus::kDispatched, CommandStatus::kFailed},
+      std::pair{CommandStatus::kDispatched, CommandStatus::kTimeout},
+      std::pair{CommandStatus::kDispatched,
+                CommandStatus::kDeliveryUncertain},
+      std::pair{CommandStatus::kInProgress, CommandStatus::kInProgress},
+      std::pair{CommandStatus::kInProgress, CommandStatus::kSucceeded},
+      std::pair{CommandStatus::kInProgress, CommandStatus::kFailed},
+      std::pair{CommandStatus::kInProgress, CommandStatus::kTimeout},
+      std::pair{CommandStatus::kInProgress,
+                CommandStatus::kDeliveryUncertain}};
+  const std::array all{CommandStatus::kPending,
+                       CommandStatus::kDispatched,
+                       CommandStatus::kInProgress,
+                       CommandStatus::kSucceeded,
+                       CommandStatus::kFailed,
+                       CommandStatus::kTimeout,
+                       CommandStatus::kDeliveryUncertain};
+  for (const auto from : all) {
+    for (const auto to : all) {
+      const bool expected = std::ranges::find(legal, std::pair{from, to}) !=
+                            legal.end();
+      CHECK(CanTransition(from, to) == expected);
+    }
+  }
 
   for (const auto terminal : {CommandStatus::kSucceeded, CommandStatus::kFailed,
-                              CommandStatus::kTimeout}) {
+                              CommandStatus::kTimeout,
+                              CommandStatus::kDeliveryUncertain}) {
     CHECK(cns::command::IsTerminal(terminal));
-    for (const auto desired : {CommandStatus::kPending, CommandStatus::kDispatched,
-                               CommandStatus::kSucceeded, CommandStatus::kFailed,
-                               CommandStatus::kTimeout}) {
+    for (const auto desired : all) {
       CHECK_FALSE(CanTransition(terminal, desired));
     }
   }
   CHECK_FALSE(cns::command::IsTerminal(CommandStatus::kPending));
   CHECK_FALSE(cns::command::IsTerminal(CommandStatus::kDispatched));
-  CHECK_FALSE(CanTransition(CommandStatus::kPending, CommandStatus::kSucceeded));
-  CHECK_FALSE(CanTransition(CommandStatus::kDispatched, CommandStatus::kPending));
-  CHECK_FALSE(CanTransition(CommandStatus::kPending, CommandStatus::kPending));
 }
 
 TEST_CASE("UUID格式函数固定版本变体大小写和分隔符") {
@@ -147,6 +169,47 @@ TEST_CASE("来源ACK覆盖进行中设备成功拒绝路由失败和超时") {
   CHECK(ack["business_status"].is_null());
   CHECK(ack["error"]["code"] == "target_not_found");
   CHECK_FALSE(ack.contains("target"));
+}
+
+TEST_CASE("飞控来源ACK使用命令类型和设备字段白名单") {
+  const cns::command::ResolvedTarget target{
+      "A1b2C3d4E5f6G7h8I9j0", "SEU", "DCDW-002"};
+  auto record = Record(CommandStatus::kInProgress);
+  record.command_type = CommandType::kControl;
+  record.device_ack = {{"status", "in_progress"},
+                       {"command", "takeoff"},
+                       {"mavlink_command", 31091},
+                       {"result", 5},
+                       {"result_code", "in_progress"},
+                       {"progress", 67},
+                       {"result_param2", 9},
+                       {"error_code", nullptr},
+                       {"message", "设备自由文本"},
+                       {"restart_required", true}};
+
+  auto ack = cns::command::BuildSourceAck(record, target, kAt);
+  CHECK(ack["command_type"] == "control");
+  CHECK(ack["status"] == "in_progress");
+  CHECK(ack["business_status"] == "in_progress");
+  CHECK(ack["device"] == nlohmann::json{{"command", "takeoff"},
+                                         {"mavlink_command", 31091},
+                                         {"result", 5},
+                                         {"result_code", "in_progress"},
+                                         {"progress", 67},
+                                         {"result_param2", 9},
+                                         {"error_code", nullptr}});
+  CHECK_FALSE(ack.dump().contains("设备自由文本"));
+  CHECK_FALSE(ack["device"].contains("restart_required"));
+
+  record.status = CommandStatus::kDeliveryUncertain;
+  record.device_ack = std::nullopt;
+  record.error_code = std::nullopt;
+  record.error_message = std::nullopt;
+  ack = cns::command::BuildSourceAck(record, target, kAt);
+  CHECK(ack["status"] == "delivery_uncertain");
+  CHECK(ack["error"]["code"] == "control_delivery_uncertain");
+  CHECK(ack["error"]["message"] ==
+        "服务恢复后无法确认飞控命令是否已经执行");
 }
 
 TEST_CASE("持久化前拒绝使用空命令号和可空请求号") {
