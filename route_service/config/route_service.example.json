@@ -32,6 +32,7 @@
   },
   "command": {
     "config_timeout_seconds": 15,
+    "control_timeout_seconds": 30,
     "terminal_retention_days": 30,
     "cleanup_interval_seconds": 3600,
     "cleanup_batch_size": 100,

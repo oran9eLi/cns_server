@@ -13,12 +13,16 @@ const char* StatusText(CommandStatus status) {
       return "pending";
     case CommandStatus::kDispatched:
       return "dispatched";
+    case CommandStatus::kInProgress:
+      return "in_progress";
     case CommandStatus::kSucceeded:
       return "succeeded";
     case CommandStatus::kFailed:
       return "failed";
     case CommandStatus::kTimeout:
       return "timeout";
+    case CommandStatus::kDeliveryUncertain:
+      return "delivery_uncertain";
   }
   return "";
 }
@@ -38,7 +42,8 @@ nlohmann::json BaseAck(nlohmann::json request_id, nlohmann::json command_id,
 
 bool IsTerminal(CommandStatus status) noexcept {
   return status == CommandStatus::kSucceeded || status == CommandStatus::kFailed ||
-         status == CommandStatus::kTimeout;
+         status == CommandStatus::kTimeout ||
+         status == CommandStatus::kDeliveryUncertain;
 }
 
 bool CanTransition(CommandStatus from, CommandStatus to) noexcept {

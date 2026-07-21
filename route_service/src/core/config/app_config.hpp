@@ -60,6 +60,7 @@ struct FixedSourceConfig {
 
 struct CommandConfig {
   std::chrono::seconds config_timeout{15};
+  std::chrono::seconds control_timeout{30};
   std::chrono::days terminal_retention{30};
   std::chrono::seconds cleanup_interval{3600};
   std::size_t cleanup_batch_size{100};

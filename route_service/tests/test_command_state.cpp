@@ -5,6 +5,7 @@
 
 #include <array>
 #include <chrono>
+#include <string_view>
 
 using namespace std::chrono_literals;
 
@@ -12,6 +13,7 @@ namespace {
 
 using cns::command::CommandRecord;
 using cns::command::CommandStatus;
+using cns::command::CommandType;
 
 const auto kAt = std::chrono::sys_days{std::chrono::year{2026}/7/20} + 18h +
                  30min + 123ms;
@@ -33,6 +35,19 @@ CommandRecord Record(CommandStatus status) {
 }
 
 }  // namespace
+
+TEST_CASE("命令类型使用稳定字符串往返并拒绝未知值") {
+  CHECK(cns::command::ToString(CommandType::kConfig) == "config");
+  CHECK(cns::command::ToString(CommandType::kControl) == "control");
+  CHECK(cns::command::ParseCommandType("config") == CommandType::kConfig);
+  CHECK(cns::command::ParseCommandType("control") == CommandType::kControl);
+  CHECK_FALSE(cns::command::ParseCommandType("unknown").has_value());
+}
+
+TEST_CASE("飞控进度是非终态而投递不确定是终态") {
+  CHECK_FALSE(cns::command::IsTerminal(CommandStatus::kInProgress));
+  CHECK(cns::command::IsTerminal(CommandStatus::kDeliveryUncertain));
+}
 
 TEST_CASE("配置命令状态只允许规定方向迁移") {
   using cns::command::CanTransition;

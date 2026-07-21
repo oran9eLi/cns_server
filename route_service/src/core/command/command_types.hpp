@@ -7,8 +7,10 @@
 #pragma once
 
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 
 #include <nlohmann/json.hpp>
@@ -16,7 +18,33 @@
 namespace cns::command {
 
 enum class SourceKind { kDevice, kHostApp, kControlCenter };
-enum class CommandStatus { kPending, kDispatched, kSucceeded, kFailed, kTimeout };
+enum class CommandType { kConfig, kControl };
+enum class CommandStatus {
+  kPending,
+  kDispatched,
+  kInProgress,
+  kSucceeded,
+  kFailed,
+  kTimeout,
+  kDeliveryUncertain
+};
+
+inline std::string_view ToString(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::kConfig:
+      return "config";
+    case CommandType::kControl:
+      return "control";
+  }
+  return {};
+}
+
+inline std::expected<CommandType, std::string> ParseCommandType(
+    std::string_view text) {
+  if (text == "config") return CommandType::kConfig;
+  if (text == "control") return CommandType::kControl;
+  return std::unexpected("未知命令类型");
+}
 
 struct DeviceLabelTarget {
   std::string dcdw_label;

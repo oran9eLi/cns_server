@@ -34,6 +34,7 @@ std::string ValidJson() {
   "device_state": {"telemetry_flush_interval_seconds": 5, "offline_timeout_seconds": 120},
   "command": {
     "config_timeout_seconds": 15,
+    "control_timeout_seconds": 30,
     "terminal_retention_days": 30,
     "cleanup_interval_seconds": 3600,
     "cleanup_batch_size": 100,
@@ -100,6 +101,7 @@ TEST_CASE("完整配置准确解析为强类型结构") {
   CHECK(result->device_state.telemetry_flush_interval == std::chrono::seconds{5});
   CHECK(result->device_state.offline_timeout == std::chrono::seconds{120});
   CHECK(result->command.config_timeout == std::chrono::seconds{15});
+  CHECK(result->command.control_timeout == std::chrono::seconds{30});
   CHECK(result->command.terminal_retention == std::chrono::days{30});
   CHECK(result->command.cleanup_interval == std::chrono::seconds{3600});
   CHECK(result->command.cleanup_batch_size == 100);
@@ -138,6 +140,8 @@ TEST_CASE("命令配置严格校验未知字段和数值边界") {
                                         std::string>>{
            {"config_timeout_seconds\": 15", "config_timeout_seconds\": 0",
             "config_timeout_seconds\": 301", "command.config_timeout_seconds"},
+           {"control_timeout_seconds\": 30", "control_timeout_seconds\": 0",
+            "control_timeout_seconds\": 301", "command.control_timeout_seconds"},
            {"terminal_retention_days\": 30", "terminal_retention_days\": 0",
             "terminal_retention_days\": 3651", "command.terminal_retention_days"},
            {"cleanup_interval_seconds\": 3600", "cleanup_interval_seconds\": 59",
@@ -151,6 +155,10 @@ TEST_CASE("命令配置严格校验未知字段和数值边界") {
   }
   check("cleanup_batch_size\": 100", "cleanup_batch_size\": true",
         "command.cleanup_batch_size");
+  check("control_timeout_seconds\": 30", "control_timeout_seconds\": true",
+        "command.control_timeout_seconds");
+  check("control_timeout_seconds\": 30", "control_timeout_seconds\": 1.5",
+        "command.control_timeout_seconds");
   check("max_inflight_commands\": 256",
         "max_inflight_commands\": 256, \"unknown\": 1", "command.unknown");
 }

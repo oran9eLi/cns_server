@@ -233,7 +233,8 @@ bool IsValidSourceId(std::string_view source_id) {
 
 std::expected<CommandConfig, std::string> ParseCommand(const Json& root) {
   constexpr std::array allowed{
-      "config_timeout_seconds"sv, "terminal_retention_days"sv,
+      "config_timeout_seconds"sv, "control_timeout_seconds"sv,
+      "terminal_retention_days"sv,
       "cleanup_interval_seconds"sv, "cleanup_batch_size"sv,
       "max_inflight_commands"sv, "fixed_sources"sv};
   const auto object = ReadObject(root, "command", "command", allowed);
@@ -242,6 +243,10 @@ std::expected<CommandConfig, std::string> ParseCommand(const Json& root) {
   const auto timeout = ReadInteger(**object, "config_timeout_seconds",
                                    "command.config_timeout_seconds", 1, 300);
   if (!timeout) return std::unexpected(timeout.error());
+  const auto control_timeout = ReadInteger(
+      **object, "control_timeout_seconds", "command.control_timeout_seconds", 1,
+      300);
+  if (!control_timeout) return std::unexpected(control_timeout.error());
   const auto retention = ReadInteger(**object, "terminal_retention_days",
                                      "command.terminal_retention_days", 1, 3650);
   if (!retention) return std::unexpected(retention.error());
@@ -298,6 +303,7 @@ std::expected<CommandConfig, std::string> ParseCommand(const Json& root) {
 
   return CommandConfig{
       std::chrono::seconds{static_cast<long>(*timeout)},
+      std::chrono::seconds{static_cast<long>(*control_timeout)},
       std::chrono::days{static_cast<long>(*retention)},
       std::chrono::seconds{static_cast<long>(*cleanup_interval)},
       static_cast<std::size_t>(*cleanup_batch),
