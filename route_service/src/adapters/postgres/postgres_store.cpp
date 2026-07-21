@@ -90,9 +90,12 @@ const char* CommandStatusText(command::CommandStatus status) {
   switch (status) {
     case command::CommandStatus::kPending: return "pending";
     case command::CommandStatus::kDispatched: return "dispatched";
+    case command::CommandStatus::kInProgress: return "in_progress";
     case command::CommandStatus::kSucceeded: return "succeeded";
     case command::CommandStatus::kFailed: return "failed";
     case command::CommandStatus::kTimeout: return "timeout";
+    case command::CommandStatus::kDeliveryUncertain:
+      return "delivery_uncertain";
   }
   return "";
 }
