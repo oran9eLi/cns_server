@@ -144,6 +144,20 @@ TEST_CASE("未登记禁用及不可用状态在入库前拒绝") {
         "database_unavailable");
 }
 
+TEST_CASE("飞控请求在入库前拒绝时仍从飞控ACK主题返回") {
+  Harness harness;
+  harness.PushControl(ControlRequest(), "unknown");
+  REQUIRE(harness.source_ack.size() == 1);
+  CHECK(harness.source_ack.back().first ==
+        "cns/sources/unknown/control/ack");
+  CHECK(harness.source_ack.back().second["command_type"] == "control");
+
+  harness.PushControl(ControlRequest(), "disabled");
+  CHECK(harness.source_ack.back().first ==
+        "cns/sources/disabled/control/ack");
+  CHECK(harness.source_ack.back().second["command_type"] == "control");
+}
+
 TEST_CASE("非法JSON和非法请求号不创建命令且不记录payload") {
   Harness harness;
   std::vector<std::string> diagnostics;
@@ -297,6 +311,9 @@ TEST_CASE("跨配置和飞控类型复用请求号属于幂等冲突") {
       .completed_at = std::nullopt};
   harness.Reply(std::optional<cns::command::CommandRecord>{existing});
   REQUIRE(harness.source_ack.size() == 1);
+  CHECK(harness.source_ack.back().first ==
+        "cns/sources/web-console/control/ack");
+  CHECK(harness.source_ack.back().second["command_type"] == "control");
   CHECK(harness.source_ack.back().second["error"]["code"] ==
         "idempotency_conflict");
   CHECK(harness.device_publish.empty());

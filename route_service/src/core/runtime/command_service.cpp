@@ -221,12 +221,13 @@ void CommandService::Handle(mqtt::InboundMessage message,
   const auto* source = sources_.Find(*source_id);
   if (source == nullptr) {
     Reject(*source_id, std::nullopt,
-           Error("source_not_registered", "命令来源未登记"), now);
+           Error("source_not_registered", "命令来源未登记"), now,
+           command_type);
     return;
   }
   if (!source->enabled) {
     Reject(*source_id, std::nullopt,
-           Error("source_disabled", "命令来源已禁用"), now);
+           Error("source_disabled", "命令来源已禁用"), now, command_type);
     return;
   }
   if (source->kind == command::SourceKind::kDevice) {
@@ -235,7 +236,8 @@ void CommandService::Handle(mqtt::InboundMessage message,
     if (source_device == nullptr ||
         source_device->status != device::Status::kOnline) {
       Reject(*source_id, std::nullopt,
-             Error("source_device_offline", "来源设备当前离线"), now);
+             Error("source_device_offline", "来源设备当前离线"), now,
+             command_type);
       return;
     }
   }
@@ -321,7 +323,8 @@ void CommandService::Handle(CommandDatabaseResult result,
                              command::IdempotencyResult::kConflict) {
         const auto request_id = RequestId(operation.context.parsed);
         Reject(operation.context.source_id, *request_id,
-               Error("idempotency_conflict", "同一请求号的内容不一致"), now);
+               Error("idempotency_conflict", "同一请求号的内容不一致"), now,
+               operation.context.command_type);
         return;
       }
       operation.context.record = existing;
@@ -399,7 +402,8 @@ void CommandService::Handle(CommandDatabaseResult result,
                                 operation.context.record->request_payload) ==
         command::IdempotencyResult::kConflict) {
       Reject(operation.context.source_id, operation.context.record->request_id,
-             Error("idempotency_conflict", "同一请求号的内容不一致"), now);
+             Error("idempotency_conflict", "同一请求号的内容不一致"), now,
+             operation.context.command_type);
       return;
     }
     operation.context.record = *record;
