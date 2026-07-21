@@ -23,6 +23,14 @@ std::string ReadMigration(const std::string& name) {
   return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
 }
 
+std::string ReadIntegrationScript(const std::string& name) {
+  const auto path = std::filesystem::path{CNS_ROUTE_SERVICE_SOURCE_DIR} /
+                    "tests" / "integration" / name;
+  std::ifstream input{path};
+  REQUIRE_MESSAGE(input.is_open(), "无法读取联调脚本：", path.string());
+  return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
 struct ScannedSql {
   std::string text;
   std::string code;
@@ -274,6 +282,31 @@ TEST_CASE("004 修正活动与终态索引且不修改业务数据") {
     CAPTURE(forbidden);
     CHECK(scanned.code.find(forbidden) == std::string::npos);
   }
+}
+
+TEST_CASE("里程碑四联调脚本限定依赖与清理边界") {
+  const auto script = ReadIntegrationScript("里程碑四飞控命令本机联调.sh");
+  CHECK(script.find("set -euo pipefail") != std::string::npos);
+  for (const auto* parameter : {"--config", "--migrations", "--broker-host",
+                                "--broker-port", "--binary", "--database-url",
+                                "--source-id", "--vendor-id", "--control-timeout",
+                                "--check-only"}) {
+    CAPTURE(parameter);
+    CHECK(script.find(parameter) != std::string::npos);
+  }
+  CHECK(script.find("request_prefix=\"m4-control-local-\"") != std::string::npos);
+  CHECK(script.find("request_id=\"${request_prefix}") != std::string::npos);
+  CHECK(script.find("trap cleanup EXIT") != std::string::npos);
+  CHECK(script.find("request_id LIKE :'request_prefix'") != std::string::npos);
+  CHECK(script.find("DELETE FROM commands WHERE source_id = :'source_id'") !=
+        std::string::npos);
+  CHECK(script.find("device_set_count_before_restart") != std::string::npos);
+  CHECK(script.find("device_set_count_after_restart") != std::string::npos);
+  for (const auto* forbidden : {"TRUNCATE", "DROP DATABASE", "systemctl stop", "pkill"}) {
+    CAPTURE(forbidden);
+    CHECK(script.find(forbidden) == std::string::npos);
+  }
+  CHECK(script.find("DELETE FROM commands;") == std::string::npos);
 }
 
 TEST_CASE("schools 字段和约束完整") {
