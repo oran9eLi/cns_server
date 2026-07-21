@@ -230,7 +230,7 @@ struct MqttClient::CallbackState {
       publish_handler.swap(retired_publish_handler);
       token_to_mid.clear();
       mid_to_token.clear();
-      source_ack_mids.clear();
+      untracked_completion_mids.clear();
       device_topic_namespace.clear();
       command_topic_namespace.clear();
     } catch (...) {
@@ -251,7 +251,7 @@ struct MqttClient::CallbackState {
   std::size_t publish_capacity = 0;
   std::unordered_map<std::uint64_t, int> token_to_mid;
   std::unordered_map<int, std::uint64_t> mid_to_token;
-  std::unordered_set<int> source_ack_mids;
+  std::unordered_set<int> untracked_completion_mids;
   std::string device_topic_namespace;
   std::string command_topic_namespace;
   std::size_t connection_generation = 0;
@@ -545,7 +545,7 @@ std::expected<void, std::string> MqttClient::ConfigureCommandPublishing(
     callback_state_->publish_capacity = capacity;
     callback_state_->token_to_mid.clear();
     callback_state_->mid_to_token.clear();
-    callback_state_->source_ack_mids.clear();
+    callback_state_->untracked_completion_mids.clear();
   }
   return {};
 }
@@ -599,6 +599,7 @@ std::expected<void, std::string> MqttClient::PublishSourceConfigAck(
   if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return std::unexpected("MQTT发布payload过大");
   }
+  std::lock_guard lock{callback_state_->mutex};
   int mid = 0;
   const int result = mosquitto_publish(
       client_, &mid, std::string{topic}.c_str(), static_cast<int>(payload.size()),
@@ -606,10 +607,7 @@ std::expected<void, std::string> MqttClient::PublishSourceConfigAck(
   if (result != MOSQ_ERR_SUCCESS) {
     return std::unexpected(MosquittoError("发布来源配置ACK", result));
   }
-  {
-    std::lock_guard lock{callback_state_->mutex};
-    callback_state_->source_ack_mids.insert(mid);
-  }
+  callback_state_->untracked_completion_mids.insert(mid);
   return {};
 }
 
@@ -619,12 +617,15 @@ std::expected<void, std::string> MqttClient::PublishStateEvent(
   if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return std::unexpected("MQTT发布payload过大");
   }
+  std::lock_guard lock{callback_state_->mutex};
+  int mid = 0;
   const int result = mosquitto_publish(
-      client_, nullptr, std::string{topic}.c_str(), static_cast<int>(payload.size()),
+      client_, &mid, std::string{topic}.c_str(), static_cast<int>(payload.size()),
       payload.data(), 0, false);
   if (result != MOSQ_ERR_SUCCESS) {
     return std::unexpected(MosquittoError("发布设备状态事件", result));
   }
+  callback_state_->untracked_completion_mids.insert(mid);
   return {};
 }
 
@@ -671,7 +672,7 @@ void MqttClient::HandleDisconnect(struct mosquitto*, void* context,
       }
       state.token_to_mid.clear();
       state.mid_to_token.clear();
-      state.source_ack_mids.clear();
+      state.untracked_completion_mids.clear();
     }
     if (handler) {
       for (auto& completion : completions) handler(std::move(completion));
@@ -693,7 +694,9 @@ void MqttClient::HandlePublish(struct mosquitto*, void* context,
       std::lock_guard lock{state.mutex};
       const auto found = state.mid_to_token.find(mid);
       if (found == state.mid_to_token.end()) {
-        if (state.source_ack_mids.erase(mid) == 0) unknown_mid = true;
+        if (state.untracked_completion_mids.erase(mid) == 0) {
+          unknown_mid = true;
+        }
       } else {
         token = found->second;
         state.token_to_mid.erase(*token);

@@ -144,6 +144,72 @@ TEST_CASE("配置下发与来源ACK均使用QoS2且不保留") {
   CHECK(err.str().find("未知或重复") == std::string::npos);
 }
 
+TEST_CASE("来源ACK和状态事件完成不误报未知MID") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger);
+
+  REQUIRE(client->PublishSourceConfigAck("cns/sources/source/config/ack", "{}")
+              .has_value());
+  REQUIRE(client->PublishStateEvent("cns/events/devices/id/state", "{}")
+              .has_value());
+  REQUIRE(injection.publish_callback != nullptr);
+  for (const auto& publication : injection.publications) {
+    injection.publish_callback(nullptr, injection.context,
+                               std::get<0>(publication));
+  }
+  CHECK(err.str().find("未知或重复") == std::string::npos);
+}
+
+TEST_CASE("未知MID仍记录错误") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger);
+
+  REQUIRE(injection.publish_callback != nullptr);
+  injection.publish_callback(nullptr, injection.context, 999);
+  CHECK(err.str().find("未知或重复") != std::string::npos);
+}
+
+TEST_CASE("重复MID仍记录错误") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger);
+
+  REQUIRE(client->PublishSourceConfigAck("cns/sources/source/config/ack", "{}")
+              .has_value());
+  REQUIRE(injection.publish_callback != nullptr);
+  const int mid = std::get<0>(injection.publications.front());
+  injection.publish_callback(nullptr, injection.context, mid);
+  injection.publish_callback(nullptr, injection.context, mid);
+  CHECK(err.str().find("未知或重复") != std::string::npos);
+}
+
+TEST_CASE("断线清理无需业务通知的在途MID") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger);
+
+  REQUIRE(client->PublishStateEvent("cns/events/devices/id/state", "{}")
+              .has_value());
+  const int mid = std::get<0>(injection.publications.front());
+  injection.disconnect_callback(nullptr, injection.context, MOSQ_ERR_CONN_LOST);
+  injection.publish_callback(nullptr, injection.context, mid);
+  CHECK(err.str().find("未知或重复") != std::string::npos);
+}
+
 TEST_CASE("MID完成只回调一次并释放token容量") {
   std::ostringstream out;
   std::ostringstream err;
