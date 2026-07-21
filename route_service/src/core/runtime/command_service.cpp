@@ -68,7 +68,7 @@ void AppendConfigField(std::ostringstream& output, bool& first,
                        std::string_view name,
                        const std::optional<std::uint32_t>& value) {
   if (!value) return;
-  if (!first) output << ' ';
+  if (!first) output << "，";
   output << name << '=' << *value;
   first = false;
 }

@@ -139,11 +139,12 @@ TEST_CASE("配置命令只在发布完成且dispatched落库后记录路由日�
   Harness h;
   auto pending = h.InsertRequest(
       "cns/sources/web-console/config/request",
-      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})");
+      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000,"telemetry_publish_interval_ms":2000}})");
   h.PublishAndConfirm(std::move(pending));
   REQUIRE(h.information.size() == 1);
   CHECK(h.information.front() ==
         "收到来自 web-console 的配置命令 telemetry_publish_interval_ms=2000，"
+        "heartbeat_interval_ms=5000，"
         "已路由至设备 SEU / DCDW-001（A1b2C3d4E5f6G7h8I9j0）");
 }
 
