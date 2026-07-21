@@ -91,7 +91,7 @@ V1 阶段核心职责：
 - 里程碑二“设备注册与最新状态”已完成代码实现，包含 registration、telemetry、设备在线状态、最新值合并写库、数据库降级恢复和规范化状态事件；书面设计见 `docs/superpowers/specs/2026-07-20-里程碑二设备注册与最新状态设计.md`。
 - 干净构建、本机单元测试和一次性临时 PostgreSQL/Mosquitto 真实链路已通过，结果记录在 `docs/change_history/2026-07-20-里程碑二设备注册与最新状态验收.md`。树莓派和现场服务器验证仍延期，不得由本机结果推定通过。
 - 里程碑三“固定来源与配置命令”已完成代码实现、本机自动化测试、独立 PostgreSQL/Mosquitto 真实链路和真实 RPi 配置命令验证，验收记录见 `docs/change_history/2026-07-20-里程碑三固定来源与配置命令验收.md`。现场服务器验证仍待补充。
-- 里程碑四“飞控命令路由”设计已确认，书面规格见 `docs/superpowers/specs/2026-07-21-里程碑四飞控命令路由设计.md`；飞控命令不复用配置命令的自动重发策略，实施计划确认前不修改代码。
+- 里程碑四“飞控命令路由”已完成代码和本机自动化验收：支持四种飞控请求、QoS 2 非 retained 下发、进度与终态 ACK、30 秒可刷新期限，以及重启后收敛为 `delivery_uncertain` 且不重发。独立真实依赖联调与真实 RPi 飞控验证仍待安全条件和明确授权，实际证据见 `docs/change_history/2026-07-21-里程碑四飞控命令路由验收.md`。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。
 
@@ -176,7 +176,7 @@ sudo -u "$service_user" route_service/build-fresh/route_service \
   --migrations "$(pwd)/route_service/migrations"
 ```
 
-当前能力包括里程碑一工程骨架、里程碑二设备注册与最新状态，以及里程碑三固定来源、配置命令寻址/权限/幂等、QoS 2 下发、设备 ACK、超时、恢复与终态清理。飞控命令尚未实现。
+当前能力包括工程与数据库骨架、设备注册和最新状态，以及配置与飞控命令共用的固定来源、寻址、权限、幂等、QoS 2 下发、设备 ACK、超时和终态清理。配置命令重启后可按原 `command_id` 恢复；飞控命令重启后不重发，非终态统一收敛为 `delivery_uncertain`。
 
 里程碑三非破坏性联调入口：
 
