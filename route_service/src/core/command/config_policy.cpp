@@ -3,11 +3,10 @@
  * @brief 生成设备配置命令并严格校验设备 ACK 的关联字段。
  */
 #include "core/command/config_policy.hpp"
+#include "core/command/command_validation.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
-#include <ranges>
 
 namespace cns::command {
 namespace {
@@ -16,30 +15,6 @@ using Json = nlohmann::json;
 
 ProtocolError Error(std::string code, std::string message) {
   return {std::move(code), std::move(message)};
-}
-
-bool IsUuidV4Shape(std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto character = static_cast<unsigned char>(value[index]);
-    if (std::isdigit(character) == 0 && (character < 'a' || character > 'f')) {
-      return false;
-    }
-  }
-  return value[14] == '4' && (value[19] == '8' || value[19] == '9' ||
-                              value[19] == 'a' || value[19] == 'b');
-}
-
-bool IsValidErrorCode(std::string_view value) {
-  return !value.empty() && value.size() <= 64 &&
-         std::ranges::all_of(value, [](unsigned char character) {
-           return (character >= 'a' && character <= 'z') ||
-                  (character >= '0' && character <= '9') || character == '_';
-         });
 }
 
 }  // namespace
@@ -76,7 +51,8 @@ std::expected<DeviceConfigAck, ProtocolError> ParseDeviceConfigAck(
     return std::unexpected(Error("invalid_json", "设备配置ACK必须是JSON对象"));
   }
   if (!root.contains("command_id") || !root.at("command_id").is_string() ||
-      !IsUuidV4Shape(root.at("command_id").get_ref<const std::string&>())) {
+      !validation::IsUuidV4Shape(
+          root.at("command_id").get_ref<const std::string&>())) {
     return std::unexpected(Error("invalid_command_id", "command_id缺失或非法"));
   }
   if (!root.contains("status") || !root.at("status").is_string()) {
@@ -93,7 +69,7 @@ std::expected<DeviceConfigAck, ProtocolError> ParseDeviceConfigAck(
   std::optional<std::string> error_code;
   if (status == "rejected") {
     if (!root.contains("error_code") || !root.at("error_code").is_string() ||
-        !IsValidErrorCode(
+        !validation::IsValidErrorCode(
             root.at("error_code").get_ref<const std::string&>())) {
       return std::unexpected(Error("invalid_ack", "rejected ACK缺少合法error_code"));
     }

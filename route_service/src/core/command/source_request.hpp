@@ -16,7 +16,13 @@ std::expected<std::string, ProtocolError> ParseSourceRequestTopic(
     std::string_view topic_namespace, std::string_view topic);
 std::expected<std::string, ProtocolError> ParseDeviceConfigAckTopic(
     std::string_view topic_namespace, std::string_view topic);
+std::expected<std::string, ProtocolError> ParseSourceControlRequestTopic(
+    std::string_view topic_namespace, std::string_view topic);
+std::expected<std::string, ProtocolError> ParseDeviceControlAckTopic(
+    std::string_view topic_namespace, std::string_view topic);
 SourceRequestParseResult ParseSourceConfigRequest(std::string_view payload,
                                                   SourceKind kind);
+ParsedSourceRequest ParseSourceControlRequest(std::string_view payload,
+                                              SourceKind kind);
 
 }  // namespace cns::command

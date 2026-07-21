@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <expected>
 #include <optional>
 #include <string>
@@ -78,6 +79,35 @@ struct SourceConfigRequest {
   nlohmann::json comparison_payload;
 };
 
+enum class ControlCommand { kSetMotorPwm, kEmergencyStop, kTakeoff, kLand };
+
+struct ControlParameters {
+  std::optional<std::array<std::uint16_t, 4>> pwm_us;
+
+  bool operator==(const ControlParameters&) const = default;
+};
+
+struct SourceControlRequest {
+  std::string request_id;
+  RequestTarget target;
+  ControlCommand command;
+  ControlParameters parameters;
+  nlohmann::json comparison_payload;
+};
+
+struct DeviceControlAck {
+  std::string command_id;
+  ControlCommand command;
+  std::string business_status;
+  std::optional<std::uint16_t> mavlink_command;
+  std::optional<std::uint8_t> result;
+  std::optional<std::string> result_code;
+  std::optional<std::uint8_t> progress;
+  std::optional<std::int32_t> result_param2;
+  std::optional<std::string> error_code;
+  nlohmann::json raw;
+};
+
 struct DeviceConfigAck {
   std::string command_id;
   std::string business_status;
@@ -97,6 +127,8 @@ struct RejectedSourceRequest {
   ProtocolError error;
 };
 
+using ParsedSourceRequest =
+    std::variant<SourceConfigRequest, SourceControlRequest, RejectedSourceRequest>;
 using SourceRequestParseResult =
     std::variant<SourceConfigRequest, RejectedSourceRequest>;
 

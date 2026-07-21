@@ -55,6 +55,16 @@ TEST_CASE("命令topic必须准确匹配约定层级和标识") {
                   .has_value());
 }
 
+TEST_CASE("配置topic解析器拒绝飞控topic") {
+  CHECK_FALSE(cns::command::ParseSourceRequestTopic(
+                  "cns_rpi", "cns_rpi/sources/web-console/control/request")
+                  .has_value());
+  CHECK_FALSE(cns::command::ParseDeviceConfigAckTopic(
+                  "cns_rpi", std::string{"cns_rpi/"} + kVendor +
+                                 "/control/ack")
+                  .has_value());
+}
+
 TEST_CASE("设备来源只接受同校角色号目标") {
   const auto request = ParseValid(
       R"({"schema_version":1,"request_id":"req-001","target":{"dcdw_label":"DCDW-002"},"parameters":{"heartbeat_interval_ms":2000}})",
