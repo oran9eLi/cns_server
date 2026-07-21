@@ -2,6 +2,8 @@
 #include "core/runtime/command_service.hpp"
 
 #include <algorithm>
+#include <array>
+#include <sstream>
 #include <utility>
 #include <thread>
 #include <ranges>
@@ -54,6 +56,77 @@ std::optional<nlohmann::json> ComparisonPayload(
   }, parsed);
 }
 
+[[maybe_unused]] std::string DescribeTarget(
+    const command::ResolvedTarget& target) {
+  const auto school = target.school_name.empty() ? "未知学校" : target.school_name;
+  const auto label = target.dcdw_label && !target.dcdw_label->empty()
+                         ? *target.dcdw_label
+                         : "未登记编号";
+  return school + " / " + label + "（" + target.vendor_id + "）";
+}
+
+void AppendConfigField(std::ostringstream& output, bool& first,
+                       std::string_view name,
+                       const std::optional<std::uint32_t>& value) {
+  if (!value) return;
+  if (!first) output << ' ';
+  output << name << '=' << *value;
+  first = false;
+}
+
+std::string DescribeConfigCommand(const command::ConfigParameters& parameters) {
+  std::ostringstream output;
+  bool first = true;
+  AppendConfigField(output, first, "telemetry_publish_interval_ms",
+                    parameters.telemetry_publish_interval_ms);
+  AppendConfigField(output, first, "heartbeat_interval_ms",
+                    parameters.heartbeat_interval_ms);
+  AppendConfigField(output, first, "mqtt_reconnect_delay_s",
+                    parameters.mqtt_reconnect_delay_s);
+  AppendConfigField(output, first, "mqtt_reconnect_delay_max_s",
+                    parameters.mqtt_reconnect_delay_max_s);
+  return output.str();
+}
+
+std::string_view ControlCommandName(command::ControlCommand command) noexcept {
+  switch (command) {
+    case command::ControlCommand::kSetMotorPwm:
+      return "set_motor_pwm";
+    case command::ControlCommand::kEmergencyStop:
+      return "emergency_stop";
+    case command::ControlCommand::kTakeoff:
+      return "takeoff";
+    case command::ControlCommand::kLand:
+      return "land";
+  }
+  return "unknown";
+}
+
+std::string DescribeControlCommand(const command::SourceControlRequest& request) {
+  std::ostringstream output;
+  output << ControlCommandName(request.command);
+  if (request.command == command::ControlCommand::kSetMotorPwm &&
+      request.parameters.pwm_us) {
+    const auto& pwm = *request.parameters.pwm_us;
+    output << " pwm_us=[" << pwm[0] << ',' << pwm[1] << ',' << pwm[2] << ','
+           << pwm[3] << ']';
+  }
+  return output.str();
+}
+
+[[maybe_unused]] std::string DescribeCommand(
+    const command::SourceRequestParseResult& parsed) {
+  if (const auto* request =
+          std::get_if<command::SourceConfigRequest>(&parsed)) {
+    return "配置命令 " + DescribeConfigCommand(request->parameters);
+  }
+  if (const auto* request =
+          std::get_if<command::SourceControlRequest>(&parsed)) {
+    return "飞控命令 " + DescribeControlCommand(*request);
+  }
+  return "未知命令";
+}
+
 }  // namespace
 
 CommandService::CommandService(
@@ -63,13 +136,15 @@ CommandService::CommandService(
     std::size_t max_inflight_commands, std::string topic_namespace,
     std::chrono::seconds config_timeout, std::chrono::seconds control_timeout,
     std::chrono::days terminal_retention,
-    std::chrono::seconds cleanup_interval, std::size_t cleanup_batch_size)
+    std::chrono::seconds cleanup_interval, std::size_t cleanup_batch_size,
+    InformationSink information)
     : sources_(sources),
       devices_(devices),
       database_submitter_(std::move(database_submitter)),
       device_publisher_(std::move(device_publisher)),
       source_ack_publisher_(std::move(source_ack_publisher)),
       diagnostic_(std::move(diagnostic)),
+      information_(std::move(information)),
       topic_namespace_(std::move(topic_namespace)),
       max_inflight_commands_(max_inflight_commands),
       config_timeout_(config_timeout),
@@ -774,6 +849,13 @@ void CommandService::PublishAck(const RequestContext& context,
 void CommandService::Diagnose(std::string message) noexcept {
   try {
     if (diagnostic_) diagnostic_(std::move(message));
+  } catch (...) {
+  }
+}
+
+void CommandService::Inform(std::string message) noexcept {
+  try {
+    if (information_) information_(std::move(message));
   } catch (...) {
   }
 }

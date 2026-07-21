@@ -28,6 +28,7 @@ class CommandService {
       std::uint64_t, std::string, std::string)>;
   using SourceAckPublisher = std::function<void(std::string, std::string)>;
   using DiagnosticSink = std::function<void(std::string)>;
+  using InformationSink = std::function<void(std::string)>;
 
   CommandService(command::SourceCatalog& sources,
                  device::DeviceRegistry& devices,
@@ -41,7 +42,8 @@ class CommandService {
                  std::chrono::seconds control_timeout = std::chrono::seconds{30},
                  std::chrono::days terminal_retention = std::chrono::days{30},
                  std::chrono::seconds cleanup_interval = std::chrono::seconds{3600},
-                 std::size_t cleanup_batch_size = 100);
+                 std::size_t cleanup_batch_size = 100,
+                 InformationSink information = {});
 
   bool TryPush(mqtt::InboundMessage message);
   void PushDatabaseResult(CommandDatabaseResult result);
@@ -106,6 +108,7 @@ class CommandService {
               command::CommandType command_type = command::CommandType::kConfig);
   void PublishAck(const RequestContext& context, command::TimePoint now);
   void Diagnose(std::string message) noexcept;
+  void Inform(std::string message) noexcept;
   std::optional<command::ResolvedTarget> TargetFor(
       const command::CommandRecord& record) const;
 
@@ -115,6 +118,7 @@ class CommandService {
   DevicePublisher device_publisher_;
   SourceAckPublisher source_ack_publisher_;
   DiagnosticSink diagnostic_;
+  InformationSink information_;
   std::string topic_namespace_;
   std::size_t max_inflight_commands_;
   std::uint64_t next_operation_id_ = 1;
