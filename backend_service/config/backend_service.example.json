@@ -6,5 +6,10 @@
   },
   "logging": {
     "level": "info"
+  },
+  "database": {
+    "connection_string": "postgres://cns_backend:change-me@127.0.0.1:5432/cns_server",
+    "max_connections": 10,
+    "ssl": false
   }
 }

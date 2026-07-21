@@ -16,6 +16,7 @@
     "dev:backend": "npm run build -w @cns/backend-protocol && npm run dev -w backend_service",
     "dev:simulator": "npm run build -w @cns/backend-protocol && npm run dev -w frontend/dev-simulator",
     "dev:frontend": "npm run build -w @cns/backend-protocol && concurrently -n simulator,frontend -c cyan,blue \"npm run dev -w frontend/dev-simulator\" \"npm run dev -w frontend\"",
+    "dev:integration": "npm run build -w @cns/backend-protocol && concurrently -k -n backend,frontend -c green,blue \"npm run dev -w backend_service\" \"npm run dev:backend -w frontend\"",
     "dev": "npm run dev:backend"
   },
   "devDependencies": {

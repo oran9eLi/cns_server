@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "vite --host 127.0.0.1 --port 5173",
+    "dev:backend": "vite --mode backend --host 127.0.0.1 --port 5173",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "test": "npm run typecheck"
   },

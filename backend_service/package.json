@@ -13,11 +13,14 @@
   },
   "dependencies": {
     "@cns/backend-protocol": "file:./protocol",
+    "@fastify/websocket": "^10.0.1",
     "fastify": "^4.28.1",
+    "pg": "^8.22.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.14.12",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",
     "vitest": "^2.0.5"
