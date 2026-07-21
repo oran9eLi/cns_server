@@ -374,7 +374,7 @@ void CommandService::Handle(CommandDatabaseResult result,
     if (result.value.error().kind == DatabaseError::Kind::kUnavailable) {
       database_available_ = false;
     }
-    Diagnose("命令数据库操作失败");
+    Diagnose("命令数据库操作失败：" + result.value.error().message);
     return;
   }
 
@@ -776,6 +776,11 @@ void CommandService::Handle(mqtt::PublishCompletion completion,
   auto context = std::move(found->second.context);
   publications_.erase(found);
   auto record = *context.record;
+  const auto previous_status = record.status;
+  if (completion.result &&
+      previous_status == command::CommandStatus::kDispatched) {
+    return;
+  }
   const auto desired = completion.result ? command::CommandStatus::kDispatched
       : context.command_type == command::CommandType::kControl
           ? command::CommandStatus::kDeliveryUncertain
@@ -804,8 +809,7 @@ void CommandService::Handle(mqtt::PublishCompletion completion,
   context.record = record;
   SubmitTransitionOrDefer(
       std::move(context),
-      TransitionCommandTask{record.command_id, command::CommandStatus::kPending,
-                            desired, update});
+      TransitionCommandTask{record.command_id, previous_status, desired, update});
 }
 
 void CommandService::SubmitTransitionOrDefer(RequestContext context,

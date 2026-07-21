@@ -56,6 +56,7 @@ struct Harness {
   std::deque<std::pair<std::uint64_t, cns::runtime::CommandDatabaseTask>> db;
   std::vector<std::tuple<std::uint64_t, std::string, std::string>> publishes;
   std::vector<nlohmann::json> acks;
+  std::vector<std::string> diagnostics;
   std::vector<std::string> information;
   bool accept_database = true;
   bool throw_information = false;
@@ -72,7 +73,8 @@ struct Harness {
         publishes.emplace_back(token, std::move(topic), std::move(payload));
         return std::expected<void, std::string>{};
       }, [this](auto, auto payload) { acks.push_back(nlohmann::json::parse(payload)); },
-      {}, 256, "cns", 15s, 30s, std::chrono::days{30}, 1s, 7,
+      [this](std::string message) { diagnostics.push_back(std::move(message)); },
+      256, "cns", 15s, 30s, std::chrono::days{30}, 1s, 7,
       [this](std::string message) {
         if (throw_information) throw std::runtime_error{"信息日志回调异常"};
         information.push_back(std::move(message));
@@ -359,6 +361,60 @@ TEST_CASE("恢复pending命令沿用原command_id重发") {
   h.service.SetMqttAvailable(true);
   h.service.ProcessReady(kNow + 2s);
   CHECK(h.publishes.size() == 2);
+}
+
+TEST_CASE("恢复重发dispatched配置命令成功后不重复转换状态") {
+  Harness h;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.publishes.size() == 1);
+
+  h.service.PushPublishCompletion({std::get<0>(h.publishes.front()), {}});
+  h.service.ProcessReady(kNow);
+
+  CHECK(h.db.empty());
+  CHECK(h.service.ActiveCommandCount() == 1);
+}
+
+TEST_CASE("恢复重发期间设备ACK先完成时忽略迟到的发布完成通知") {
+  Harness h;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.publishes.size() == 1);
+
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":true})", kNow}));
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  auto done = Active(cns::command::CommandStatus::kSucceeded);
+  done.device_ack = std::get<cns::runtime::TransitionCommandTask>(
+      h.db.front().second).update.device_ack;
+  done.completed_at = kNow;
+  h.Reply(done);
+  REQUIRE(h.service.ActiveCommandCount() == 0);
+
+  h.service.PushPublishCompletion({std::get<0>(h.publishes.front()), {}});
+  h.service.ProcessReady(kNow);
+
+  CHECK(h.db.empty());
+}
+
+TEST_CASE("命令数据库失败日志保留具体错误原因") {
+  Harness h;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow}));
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  const auto operation_id = h.db.front().first;
+  h.db.pop_front();
+  h.service.PushDatabaseResult({operation_id, std::unexpected(
+      cns::runtime::DatabaseError{cns::runtime::DatabaseError::Kind::kPermanent,
+                                  "状态迁移非法"})});
+  h.service.ProcessReady(kNow);
+
+  REQUIRE(h.diagnostics.size() == 1);
+  CHECK(h.diagnostics.front() == "命令数据库操作失败：状态迁移非法");
 }
 
 TEST_CASE("终态清理按周期单实例限量提交") {
