@@ -69,6 +69,7 @@ class CommandService {
     command::TimePoint deadline;
     std::optional<command::ResolvedTarget> target;
     std::optional<command::CommandRecord> record;
+    std::optional<std::string> device_ack_business_status;
   };
 
   enum class OperationKind { kFind, kInsert, kTransition, kCleanup };

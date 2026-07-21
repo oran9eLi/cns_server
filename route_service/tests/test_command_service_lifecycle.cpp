@@ -254,6 +254,39 @@ TEST_CASE("非法和无法关联ACK及幂等回放不产生成功日志") {
       R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow});
   h.service.ProcessReady(kNow);
   CHECK(h.information.empty());
+
+  REQUIRE(h.service.TryPush({"cns/sources/web-console/config/request",
+      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})", kNow}));
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  const auto find_id = h.db.front().first;
+  h.db.pop_front();
+  h.service.PushDatabaseResult(
+      {find_id, cns::runtime::CommandDatabaseValue{
+                    std::optional<cns::command::CommandRecord>{
+                        Active(cns::command::CommandStatus::kDispatched)}}});
+  h.service.ProcessReady(kNow);
+  CHECK(h.information.empty());
+}
+
+TEST_CASE("MQTT发布失败不产生已路由日志") {
+  Harness h;
+  auto pending = h.InsertRequest(
+      "cns/sources/web-console/config/request",
+      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})");
+  h.Reply(pending);
+  REQUIRE(h.publishes.size() == 1);
+  h.service.PushPublishCompletion(
+      {std::get<0>(h.publishes.front()), std::unexpected("发布失败")});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  auto failed = pending;
+  failed.status = cns::command::CommandStatus::kFailed;
+  failed.error_code = "mqtt_publish_failed";
+  failed.error_message = "设备配置命令发布失败";
+  failed.completed_at = kNow;
+  h.Reply(failed);
+  CHECK(h.information.empty());
 }
 
 TEST_CASE("信息日志回调异常不影响ACK回程和状态机结束") {

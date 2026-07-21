@@ -306,7 +306,10 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         }, config.command.max_inflight_commands, config.mqtt.topic_namespace,
         config.command.config_timeout, config.command.control_timeout,
         config.command.terminal_retention,
-        config.command.cleanup_interval, config.command.cleanup_batch_size);
+        config.command.cleanup_interval, config.command.cleanup_batch_size,
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Inform(std::move(message));
+        });
     command_service->LoadActive(std::move(active_commands));
     command_service->SetMqttAvailable(false);
     command_ingress = std::make_shared<runtime::CommandIngress>(

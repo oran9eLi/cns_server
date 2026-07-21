@@ -56,8 +56,7 @@ std::optional<nlohmann::json> ComparisonPayload(
   }, parsed);
 }
 
-[[maybe_unused]] std::string DescribeTarget(
-    const command::ResolvedTarget& target) {
+std::string DescribeTarget(const command::ResolvedTarget& target) {
   const auto school = target.school_name.empty() ? "未知学校" : target.school_name;
   const auto label = target.dcdw_label && !target.dcdw_label->empty()
                          ? *target.dcdw_label
@@ -114,7 +113,7 @@ std::string DescribeControlCommand(const command::SourceControlRequest& request)
   return output.str();
 }
 
-[[maybe_unused]] std::string DescribeCommand(
+std::string DescribeCommand(
     const command::SourceRequestParseResult& parsed) {
   if (const auto* request =
           std::get_if<command::SourceConfigRequest>(&parsed)) {
@@ -242,7 +241,8 @@ void CommandService::LoadActive(std::vector<command::CommandRecord> commands) {
                           ? record.updated_at : record.created_at;
     RequestContext context{record.source_id, source, std::move(parsed),
                            record.command_type, record.created_at,
-                           base + timeout, TargetFor(record), record};
+                           base + timeout, TargetFor(record), record,
+                           std::nullopt};
     active_commands_.insert_or_assign(record.command_id, std::move(context));
   }
 }
@@ -354,7 +354,8 @@ void CommandService::Handle(mqtt::InboundMessage message,
                              (command_type == command::CommandType::kControl
                                   ? control_timeout_ : config_timeout_),
                          .target = std::nullopt,
-                         .record = std::nullopt};
+                         .record = std::nullopt,
+                         .device_ack_business_status = std::nullopt};
   if (!Submit(OperationKind::kFind, std::move(context),
               FindCommandTask{*source_id, *request_id})) {
     Reject(*source_id, *request_id,
@@ -506,10 +507,42 @@ void CommandService::Handle(CommandDatabaseResult result,
                               desired.status, std::move(update)});
     return;
   }
+  const auto transition_requested_status = operation.context.record
+      ? std::optional{operation.context.record->status}
+      : std::nullopt;
   operation.context.record = *record;
   if (operation.kind == OperationKind::kTransition ||
       command::IsTerminal(record->status)) {
+    const bool dispatched_persisted =
+        operation.kind == OperationKind::kTransition &&
+        transition_requested_status ==
+            command::CommandStatus::kDispatched &&
+        record->status == command::CommandStatus::kDispatched;
+    const auto device_ack_business_status =
+        operation.context.device_ack_business_status;
+    const bool device_ack_persisted = device_ack_business_status &&
+        ((record->status == command::CommandStatus::kInProgress &&
+          *device_ack_business_status == "in_progress") ||
+         (record->status == command::CommandStatus::kFailed &&
+          *device_ack_business_status == "rejected") ||
+         (record->status == command::CommandStatus::kTimeout &&
+          *device_ack_business_status == "timeout") ||
+         (record->status == command::CommandStatus::kSucceeded &&
+          *device_ack_business_status != "in_progress" &&
+          *device_ack_business_status != "rejected" &&
+          *device_ack_business_status != "timeout"));
     PublishAck(operation.context, now);
+    if (dispatched_persisted && operation.context.target) {
+      Inform("收到来自 " + operation.context.source_id + " 的" +
+             DescribeCommand(operation.context.parsed) + "，已路由至设备 " +
+             DescribeTarget(*operation.context.target));
+    }
+    if (device_ack_persisted && operation.context.target) {
+      Inform("收到来自设备 " + DescribeTarget(*operation.context.target) +
+             "的应答 " + *device_ack_business_status + "，已转发至 " +
+             operation.context.source_id);
+      operation.context.device_ack_business_status.reset();
+    }
     if (command::IsTerminal(record->status)) {
       active_commands_.erase(record->command_id);
       recovery_started_.erase(record->command_id);
@@ -667,6 +700,7 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
     record.error_message = "设备报告飞控命令超时";
   }
   context.record = record;
+  context.device_ack_business_status = business_status;
   command::CommandUpdate update{record.error_code, record.error_message,
                                 record.device_ack, std::nullopt,
                                 record.completed_at, now};
@@ -690,7 +724,8 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
               std::nullopt, std::nullopt, {"cleanup", "终态清理"}},
           .command_type = command::CommandType::kConfig,
           .received_at = now, .deadline = now,
-          .target = std::nullopt, .record = std::nullopt};
+          .target = std::nullopt, .record = std::nullopt,
+          .device_ack_business_status = std::nullopt};
       static_cast<void>(Submit(OperationKind::kCleanup, std::move(context),
           CleanupCommandsTask{now - terminal_retention_, cleanup_batch_size_}));
     }
