@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <deque>
+#include <stdexcept>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -54,10 +56,14 @@ struct Harness {
   std::deque<std::pair<std::uint64_t, cns::runtime::CommandDatabaseTask>> db;
   std::vector<std::tuple<std::uint64_t, std::string, std::string>> publishes;
   std::vector<nlohmann::json> acks;
+  std::vector<std::string> information;
   bool accept_database = true;
+  bool throw_information = false;
   cns::runtime::CommandService service;
 
-  Harness() : service(sources, devices,
+  explicit Harness(std::string school_name = "SEU",
+                   std::optional<std::string> dcdw_label = "DCDW-001")
+      : service(sources, devices,
       [this](auto id, auto task) {
         if (!accept_database) return false;
         db.emplace_back(id, std::move(task)); return true;
@@ -66,8 +72,13 @@ struct Harness {
         publishes.emplace_back(token, std::move(topic), std::move(payload));
         return std::expected<void, std::string>{};
       }, [this](auto, auto payload) { acks.push_back(nlohmann::json::parse(payload)); },
-      {}, 256, "cns", 15s, 30s, std::chrono::days{30}, 1s, 7) {
-    REQUIRE(devices.Load({{kVendor, 1, "SEU", "DCDW-001", "v1",
+      {}, 256, "cns", 15s, 30s, std::chrono::days{30}, 1s, 7,
+      [this](std::string message) {
+        if (throw_information) throw std::runtime_error{"信息日志回调异常"};
+        information.push_back(std::move(message));
+      }) {
+    REQUIRE(devices.Load({{kVendor, 1, std::move(school_name),
+                           std::move(dcdw_label), "v1",
                            cns::device::Status::kOnline, kNow, std::nullopt,
                            std::nullopt, 1}}));
     REQUIRE(sources.Load({{"web-console", cns::command::SourceKind::kHostApp,
@@ -89,7 +100,176 @@ struct Harness {
       db.pop_front();
     }
   }
+
+  cns::command::CommandRecord InsertRequest(std::string topic,
+                                             std::string payload) {
+    REQUIRE(service.TryPush({std::move(topic), std::move(payload), kNow}));
+    service.ProcessReady(kNow);
+    REQUIRE(db.size() == 1);
+    const auto find_id = db.front().first;
+    db.pop_front();
+    service.PushDatabaseResult(
+        {find_id, cns::runtime::CommandDatabaseValue{
+                      std::optional<cns::command::CommandRecord>{}}});
+    service.ProcessReady(kNow);
+    REQUIRE(db.size() == 1);
+    return std::get<cns::runtime::InsertCommandTask>(db.front().second).command;
+  }
+
+  cns::command::CommandRecord PublishAndConfirm(
+      cns::command::CommandRecord pending) {
+    Reply(pending);
+    REQUIRE(publishes.size() == 1);
+    CHECK(information.empty());
+    service.PushPublishCompletion({std::get<0>(publishes.front()), {}});
+    service.ProcessReady(kNow);
+    REQUIRE(db.size() == 1);
+    CHECK(information.empty());
+    auto dispatched = pending;
+    dispatched.status = cns::command::CommandStatus::kDispatched;
+    dispatched.dispatched_at = kNow;
+    dispatched.updated_at = kNow;
+    Reply(dispatched);
+    return dispatched;
+  }
 };
+}
+
+TEST_CASE("配置命令只在发布完成且dispatched落库后记录路由日志") {
+  Harness h;
+  auto pending = h.InsertRequest(
+      "cns/sources/web-console/config/request",
+      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})");
+  h.PublishAndConfirm(std::move(pending));
+  REQUIRE(h.information.size() == 1);
+  CHECK(h.information.front() ==
+        "收到来自 web-console 的配置命令 telemetry_publish_interval_ms=2000，"
+        "已路由至设备 SEU / DCDW-001（A1b2C3d4E5f6G7h8I9j0）");
+}
+
+TEST_CASE("飞控路由日志展示具体命令和电机PWM") {
+  SUBCASE("takeoff") {
+    Harness h;
+    auto pending = h.InsertRequest(
+        "cns/sources/web-console/control/request",
+        R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"takeoff","parameters":{}})");
+    h.PublishAndConfirm(std::move(pending));
+    REQUIRE(h.information.size() == 1);
+    CHECK(h.information.front() ==
+          "收到来自 web-console 的飞控命令 takeoff，已路由至设备 SEU / "
+          "DCDW-001（A1b2C3d4E5f6G7h8I9j0）");
+  }
+  SUBCASE("set_motor_pwm") {
+    Harness h;
+    auto pending = h.InsertRequest(
+        "cns/sources/web-console/control/request",
+        R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1000,1100,1200,1300]}})");
+    h.PublishAndConfirm(std::move(pending));
+    REQUIRE(h.information.size() == 1);
+    CHECK(h.information.front() ==
+          "收到来自 web-console 的飞控命令 set_motor_pwm "
+          "pwm_us=[1000,1100,1200,1300]，已路由至设备 SEU / "
+          "DCDW-001（A1b2C3d4E5f6G7h8I9j0）");
+  }
+}
+
+TEST_CASE("设备ACK只在状态落库并提交来源ACK后记录回程日志") {
+  SUBCASE("配置applied") {
+    Harness h;
+    h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+    REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+        R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow}));
+    h.service.ProcessReady(kNow);
+    CHECK(h.information.empty());
+    auto task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+    auto done = Active(cns::command::CommandStatus::kSucceeded);
+    done.device_ack = task.update.device_ack;
+    done.completed_at = kNow;
+    h.Reply(done);
+    REQUIRE(h.acks.size() == 1);
+    REQUIRE(h.information.size() == 1);
+    CHECK(h.information.front() ==
+          "收到来自设备 SEU / DCDW-001（A1b2C3d4E5f6G7h8I9j0）的应答 "
+          "applied，已转发至 web-console");
+  }
+  SUBCASE("飞控in_progress和accepted") {
+    Harness h;
+    h.service.LoadActive({ActiveControl(cns::command::CommandStatus::kDispatched)});
+    REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/control/ack",
+        R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","command":"takeoff","status":"in_progress","mavlink_command":31091,"result_code":"pending"})", kNow}));
+    h.service.ProcessReady(kNow);
+    auto progress_task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+    auto progress = ActiveControl(cns::command::CommandStatus::kInProgress);
+    progress.device_ack = progress_task.update.device_ack;
+    h.Reply(progress);
+    REQUIRE(h.information.size() == 1);
+    CHECK(h.information.back().find("的应答 in_progress，已转发至 web-console") !=
+          std::string::npos);
+    REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/control/ack",
+        R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","command":"takeoff","status":"accepted","mavlink_command":31091,"result":0,"result_code":"accepted"})", kNow}));
+    h.service.ProcessReady(kNow);
+    auto accepted_task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+    auto done = ActiveControl(cns::command::CommandStatus::kSucceeded);
+    done.device_ack = accepted_task.update.device_ack;
+    done.completed_at = kNow;
+    h.Reply(done);
+    REQUIRE(h.information.size() == 2);
+    CHECK(h.information.back().find("的应答 accepted，已转发至 web-console") !=
+          std::string::npos);
+  }
+}
+
+TEST_CASE("成功业务日志不泄露协议标识和topic") {
+  Harness h;
+  auto pending = h.InsertRequest(
+      "cns/sources/web-console/config/request",
+      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000}})");
+  h.PublishAndConfirm(std::move(pending));
+  REQUIRE(h.information.size() == 1);
+  CHECK(h.information.front().find("req-1") == std::string::npos);
+  CHECK(h.information.front().find("550e8400") == std::string::npos);
+  CHECK(h.information.front().find("command_id") == std::string::npos);
+  CHECK(h.information.front().find('{') == std::string::npos);
+  CHECK(h.information.front().find("/config/") == std::string::npos);
+  CHECK(h.information.front().find("/control/") == std::string::npos);
+}
+
+TEST_CASE("设备显示对学校和内部编号缺失使用降级文本") {
+  Harness h{"", std::nullopt};
+  auto pending = h.InsertRequest(
+      "cns/sources/web-console/config/request",
+      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000}})");
+  h.PublishAndConfirm(std::move(pending));
+  REQUIRE(h.information.size() == 1);
+  CHECK(h.information.front().find(
+            "未知学校 / 未登记编号（A1b2C3d4E5f6G7h8I9j0）") !=
+        std::string::npos);
+}
+
+TEST_CASE("非法和无法关联ACK及幂等回放不产生成功日志") {
+  Harness h;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack", "{}", kNow});
+  h.service.TryPush({"cns/Z1b2C3d4E5f6G7h8I9j0/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow});
+  h.service.ProcessReady(kNow);
+  CHECK(h.information.empty());
+}
+
+TEST_CASE("信息日志回调异常不影响ACK回程和状态机结束") {
+  Harness h;
+  h.throw_information = true;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow}));
+  h.service.ProcessReady(kNow);
+  auto task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+  auto done = Active(cns::command::CommandStatus::kSucceeded);
+  done.device_ack = task.update.device_ack;
+  done.completed_at = kNow;
+  CHECK_NOTHROW(h.Reply(done));
+  CHECK(h.acks.size() == 1);
+  CHECK(h.service.ActiveCommandCount() == 0);
 }
 
 TEST_CASE("设备成功ACK只在终态持久化后回程") {
