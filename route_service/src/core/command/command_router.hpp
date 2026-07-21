@@ -37,5 +37,8 @@ struct ResolvedTarget {
 std::expected<ResolvedTarget, ProtocolError> ResolveConfigTarget(
     const CommandSource& source, const SourceConfigRequest& request,
     const device::DeviceRegistry& devices);
+std::expected<ResolvedTarget, ProtocolError> ResolveControlTarget(
+    const CommandSource& source, const SourceControlRequest& request,
+    const device::DeviceRegistry& devices);
 
 }  // namespace cns::command

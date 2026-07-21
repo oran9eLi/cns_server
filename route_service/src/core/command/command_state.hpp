@@ -53,7 +53,7 @@ nlohmann::json BuildSourceAck(const CommandRecord& command,
                               TimePoint occurred_at);
 nlohmann::json BuildPrePersistenceRejection(
     std::optional<std::string_view> request_id, ProtocolError error,
-    TimePoint occurred_at);
+    TimePoint occurred_at, CommandType command_type = CommandType::kConfig);
 
 std::string FormatUuidV4(std::array<std::uint8_t, 16> random_bytes);
 std::string GenerateUuidV4();

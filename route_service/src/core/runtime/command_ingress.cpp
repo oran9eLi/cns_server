@@ -14,7 +14,9 @@ CommandIngress::CommandIngress(CommandService& service,
 
 bool CommandIngress::TryPush(mqtt::InboundMessage message) const {
   if (!command::ParseSourceRequestTopic(topic_namespace_, message.topic) &&
-      !command::ParseDeviceConfigAckTopic(topic_namespace_, message.topic)) {
+      !command::ParseDeviceConfigAckTopic(topic_namespace_, message.topic) &&
+      !command::ParseSourceControlRequestTopic(topic_namespace_, message.topic) &&
+      !command::ParseDeviceControlAckTopic(topic_namespace_, message.topic)) {
     return false;
   }
   auto* service = service_.load(std::memory_order_acquire);

@@ -129,7 +129,6 @@ struct RejectedSourceRequest {
 
 using ParsedSourceRequest =
     std::variant<SourceConfigRequest, SourceControlRequest, RejectedSourceRequest>;
-using SourceRequestParseResult =
-    std::variant<SourceConfigRequest, RejectedSourceRequest>;
+using SourceRequestParseResult = ParsedSourceRequest;
 
 }  // namespace cns::command

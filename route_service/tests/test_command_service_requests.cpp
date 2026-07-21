@@ -43,6 +43,16 @@ std::string Request(std::string request_id = "req-1",
       .dump();
 }
 
+std::string ControlRequest(std::string request_id = "control-1",
+                           std::string command = "takeoff") {
+  return nlohmann::json{{"schema_version", 1},
+                        {"request_id", std::move(request_id)},
+                        {"target", {{"vendor_id", kVendor}}},
+                        {"command", std::move(command)},
+                        {"parameters", nlohmann::json::object()}}
+      .dump();
+}
+
 struct Harness {
   cns::device::DeviceRegistry devices;
   cns::command::SourceCatalog sources;
@@ -83,6 +93,15 @@ struct Harness {
             std::string source = "web-console") {
     REQUIRE(service.TryPush({.topic = "cns/sources/" + source +
                                       "/config/request",
+                             .payload = std::move(payload),
+                             .received_at = kNow}));
+    service.ProcessReady(kNow);
+  }
+
+  void PushControl(std::string payload = ControlRequest(),
+                   std::string source = "web-console") {
+    REQUIRE(service.TryPush({.topic = "cns/sources/" + source +
+                                      "/control/request",
                              .payload = std::move(payload),
                              .received_at = kNow}));
     service.ProcessReady(kNow);
@@ -244,6 +263,45 @@ TEST_CASE("相同请求重放当前ACK而内容冲突不再次发布") {
   CHECK(harness.device_publish.empty());
 }
 
+TEST_CASE("飞控请求保存类型并通过飞控主题发布") {
+  Harness harness;
+  harness.PushControl();
+  REQUIRE(std::holds_alternative<cns::runtime::FindCommandTask>(
+      harness.db.front().second));
+  harness.Reply(std::optional<cns::command::CommandRecord>{});
+  auto pending = std::get<cns::runtime::InsertCommandTask>(harness.db.front().second)
+                     .command;
+  CHECK(pending.command_type == cns::command::CommandType::kControl);
+  harness.Reply(pending);
+  REQUIRE(harness.device_publish.size() == 1);
+  CHECK(std::get<1>(harness.device_publish.front()) ==
+        std::string{"cns/"} + kVendor + "/control/set");
+  const auto payload = nlohmann::json::parse(
+      std::get<2>(harness.device_publish.front()));
+  CHECK(payload["command"] == "takeoff");
+  CHECK(payload["command_id"] == pending.command_id);
+}
+
+TEST_CASE("跨配置和飞控类型复用请求号属于幂等冲突") {
+  Harness harness;
+  harness.PushControl(ControlRequest("req-1"));
+  auto existing = cns::command::CommandRecord{
+      .command_id = "550e8400-e29b-41d4-a716-446655440000",
+      .source_id = "web-console", .request_id = "req-1",
+      .target_vendor_id = kVendor,
+      .request_payload = nlohmann::json::parse(Request("req-1")),
+      .status = cns::command::CommandStatus::kDispatched,
+      .error_code = std::nullopt, .error_message = std::nullopt,
+      .device_ack = std::nullopt, .created_at = kNow,
+      .dispatched_at = kNow, .updated_at = kNow,
+      .completed_at = std::nullopt};
+  harness.Reply(std::optional<cns::command::CommandRecord>{existing});
+  REQUIRE(harness.source_ack.size() == 1);
+  CHECK(harness.source_ack.back().second["error"]["code"] ==
+        "idempotency_conflict");
+  CHECK(harness.device_publish.empty());
+}
+
 TEST_CASE("在途上限拒绝第二个请求且不提交数据库") {
   Harness harness(1);
   harness.Push(Request("req-1"));
@@ -282,6 +340,8 @@ TEST_CASE("命令入口只分派命令topic且拒绝诊断按三十秒限频") {
   CHECK_FALSE(ingress.TryPush({.topic = "cns/device/telemetry",
                                .payload = "{}",
                                .received_at = kNow}));
+  CHECK(ingress.TryPush({.topic = "cns/sources/web-console/control/request",
+                         .payload = ControlRequest(), .received_at = kNow}));
   harness.service.Close();
   CHECK_FALSE(ingress.TryPush({.topic = "cns/sources/web-console/config/request",
                                .payload = Request(),

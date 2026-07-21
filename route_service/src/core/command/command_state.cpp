@@ -127,10 +127,10 @@ nlohmann::json BuildSourceAck(const CommandRecord& command,
 
 nlohmann::json BuildPrePersistenceRejection(
     std::optional<std::string_view> request_id, ProtocolError error,
-    TimePoint occurred_at) {
+    TimePoint occurred_at, CommandType command_type) {
   auto ack = BaseAck(request_id ? nlohmann::json(*request_id)
                                 : nlohmann::json(nullptr),
-                     nullptr, CommandType::kConfig, CommandStatus::kFailed,
+                     nullptr, command_type, CommandStatus::kFailed,
                      occurred_at);
   ack["error"] = {{"code", std::move(error.code)},
                   {"message", std::move(error.message)}};

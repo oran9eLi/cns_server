@@ -7,6 +7,7 @@
 #include <ranges>
 
 #include "core/command/config_policy.hpp"
+#include "core/command/control_policy.hpp"
 
 namespace cns::runtime {
 namespace {
@@ -16,15 +17,41 @@ command::ProtocolError Error(std::string code, std::string message) {
 }
 
 std::string SourceAckTopic(std::string_view topic_namespace,
-                           std::string_view source_id) {
+                           std::string_view source_id,
+                           command::CommandType type) {
   return std::string{topic_namespace} + "/sources/" + std::string{source_id} +
-         "/config/ack";
+         (type == command::CommandType::kControl ? "/control/ack" : "/config/ack");
 }
 
 std::string DeviceSetTopic(std::string_view topic_namespace,
-                           std::string_view vendor_id) {
+                           std::string_view vendor_id,
+                           command::CommandType type) {
   return std::string{topic_namespace} + "/" + std::string{vendor_id} +
-         "/config/set";
+         (type == command::CommandType::kControl ? "/control/set" : "/config/set");
+}
+
+std::optional<std::string> RequestId(
+    const command::SourceRequestParseResult& parsed) {
+  return std::visit([](const auto& value) -> std::optional<std::string> {
+    if constexpr (std::is_same_v<std::decay_t<decltype(value)>,
+                                 command::RejectedSourceRequest>) {
+      return value.request_id;
+    } else {
+      return value.request_id;
+    }
+  }, parsed);
+}
+
+std::optional<nlohmann::json> ComparisonPayload(
+    const command::SourceRequestParseResult& parsed) {
+  return std::visit([](const auto& value) -> std::optional<nlohmann::json> {
+    if constexpr (std::is_same_v<std::decay_t<decltype(value)>,
+                                 command::RejectedSourceRequest>) {
+      return value.comparison_payload;
+    } else {
+      return std::optional<nlohmann::json>{value.comparison_payload};
+    }
+  }, parsed);
 }
 
 }  // namespace
@@ -34,7 +61,8 @@ CommandService::CommandService(
     DatabaseSubmitter database_submitter, DevicePublisher device_publisher,
     SourceAckPublisher source_ack_publisher, DiagnosticSink diagnostic,
     std::size_t max_inflight_commands, std::string topic_namespace,
-    std::chrono::seconds config_timeout, std::chrono::days terminal_retention,
+    std::chrono::seconds config_timeout, std::chrono::seconds control_timeout,
+    std::chrono::days terminal_retention,
     std::chrono::seconds cleanup_interval, std::size_t cleanup_batch_size)
     : sources_(sources),
       devices_(devices),
@@ -45,6 +73,7 @@ CommandService::CommandService(
       topic_namespace_(std::move(topic_namespace)),
       max_inflight_commands_(max_inflight_commands),
       config_timeout_(config_timeout),
+      control_timeout_(control_timeout),
       terminal_retention_(terminal_retention),
       cleanup_interval_(cleanup_interval),
       cleanup_batch_size_(cleanup_batch_size) {}
@@ -129,10 +158,16 @@ void CommandService::LoadActive(std::vector<command::CommandRecord> commands) {
   for (auto& record : commands) {
     const auto* source = sources_.Find(record.source_id);
     if (source == nullptr || command::IsTerminal(record.status)) continue;
-    auto parsed = command::ParseSourceConfigRequest(record.request_payload.dump(),
-                                                     source->kind);
+    auto parsed = record.command_type == command::CommandType::kControl
+        ? command::ParseSourceControlRequest(record.request_payload.dump(), source->kind)
+        : command::ParseSourceConfigRequest(record.request_payload.dump(), source->kind);
+    const auto timeout = record.command_type == command::CommandType::kControl
+                             ? control_timeout_ : config_timeout_;
+    const auto base = record.status == command::CommandStatus::kInProgress
+                          ? record.updated_at : record.created_at;
     RequestContext context{record.source_id, source, std::move(parsed),
-                           record.created_at, TargetFor(record), record};
+                           record.command_type, record.created_at,
+                           base + timeout, TargetFor(record), record};
     active_commands_.insert_or_assign(record.command_id, std::move(context));
   }
 }
@@ -168,11 +203,20 @@ void CommandService::Handle(mqtt::InboundMessage message,
                             command::TimePoint now) {
   if (const auto vendor =
           command::ParseDeviceConfigAckTopic(topic_namespace_, message.topic)) {
-    HandleDeviceAck(*vendor, message.payload, now);
+    HandleDeviceAck(*vendor, message.payload, command::CommandType::kConfig, now);
     return;
   }
-  const auto source_id =
-      command::ParseSourceRequestTopic(topic_namespace_, message.topic);
+  if (const auto vendor =
+          command::ParseDeviceControlAckTopic(topic_namespace_, message.topic)) {
+    HandleDeviceAck(*vendor, message.payload, command::CommandType::kControl, now);
+    return;
+  }
+  auto command_type = command::CommandType::kConfig;
+  auto source_id = command::ParseSourceRequestTopic(topic_namespace_, message.topic);
+  if (!source_id) {
+    source_id = command::ParseSourceControlRequestTopic(topic_namespace_, message.topic);
+    command_type = command::CommandType::kControl;
+  }
   if (!source_id) return;
   const auto* source = sources_.Find(*source_id);
   if (source == nullptr) {
@@ -195,42 +239,49 @@ void CommandService::Handle(mqtt::InboundMessage message,
       return;
     }
   }
-  const auto parsed =
-      command::ParseSourceConfigRequest(message.payload, source->kind);
-  const auto* accepted = std::get_if<command::SourceConfigRequest>(&parsed);
+  const auto parsed = command_type == command::CommandType::kControl
+      ? command::ParseSourceControlRequest(message.payload, source->kind)
+      : command::ParseSourceConfigRequest(message.payload, source->kind);
+  const auto* config = std::get_if<command::SourceConfigRequest>(&parsed);
+  const auto* control = std::get_if<command::SourceControlRequest>(&parsed);
   const auto* rejected = std::get_if<command::RejectedSourceRequest>(&parsed);
-  const auto request_id = accepted ? std::optional<std::string>{accepted->request_id}
-                                   : rejected->request_id;
+  const auto request_id = config ? std::optional<std::string>{config->request_id}
+      : control ? std::optional<std::string>{control->request_id}
+                : rejected->request_id;
   if (!request_id) {
-    Reject(*source_id, std::nullopt, rejected->error, now);
+    Reject(*source_id, std::nullopt, rejected->error, now, command_type);
     return;
   }
   if (!mqtt_available_) {
     Reject(*source_id, *request_id,
-           Error("mqtt_unavailable", "MQTT当前不可用"), now);
+           Error("mqtt_unavailable", "MQTT当前不可用"), now, command_type);
     return;
   }
   if (!database_available_) {
     Reject(*source_id, *request_id,
-           Error("database_unavailable", "数据库当前不可用"), now);
+           Error("database_unavailable", "数据库当前不可用"), now, command_type);
     return;
   }
   if (active_commands_.size() + operations_.size() + publications_.size() >=
       max_inflight_commands_) {
     Reject(*source_id, *request_id, Error("server_busy", "服务器命令容量已满"),
-           now);
+           now, command_type);
     return;
   }
   RequestContext context{.source_id = *source_id,
                          .source = source,
                          .parsed = parsed,
+                         .command_type = command_type,
                          .received_at = message.received_at,
+                         .deadline = message.received_at +
+                             (command_type == command::CommandType::kControl
+                                  ? control_timeout_ : config_timeout_),
                          .target = std::nullopt,
                          .record = std::nullopt};
   if (!Submit(OperationKind::kFind, std::move(context),
               FindCommandTask{*source_id, *request_id})) {
     Reject(*source_id, *request_id,
-           Error("database_unavailable", "数据库当前不可用"), now);
+           Error("database_unavailable", "数据库当前不可用"), now, command_type);
   }
 }
 
@@ -263,30 +314,12 @@ void CommandService::Handle(CommandDatabaseResult result,
       Diagnose("命令查询返回类型异常");
       return;
     }
-    const auto comparison = std::visit(
-        [](const auto& parsed) -> std::optional<nlohmann::json> {
-          if constexpr (std::is_same_v<std::decay_t<decltype(parsed)>,
-                                       command::SourceConfigRequest>) {
-            return std::optional<nlohmann::json>{parsed.comparison_payload};
-          } else {
-            return parsed.comparison_payload;
-          }
-        },
-        operation.context.parsed);
+    const auto comparison = ComparisonPayload(operation.context.parsed);
     if (*existing_value) {
       const auto& existing = **existing_value;
       if (!comparison || command::CompareRequest(existing, *comparison) ==
                              command::IdempotencyResult::kConflict) {
-        const auto request_id = std::visit(
-            [](const auto& parsed) -> std::optional<std::string> {
-              if constexpr (std::is_same_v<std::decay_t<decltype(parsed)>,
-                                           command::SourceConfigRequest>) {
-                return parsed.request_id;
-              } else {
-                return parsed.request_id;
-              }
-            },
-            operation.context.parsed);
+        const auto request_id = RequestId(operation.context.parsed);
         Reject(operation.context.source_id, *request_id,
                Error("idempotency_conflict", "同一请求号的内容不一致"), now);
         return;
@@ -299,17 +332,9 @@ void CommandService::Handle(CommandDatabaseResult result,
 
     command::CommandRecord record{
         .command_id = command::GenerateUuidV4(),
+        .command_type = operation.context.command_type,
         .source_id = operation.context.source_id,
-        .request_id = std::visit(
-            [](const auto& parsed) {
-              if constexpr (std::is_same_v<std::decay_t<decltype(parsed)>,
-                                           command::SourceConfigRequest>) {
-                return parsed.request_id;
-              } else {
-                return *parsed.request_id;
-              }
-            },
-            operation.context.parsed),
+        .request_id = *RequestId(operation.context.parsed),
         .target_vendor_id = std::nullopt,
         .request_payload = *comparison,
         .status = command::CommandStatus::kPending,
@@ -327,10 +352,18 @@ void CommandService::Handle(CommandDatabaseResult result,
       record.error_message = rejected->error.message;
       record.completed_at = operation.context.received_at;
     } else {
-      const auto& request =
-          std::get<command::SourceConfigRequest>(operation.context.parsed);
-      const auto target = command::ResolveConfigTarget(
-          *operation.context.source, request, devices_);
+      std::expected<command::ResolvedTarget, command::ProtocolError> target =
+          std::unexpected(Error("invalid_request", "命令请求类型非法"));
+      if (const auto* request = std::get_if<command::SourceConfigRequest>(
+              &operation.context.parsed)) {
+        target = command::ResolveConfigTarget(*operation.context.source,
+                                              *request, devices_);
+      } else if (const auto* request =
+                     std::get_if<command::SourceControlRequest>(
+                         &operation.context.parsed)) {
+        target = command::ResolveControlTarget(*operation.context.source,
+                                               *request, devices_);
+      }
       if (!target) {
         record.status = command::CommandStatus::kFailed;
         record.error_code = target.error().code;
@@ -410,6 +443,7 @@ void CommandService::Handle(CommandDatabaseResult result,
           auto pending_ack = std::move(early->second);
           early_device_acks_.erase(early);
           HandleDeviceAck(pending_ack.vendor_id, pending_ack.payload,
+                          operation.context.command_type,
                           pending_ack.received_at);
         }
       }
@@ -423,22 +457,34 @@ void CommandService::Handle(CommandDatabaseResult result,
 void CommandService::PublishRecord(RequestContext context,
                                    command::TimePoint now) {
   if (!context.record || !context.record->target_vendor_id || !mqtt_available_) return;
-  const auto* request = std::get_if<command::SourceConfigRequest>(&context.parsed);
-  if (request == nullptr) return;
+  nlohmann::json payload;
+  if (const auto* request =
+          std::get_if<command::SourceConfigRequest>(&context.parsed)) {
+    payload = command::BuildDeviceConfigSet(context.record->command_id,
+                                            request->parameters);
+  } else if (const auto* request =
+                 std::get_if<command::SourceControlRequest>(&context.parsed)) {
+    payload = command::BuildDeviceControlSet(context.record->command_id,
+                                             request->command,
+                                             request->parameters);
+  } else {
+    return;
+  }
   const auto previous_status = context.record->status;
   recovery_started_.insert(context.record->command_id);
   const auto token = next_publish_token_++;
   publications_.emplace(token, PublishedCommand{context});
-  const auto payload =
-      command::BuildDeviceConfigSet(context.record->command_id, request->parameters).dump();
   const auto published = device_publisher_(
-      token, DeviceSetTopic(topic_namespace_, *context.record->target_vendor_id), payload);
+      token, DeviceSetTopic(topic_namespace_, *context.record->target_vendor_id,
+                            context.command_type), payload.dump());
   if (!published) {
     publications_.erase(token);
     auto failed = *context.record;
     failed.status = command::CommandStatus::kFailed;
     failed.error_code = "mqtt_publish_failed";
-    failed.error_message = "设备配置命令发布失败";
+    failed.error_message = context.command_type == command::CommandType::kControl
+                               ? "设备飞控命令发布失败"
+                               : "设备配置命令发布失败";
     failed.updated_at = now;
     failed.completed_at = now;
     context.record = failed;
@@ -458,44 +504,93 @@ void CommandService::PublishRecord(RequestContext context,
 
 void CommandService::HandleDeviceAck(std::string_view vendor_id,
                                      std::string_view payload,
+                                     command::CommandType command_type,
                                      command::TimePoint now) {
-  const auto parsed = command::ParseDeviceConfigAck(payload);
-  if (!parsed) { Diagnose("设备配置ACK格式非法"); return; }
-  const auto found = active_commands_.find(parsed->command_id);
+  std::string command_id;
+  std::string business_status;
+  nlohmann::json raw;
+  std::optional<command::ControlCommand> control_command;
+  if (command_type == command::CommandType::kControl) {
+    const auto parsed = command::ParseDeviceControlAck(payload);
+    if (!parsed) { Diagnose("设备飞控ACK格式非法"); return; }
+    command_id = parsed->command_id;
+    business_status = parsed->business_status;
+    raw = parsed->raw;
+    control_command = parsed->command;
+  } else {
+    const auto parsed = command::ParseDeviceConfigAck(payload);
+    if (!parsed) { Diagnose("设备配置ACK格式非法"); return; }
+    command_id = parsed->command_id;
+    business_status = parsed->business_status;
+    raw = parsed->raw;
+  }
+  const auto found = active_commands_.find(command_id);
   if (found == active_commands_.end() || !found->second.record ||
-      found->second.record->target_vendor_id != vendor_id) {
-    Diagnose("设备配置ACK无法关联活动命令");
+      found->second.record->target_vendor_id != vendor_id ||
+      found->second.command_type != command_type) {
+    Diagnose("设备命令ACK无法关联活动命令");
     return;
   }
   auto context = found->second;
+  if (control_command) {
+    const auto* request = std::get_if<command::SourceControlRequest>(&context.parsed);
+    if (request == nullptr || request->command != *control_command) {
+      Diagnose("设备飞控ACK的command与活动命令不匹配");
+      return;
+    }
+  }
   const auto current = context.record->status;
   if (current == command::CommandStatus::kPending) {
-    const auto early = early_device_acks_.find(parsed->command_id);
+    const auto early = early_device_acks_.find(command_id);
     if (early == early_device_acks_.end()) {
       early_device_acks_.emplace(
-          parsed->command_id,
+          command_id,
           EarlyDeviceAck{std::string{vendor_id}, std::string{payload}, now});
     } else if (early->second.payload != payload) {
-      Diagnose("设备配置ACK在发布确认前发生冲突");
+      const auto old_control = command_type == command::CommandType::kControl
+          ? command::ParseDeviceControlAck(early->second.payload) : std::unexpected(
+              command::ProtocolError{"not_control", "不是飞控命令"});
+      const bool incoming_terminal = business_status != "in_progress";
+      const bool old_terminal = old_control &&
+          old_control->business_status != "in_progress";
+      if (!old_terminal || !incoming_terminal) {
+        if (incoming_terminal || !old_terminal) {
+          early->second = EarlyDeviceAck{std::string{vendor_id},
+                                         std::string{payload}, now};
+        }
+      } else {
+        Diagnose("设备飞控ACK在发布确认前发生冲突");
+      }
     }
     return;
   }
-  if (current != command::CommandStatus::kDispatched) return;
-  const auto desired = parsed->business_status == "rejected"
-                           ? command::CommandStatus::kFailed
-                           : command::CommandStatus::kSucceeded;
+  if (current != command::CommandStatus::kDispatched &&
+      current != command::CommandStatus::kInProgress) return;
+  command::CommandStatus desired = command::CommandStatus::kSucceeded;
+  if (business_status == "in_progress") desired = command::CommandStatus::kInProgress;
+  if (business_status == "rejected") desired = command::CommandStatus::kFailed;
+  if (business_status == "timeout") desired = command::CommandStatus::kTimeout;
   auto record = *context.record;
   record.status = desired;
-  record.device_ack = parsed->raw;
+  record.device_ack = raw;
   record.updated_at = now;
-  record.completed_at = now;
+  record.completed_at = command::IsTerminal(desired)
+                            ? std::optional<command::TimePoint>{now} : std::nullopt;
+  if (desired == command::CommandStatus::kInProgress) {
+    context.deadline = now + control_timeout_;
+  }
   if (desired == command::CommandStatus::kFailed) {
     record.error_code = "device_rejected";
-    record.error_message = "设备拒绝配置命令";
+    record.error_message = command_type == command::CommandType::kControl
+                               ? "设备拒绝飞控命令" : "设备拒绝配置命令";
+  } else if (desired == command::CommandStatus::kTimeout) {
+    record.error_code = "device_timeout";
+    record.error_message = "设备报告飞控命令超时";
   }
   context.record = record;
   command::CommandUpdate update{record.error_code, record.error_message,
-                                record.device_ack, std::nullopt, now, now};
+                                record.device_ack, std::nullopt,
+                                record.completed_at, now};
   SubmitTransitionOrDefer(
       std::move(context),
       TransitionCommandTask{record.command_id, current, desired, update});
@@ -514,7 +609,9 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
           .source_id = {}, .source = nullptr,
           .parsed = command::RejectedSourceRequest{
               std::nullopt, std::nullopt, {"cleanup", "终态清理"}},
-          .received_at = now, .target = std::nullopt, .record = std::nullopt};
+          .command_type = command::CommandType::kConfig,
+          .received_at = now, .deadline = now,
+          .target = std::nullopt, .record = std::nullopt};
       static_cast<void>(Submit(OperationKind::kCleanup, std::move(context),
           CleanupCommandsTask{now - terminal_retention_, cleanup_batch_size_}));
     }
@@ -528,12 +625,14 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
     if (found == active_commands_.end() || !found->second.record) continue;
     auto context = found->second;
     const auto record = *context.record;
-    if (now >= record.created_at + config_timeout_) {
+    if (now >= context.deadline) {
       if (recovery_started_.insert(id).second) {
         auto timed_out = record;
         timed_out.status = command::CommandStatus::kTimeout;
-        timed_out.error_code = "command_timeout";
-        timed_out.error_message = "设备配置命令超时";
+        timed_out.error_code = context.command_type == command::CommandType::kControl
+                                   ? "control_timeout" : "command_timeout";
+        timed_out.error_message = context.command_type == command::CommandType::kControl
+                                      ? "设备飞控命令超时" : "设备配置命令超时";
         timed_out.updated_at = now;
         timed_out.completed_at = now;
         context.record = timed_out;
@@ -546,7 +645,8 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
       }
       continue;
     }
-    if (!mqtt_available_ || recovery_started_.contains(id) ||
+    if (context.command_type == command::CommandType::kControl ||
+        !mqtt_available_ || recovery_started_.contains(id) ||
         !record.target_vendor_id) continue;
     const auto* target = devices_.Find(*record.target_vendor_id);
     if (target == nullptr || target->status != device::Status::kOnline) continue;
@@ -563,7 +663,9 @@ void CommandService::Handle(mqtt::PublishCompletion completion,
   publications_.erase(found);
   auto record = *context.record;
   const auto desired = completion.result ? command::CommandStatus::kDispatched
-                                         : command::CommandStatus::kFailed;
+      : context.command_type == command::CommandType::kControl
+          ? command::CommandStatus::kDeliveryUncertain
+          : command::CommandStatus::kFailed;
   record.status = desired;
   record.updated_at = now;
   command::CommandUpdate update{.error_code = std::nullopt,
@@ -576,8 +678,10 @@ void CommandService::Handle(mqtt::PublishCompletion completion,
     record.dispatched_at = now;
     update.dispatched_at = now;
   } else {
-    record.error_code = "mqtt_publish_failed";
-    record.error_message = "设备配置命令发布失败";
+    record.error_code = context.command_type == command::CommandType::kControl
+                            ? "control_delivery_uncertain" : "mqtt_publish_failed";
+    record.error_message = context.command_type == command::CommandType::kControl
+        ? "飞控命令发布后无法确认是否送达" : "设备配置命令发布失败";
     record.completed_at = now;
     update.error_code = record.error_code;
     update.error_message = record.error_message;
@@ -636,11 +740,13 @@ bool CommandService::Submit(OperationKind kind, RequestContext context,
 void CommandService::Reject(std::string_view source_id,
                             std::optional<std::string_view> request_id,
                             command::ProtocolError error,
-                            command::TimePoint now) {
+                            command::TimePoint now,
+                            command::CommandType command_type) {
   try {
     source_ack_publisher_(
-        SourceAckTopic(topic_namespace_, source_id),
-        command::BuildPrePersistenceRejection(request_id, std::move(error), now)
+        SourceAckTopic(topic_namespace_, source_id, command_type),
+        command::BuildPrePersistenceRejection(request_id, std::move(error), now,
+                                              command_type)
             .dump());
   } catch (...) {
     Diagnose("来源配置ACK发布回调异常");
@@ -651,7 +757,8 @@ void CommandService::PublishAck(const RequestContext& context,
                                 command::TimePoint now) {
   if (!context.record) return;
   try {
-    source_ack_publisher_(SourceAckTopic(topic_namespace_, context.source_id),
+    source_ack_publisher_(SourceAckTopic(topic_namespace_, context.source_id,
+                                        context.command_type),
                           command::BuildSourceAck(*context.record, context.target,
                                                   now)
                               .dump());

@@ -37,6 +37,17 @@ cns::command::CommandRecord Active(cns::command::CommandStatus status,
           .completed_at = std::nullopt};
 }
 
+cns::command::CommandRecord ActiveControl(
+    cns::command::CommandStatus status,
+    cns::command::TimePoint created = kNow) {
+  auto record = Active(status, created);
+  record.command_type = cns::command::CommandType::kControl;
+  record.request_payload = {{"schema_version", 1}, {"request_id", "req-1"},
+      {"target", {{"vendor_id", kVendor}}}, {"command", "takeoff"},
+      {"parameters", nlohmann::json::object()}};
+  return record;
+}
+
 struct Harness {
   cns::device::DeviceRegistry devices;
   cns::command::SourceCatalog sources;
@@ -55,7 +66,7 @@ struct Harness {
         publishes.emplace_back(token, std::move(topic), std::move(payload));
         return std::expected<void, std::string>{};
       }, [this](auto, auto payload) { acks.push_back(nlohmann::json::parse(payload)); },
-      {}, 256, "cns", 15s, std::chrono::days{30}, 1s, 7) {
+      {}, 256, "cns", 15s, 30s, std::chrono::days{30}, 1s, 7) {
     REQUIRE(devices.Load({{kVendor, 1, "SEU", "DCDW-001", "v1",
                            cns::device::Status::kOnline, kNow, std::nullopt,
                            std::nullopt, 1}}));
@@ -69,6 +80,14 @@ struct Harness {
     db.pop_front();
     service.PushDatabaseResult({id, cns::runtime::CommandDatabaseValue{std::move(value)}});
     service.ProcessReady(kNow);
+  }
+
+  void RemoveCleanupTask() {
+    if (!db.empty() &&
+        std::holds_alternative<cns::runtime::CleanupCommandsTask>(
+            db.front().second)) {
+      db.pop_front();
+    }
   }
 };
 }
@@ -192,4 +211,57 @@ TEST_CASE("快速设备ACK在dispatched先落库后重试终态条件转换") {
   const auto retry = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
   CHECK(retry.expected == cns::command::CommandStatus::kDispatched);
   CHECK(retry.desired == cns::command::CommandStatus::kSucceeded);
+}
+
+TEST_CASE("飞控进度落库并按接收时间刷新超时期限") {
+  Harness h;
+  h.service.LoadActive({ActiveControl(cns::command::CommandStatus::kDispatched)});
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/control/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","command":"takeoff","status":"in_progress","mavlink_command":31091,"result_code":"pending"})",
+      kNow + 25s}));
+  h.service.ProcessReady(kNow + 25s);
+  REQUIRE(h.db.size() == 1);
+  auto progress = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+  CHECK(progress.desired == cns::command::CommandStatus::kInProgress);
+  auto stored = ActiveControl(cns::command::CommandStatus::kInProgress);
+  stored.device_ack = progress.update.device_ack;
+  stored.updated_at = kNow + 25s;
+  h.Reply(stored);
+  h.service.ProcessReady(kNow + 31s);
+  h.RemoveCleanupTask();
+  CHECK(h.db.empty());
+  h.service.ProcessReady(kNow + 56s);
+  h.RemoveCleanupTask();
+  REQUIRE(h.db.size() == 1);
+  auto timeout = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+  CHECK(timeout.desired == cns::command::CommandStatus::kTimeout);
+  CHECK(timeout.update.error_code == "control_timeout");
+}
+
+TEST_CASE("飞控终态映射且迟到ACK不能反转终态") {
+  Harness h;
+  h.service.LoadActive({ActiveControl(cns::command::CommandStatus::kDispatched)});
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/control/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","command":"takeoff","status":"accepted","mavlink_command":31091,"result":0,"result_code":"accepted"})", kNow}));
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  auto task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+  CHECK(task.desired == cns::command::CommandStatus::kSucceeded);
+  auto done = ActiveControl(cns::command::CommandStatus::kSucceeded);
+  done.device_ack = task.update.device_ack;
+  done.completed_at = kNow;
+  h.Reply(done);
+  REQUIRE(h.service.ActiveCommandCount() == 0);
+  h.service.TryPush({"cns/" + std::string{kVendor} + "/control/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","command":"takeoff","status":"rejected","error_code":"busy"})", kNow + 1s});
+  h.service.ProcessReady(kNow + 1s);
+  h.RemoveCleanupTask();
+  CHECK(h.db.empty());
+}
+
+TEST_CASE("恢复的飞控活动命令不重新发布") {
+  Harness h;
+  h.service.LoadActive({ActiveControl(cns::command::CommandStatus::kPending)});
+  h.service.ProcessReady(kNow);
+  CHECK(h.publishes.empty());
 }

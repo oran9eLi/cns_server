@@ -89,4 +89,14 @@ std::expected<ResolvedTarget, ProtocolError> ResolveConfigTarget(
   return Resolve(*target);
 }
 
+std::expected<ResolvedTarget, ProtocolError> ResolveControlTarget(
+    const CommandSource& source, const SourceControlRequest& request,
+    const device::DeviceRegistry& devices) {
+  return ResolveConfigTarget(
+      source,
+      SourceConfigRequest{request.request_id, request.target, {},
+                          request.comparison_payload},
+      devices);
+}
+
 }  // namespace cns::command

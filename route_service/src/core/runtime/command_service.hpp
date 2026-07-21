@@ -38,6 +38,7 @@ class CommandService {
                  std::size_t max_inflight_commands = 256,
                  std::string topic_namespace = "cns",
                  std::chrono::seconds config_timeout = std::chrono::seconds{15},
+                 std::chrono::seconds control_timeout = std::chrono::seconds{30},
                  std::chrono::days terminal_retention = std::chrono::days{30},
                  std::chrono::seconds cleanup_interval = std::chrono::seconds{3600},
                  std::size_t cleanup_batch_size = 100);
@@ -61,7 +62,9 @@ class CommandService {
     std::string source_id;
     const command::CommandSource* source = nullptr;
     command::SourceRequestParseResult parsed;
+    command::CommandType command_type = command::CommandType::kConfig;
     command::TimePoint received_at;
+    command::TimePoint deadline;
     std::optional<command::ResolvedTarget> target;
     std::optional<command::CommandRecord> record;
   };
@@ -88,6 +91,7 @@ class CommandService {
   void Handle(CommandDatabaseResult result, command::TimePoint now);
   void Handle(mqtt::PublishCompletion completion, command::TimePoint now);
   void HandleDeviceAck(std::string_view vendor_id, std::string_view payload,
+                       command::CommandType command_type,
                        command::TimePoint now);
   void ProcessTimeoutsAndRecovery(command::TimePoint now);
   void PublishRecord(RequestContext context, command::TimePoint now);
@@ -98,7 +102,8 @@ class CommandService {
   void RetryDeferredTransitions();
   void Reject(std::string_view source_id,
               std::optional<std::string_view> request_id,
-              command::ProtocolError error, command::TimePoint now);
+              command::ProtocolError error, command::TimePoint now,
+              command::CommandType command_type = command::CommandType::kConfig);
   void PublishAck(const RequestContext& context, command::TimePoint now);
   void Diagnose(std::string message) noexcept;
   std::optional<command::ResolvedTarget> TargetFor(
@@ -125,6 +130,7 @@ class CommandService {
   std::unordered_map<std::string, EarlyDeviceAck> early_device_acks_;
   std::mutex input_mutex_;
   std::chrono::seconds config_timeout_;
+  std::chrono::seconds control_timeout_;
   std::chrono::days terminal_retention_;
   std::chrono::seconds cleanup_interval_;
   std::size_t cleanup_batch_size_;
