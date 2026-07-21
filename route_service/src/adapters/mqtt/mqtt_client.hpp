@@ -69,9 +69,9 @@ class MqttClient {
       PublishCompletionHandler handler, std::size_t capacity);
   std::expected<void, std::string> SubscribeCommandMessages(
       std::string_view topic_namespace);
-  std::expected<void, std::string> PublishConfigSet(
+  std::expected<void, std::string> PublishCommandSet(
       std::uint64_t token, std::string_view topic, std::string_view payload);
-  std::expected<void, std::string> PublishSourceConfigAck(
+  std::expected<void, std::string> PublishSourceCommandAck(
       std::string_view topic, std::string_view payload);
   std::expected<void, std::string> ReplayRetainedRegistrations(
       std::string_view topic_namespace);

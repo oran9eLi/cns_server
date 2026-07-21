@@ -155,6 +155,20 @@ struct MqttClient::CallbackState {
         return std::unexpected(MosquittoError("订阅设备配置ACK", result));
       }
     }
+    if (subscribe_commands) {
+      const auto topic = command_namespace + "/sources/+/control/request";
+      const int result = mosquitto_subscribe(client, nullptr, topic.c_str(), 2);
+      if (result != MOSQ_ERR_SUCCESS) {
+        return std::unexpected(MosquittoError("订阅飞控命令请求", result));
+      }
+    }
+    if (subscribe_commands) {
+      const auto topic = command_namespace + "/+/control/ack";
+      const int result = mosquitto_subscribe(client, nullptr, topic.c_str(), 2);
+      if (result != MOSQ_ERR_SUCCESS) {
+        return std::unexpected(MosquittoError("订阅设备飞控ACK", result));
+      }
+    }
     {
       std::lock_guard lock{mutex};
       if (connected.load(std::memory_order_acquire) &&
@@ -565,7 +579,7 @@ std::expected<void, std::string> MqttClient::SubscribeCommandMessages(
   return {};
 }
 
-std::expected<void, std::string> MqttClient::PublishConfigSet(
+std::expected<void, std::string> MqttClient::PublishCommandSet(
     std::uint64_t token, std::string_view topic, std::string_view payload) {
   if (topic.empty()) return std::unexpected("MQTT发布topic不能为空");
   if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -586,14 +600,14 @@ std::expected<void, std::string> MqttClient::PublishConfigSet(
       client_, &mid, std::string{topic}.c_str(), static_cast<int>(payload.size()),
       payload.data(), 2, false);
   if (result != MOSQ_ERR_SUCCESS) {
-    return std::unexpected(MosquittoError("发布设备配置命令", result));
+    return std::unexpected(MosquittoError("发布设备命令", result));
   }
   callback_state_->token_to_mid.emplace(token, mid);
   callback_state_->mid_to_token.emplace(mid, token);
   return {};
 }
 
-std::expected<void, std::string> MqttClient::PublishSourceConfigAck(
+std::expected<void, std::string> MqttClient::PublishSourceCommandAck(
     std::string_view topic, std::string_view payload) {
   if (topic.empty()) return std::unexpected("MQTT发布topic不能为空");
   if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -605,7 +619,7 @@ std::expected<void, std::string> MqttClient::PublishSourceConfigAck(
       client_, &mid, std::string{topic}.c_str(), static_cast<int>(payload.size()),
       payload.data(), 2, false);
   if (result != MOSQ_ERR_SUCCESS) {
-    return std::unexpected(MosquittoError("发布来源配置ACK", result));
+    return std::unexpected(MosquittoError("发布来源命令ACK", result));
   }
   callback_state_->untracked_completion_mids.insert(mid);
   return {};

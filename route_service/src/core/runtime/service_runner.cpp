@@ -139,8 +139,13 @@ int RunService(const RunMode mode, ServiceOperations& operations) {
   if (Failed(operations.LoadDeviceSnapshot(), operations)) return 1;
   if (Failed(operations.LoadCommandState(), operations)) return 1;
   if (Failed(operations.InstallSignalHandlers(), operations)) return 1;
-  if (Failed(operations.CreateMqtt(), operations)) return 1;
   if (Failed(operations.StartDeviceRuntime(), operations)) {
+    operations.StopAcceptingDeviceMessages();
+    static_cast<void>(operations.StopDeviceRuntime(
+        std::chrono::milliseconds{5000}));
+    return 1;
+  }
+  if (Failed(operations.CreateMqtt(), operations)) {
     operations.StopAcceptingDeviceMessages();
     static_cast<void>(operations.StopDeviceRuntime(
         std::chrono::milliseconds{5000}));

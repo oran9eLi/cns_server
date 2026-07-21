@@ -336,6 +336,24 @@ TEST_CASE("正常模式只检查迁移且绝不执行迁移") {
   CHECK(std::ranges::find_if(operations.calls, [](const auto& call) {
           return call.starts_with("执行迁移");
         }) == operations.calls.end());
+  const auto load = std::ranges::find(operations.calls, "加载命令状态");
+  const auto runtime = std::ranges::find(operations.calls, "启动设备运行时");
+  const auto mqtt = std::ranges::find(operations.calls, "创建MQTT");
+  REQUIRE(load != operations.calls.end());
+  REQUIRE(runtime != operations.calls.end());
+  REQUIRE(mqtt != operations.calls.end());
+  CHECK(load < runtime);
+  CHECK(runtime < mqtt);
+}
+
+TEST_CASE("命令恢复失败时不创建MQTT也不启动业务线程") {
+  FakeOperations operations;
+  operations.fail_at = "加载命令状态";
+  CHECK(RunService(RunMode::kNormal, operations) == 1);
+  CHECK(std::ranges::find(operations.calls, "启动设备运行时") ==
+        operations.calls.end());
+  CHECK(std::ranges::find(operations.calls, "创建MQTT") ==
+        operations.calls.end());
 }
 
 TEST_CASE("信号安装失败时不创建MQTT") {

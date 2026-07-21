@@ -87,6 +87,14 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
     return std::unexpected(Classify("数据库命令清理失败"));
   }
 
+  std::expected<std::vector<command::CommandRecord>, runtime::DatabaseError>
+  RecoverControlCommands(command::TimePoint recovered_at,
+                         std::size_t batch_size) override {
+    auto result = store_->RecoverActiveControlCommands(recovered_at, batch_size);
+    if (result) return std::move(*result);
+    return std::unexpected(Classify("数据库飞控命令恢复失败"));
+  }
+
   std::expected<void, runtime::DatabaseError> ReconnectAndValidate() override {
     auto connected = postgres::PostgresStore::Connect(config_, info_sink_);
     if (!connected) {
@@ -283,20 +291,21 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
           std::lock_guard lock(bridge->mutex);
           if (!bridge->enabled || bridge->mqtt == nullptr)
             return std::unexpected("MQTT桥已失效");
-          return bridge->mqtt->PublishConfigSet(token, topic, payload);
+          return bridge->mqtt->PublishCommandSet(token, topic, payload);
         },
         [weak = external](std::string topic, std::string payload) {
           const auto bridge = weak.lock();
           if (!bridge) return;
           std::lock_guard lock(bridge->mutex);
           if (bridge->enabled && bridge->mqtt != nullptr) {
-            static_cast<void>(bridge->mqtt->PublishSourceConfigAck(topic, payload));
+            static_cast<void>(bridge->mqtt->PublishSourceCommandAck(topic, payload));
           }
         },
         [weak = external](std::string message) {
           if (const auto bridge = weak.lock()) bridge->Diagnose(message);
         }, config.command.max_inflight_commands, config.mqtt.topic_namespace,
-        config.command.config_timeout, config.command.terminal_retention,
+        config.command.config_timeout, config.command.control_timeout,
+        config.command.terminal_retention,
         config.command.cleanup_interval, config.command.cleanup_batch_size);
     command_service->LoadActive(std::move(active_commands));
     command_service->SetMqttAvailable(false);
@@ -466,13 +475,22 @@ std::expected<void, std::string> ServiceEnvironment::LoadCommandState() {
   if (auto loaded = state_->command_sources.Load(std::move(*sources)); !loaded) {
     return std::unexpected(loaded.error());
   }
-  auto commands = state_->store->LoadActiveConfigCommands(
+  auto commands = state_->store->LoadActiveCommands(
       state_->config->command.max_inflight_commands + 1);
   if (!commands) return std::unexpected(commands.error());
   if (commands->size() > state_->config->command.max_inflight_commands) {
-    return std::unexpected("活动配置命令数量超过配置上限");
+    return std::unexpected("活动命令数量超过配置上限");
   }
-  state_->active_commands = std::move(*commands);
+  auto recovered = state_->store->RecoverActiveControlCommands(
+      std::chrono::system_clock::now(),
+      state_->config->command.max_inflight_commands + 1);
+  if (!recovered) return std::unexpected(recovered.error());
+  state_->active_commands.clear();
+  for (auto& record : *commands) {
+    if (record.command_type == command::CommandType::kConfig) {
+      state_->active_commands.push_back(std::move(record));
+    }
+  }
   return {};
 }
 
@@ -495,7 +513,6 @@ std::expected<void, std::string> ServiceEnvironment::CreateMqtt() {
 std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
   try {
     state_->external_bridge = std::make_shared<RuntimeExternalBridge>();
-    state_->external_bridge->mqtt = state_->mqtt.get();
     state_->external_bridge->logger = state_->logger.get();
     state_->external_bridge->topic_namespace =
         state_->config->mqtt.topic_namespace;
@@ -522,35 +539,7 @@ std::expected<void, std::string> ServiceEnvironment::StartDeviceRuntime() {
     state_->accepting_device_messages = true;
 
     runtime::DeviceRuntimeStartOperations start_operations{
-        .configure_handler = [this,
-            weak = std::weak_ptr<runtime::DeviceIngress>{bundle->ingress},
-            command_weak = std::weak_ptr<runtime::CommandIngress>{bundle->command_ingress},
-            bundle_weak = std::weak_ptr<RuntimeBundle>{bundle}]()
-            -> std::expected<void, std::string> {
-          auto configured = state_->mqtt->ConfigureBusinessMessages(
-              [weak, command_weak](mqtt::InboundMessage message) {
-                if (const auto command_ingress = command_weak.lock())
-                  command_ingress->TryPush(message);
-                if (const auto ingress = weak.lock())
-                  ingress->Handle(std::move(message));
-              },
-              state_->config->mqtt.max_payload_bytes);
-          if (!configured) return std::unexpected(configured.error());
-          auto publishing = state_->mqtt->ConfigureCommandPublishing(
-              [bundle_weak](mqtt::PublishCompletion completion) {
-                if (const auto runtime = bundle_weak.lock();
-                    runtime && runtime->command_service) {
-                  runtime->command_service->PushPublishCompletion(
-                      std::move(completion));
-                }
-              }, state_->config->command.max_inflight_commands);
-          if (!publishing) return std::unexpected(publishing.error());
-          auto devices = state_->mqtt->SubscribeDeviceMessages(
-              state_->config->mqtt.topic_namespace);
-          if (!devices) return std::unexpected(devices.error());
-          return state_->mqtt->SubscribeCommandMessages(
-              state_->config->mqtt.topic_namespace);
-        },
+        .configure_handler = []() -> std::expected<void, std::string> { return {}; },
         .start_postgres_thread = [bundle]() {
           return bundle->StartDatabaseThread();
         },
@@ -653,6 +642,34 @@ bool ServiceEnvironment::StopDeviceRuntime(std::chrono::milliseconds timeout) {
 }
 
 std::expected<void, std::string> ServiceEnvironment::StartMqtt() {
+  const auto bundle = state_->runtime_bundle;
+  if (!bundle) return std::unexpected("设备运行时尚未启动");
+  {
+    std::lock_guard lock(state_->external_bridge->mutex);
+    state_->external_bridge->mqtt = state_->mqtt.get();
+  }
+  auto configured = state_->mqtt->ConfigureBusinessMessages(
+      [weak = std::weak_ptr<runtime::DeviceIngress>{bundle->ingress},
+       command_weak = std::weak_ptr<runtime::CommandIngress>{bundle->command_ingress}]
+      (mqtt::InboundMessage message) {
+        if (const auto command_ingress = command_weak.lock())
+          command_ingress->TryPush(message);
+        if (const auto ingress = weak.lock()) ingress->Handle(std::move(message));
+      }, state_->config->mqtt.max_payload_bytes);
+  if (!configured) return std::unexpected(configured.error());
+  auto publishing = state_->mqtt->ConfigureCommandPublishing(
+      [weak = std::weak_ptr<RuntimeBundle>{bundle}](mqtt::PublishCompletion completion) {
+        if (const auto runtime = weak.lock(); runtime && runtime->command_service) {
+          runtime->command_service->PushPublishCompletion(std::move(completion));
+        }
+      }, state_->config->command.max_inflight_commands);
+  if (!publishing) return std::unexpected(publishing.error());
+  auto devices = state_->mqtt->SubscribeDeviceMessages(
+      state_->config->mqtt.topic_namespace);
+  if (!devices) return std::unexpected(devices.error());
+  auto commands = state_->mqtt->SubscribeCommandMessages(
+      state_->config->mqtt.topic_namespace);
+  if (!commands) return std::unexpected(commands.error());
   return state_->mqtt->Start();
 }
 

@@ -112,11 +112,12 @@ TEST_CASE("命令主题在连接成功后以QoS2订阅并在重连后重新订�
   injection.connect_callback(nullptr, injection.context, 0);
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
-            {"cns/sources/+/config/request", 2}, {"cns/+/config/ack", 2}});
+            {"cns/sources/+/config/request", 2}, {"cns/+/config/ack", 2},
+            {"cns/sources/+/control/request", 2}, {"cns/+/control/ack", 2}});
 
   injection.disconnect_callback(nullptr, injection.context, MOSQ_ERR_CONN_LOST);
   injection.connect_callback(nullptr, injection.context, 0);
-  CHECK(injection.subscriptions.size() == 4);
+  CHECK(injection.subscriptions.size() == 8);
 }
 
 TEST_CASE("配置下发与来源ACK均使用QoS2且不保留") {
@@ -129,8 +130,8 @@ TEST_CASE("配置下发与来源ACK均使用QoS2且不保留") {
   injection.connect_callback(nullptr, injection.context, 0);
   REQUIRE(client->ConfigureCommandPublishing([](auto) {}, 2).has_value());
 
-  REQUIRE(client->PublishConfigSet(1, "cns/vendor/config/set", "{}").has_value());
-  REQUIRE(client->PublishSourceConfigAck("cns/sources/source/config/ack", "{}")
+  REQUIRE(client->PublishCommandSet(1, "cns/vendor/control/set", "{}").has_value());
+  REQUIRE(client->PublishSourceCommandAck("cns/sources/source/control/ack", "{}")
               .has_value());
 
   REQUIRE(injection.publications.size() == 2);
@@ -152,7 +153,7 @@ TEST_CASE("来源ACK和状态事件完成不误报未知MID") {
   ScopedInjection scoped{injection};
   auto client = MakeClient(logger);
 
-  REQUIRE(client->PublishSourceConfigAck("cns/sources/source/config/ack", "{}")
+  REQUIRE(client->PublishSourceCommandAck("cns/sources/source/config/ack", "{}")
               .has_value());
   REQUIRE(client->PublishStateEvent("cns/events/devices/id/state", "{}")
               .has_value());
@@ -185,7 +186,7 @@ TEST_CASE("重复MID仍记录错误") {
   ScopedInjection scoped{injection};
   auto client = MakeClient(logger);
 
-  REQUIRE(client->PublishSourceConfigAck("cns/sources/source/config/ack", "{}")
+  REQUIRE(client->PublishSourceCommandAck("cns/sources/source/config/ack", "{}")
               .has_value());
   REQUIRE(injection.publish_callback != nullptr);
   const int mid = std::get<0>(injection.publications.front());
@@ -226,10 +227,10 @@ TEST_CASE("MID完成只回调一次并释放token容量") {
                     1)
               .has_value());
 
-  REQUIRE(client->PublishConfigSet(7, "cns/vendor/config/set", "{}").has_value());
-  CHECK_FALSE(client->PublishConfigSet(8, "cns/vendor/config/set", "{}")
+  REQUIRE(client->PublishCommandSet(7, "cns/vendor/config/set", "{}").has_value());
+  CHECK_FALSE(client->PublishCommandSet(8, "cns/vendor/config/set", "{}")
                   .has_value());
-  CHECK_FALSE(client->PublishConfigSet(7, "cns/vendor/config/set", "{}")
+  CHECK_FALSE(client->PublishCommandSet(7, "cns/vendor/config/set", "{}")
                   .has_value());
 
   REQUIRE(injection.publish_callback != nullptr);
@@ -239,7 +240,7 @@ TEST_CASE("MID完成只回调一次并释放token容量") {
   CHECK(completions[0].token == 7);
   CHECK(completions[0].result.has_value());
 
-  CHECK(client->PublishConfigSet(8, "cns/vendor/config/set", "{}").has_value());
+  CHECK(client->PublishCommandSet(8, "cns/vendor/config/set", "{}").has_value());
 }
 
 TEST_CASE("断线把全部在途发布转换为失败完成") {
@@ -257,8 +258,8 @@ TEST_CASE("断线把全部在途发布转换为失败完成") {
                     },
                     2)
               .has_value());
-  REQUIRE(client->PublishConfigSet(1, "cns/a/config/set", "{}").has_value());
-  REQUIRE(client->PublishConfigSet(2, "cns/b/config/set", "{}").has_value());
+  REQUIRE(client->PublishCommandSet(1, "cns/a/config/set", "{}").has_value());
+  REQUIRE(client->PublishCommandSet(2, "cns/b/control/set", "{}").has_value());
 
   injection.disconnect_callback(nullptr, injection.context, MOSQ_ERR_CONN_LOST);
 
