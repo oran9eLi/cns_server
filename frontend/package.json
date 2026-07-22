@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@amap/amap-jsapi-loader": "^1.0.1",
     "@cns/backend-protocol": "file:../backend_service/protocol",
     "@tanstack/react-query": "^5.59.16",
     "antd": "^5.21.6",

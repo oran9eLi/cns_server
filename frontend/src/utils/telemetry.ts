@@ -26,8 +26,6 @@ export interface TelemetryView {
 }
 
 export function mapTelemetry(source: JsonValue | undefined): TelemetryView {
-  const realBatteryVoltages = readArray(source, "telemetry.battery.voltages");
-
   return {
     attitude: {
       roll: firstNumber(source, "telemetry.attitude.roll", "attitude.roll_deg"),
@@ -37,12 +35,27 @@ export function mapTelemetry(source: JsonValue | undefined): TelemetryView {
     environment: {
       temperature: firstNumber(source, "telemetry.pressure.temperature", "environment.temperature_c"),
       pressure: firstNumber(source, "telemetry.pressure.press_abs", "environment.pressure_hpa"),
-      altitude: readNumber(source, "environment.altitude_m")
+      altitude: firstNumber(
+        source,
+        "telemetry.gps.alt",
+        "telemetry.global_position.alt",
+        "environment.altitude_m"
+      )
     },
     link: {
-      rssi: readNumber(source, "link.rssi_dbm"),
-      packetLoss: firstNumber(source, "telemetry.lora.loss_rate_percent", "link.packet_loss_pct"),
-      latency: readNumber(source, "link.latency_ms")
+      rssi: firstNumber(
+        source,
+        "telemetry.cellular_5g.rssi_dbm",
+        "telemetry.cellular_5g.rsrp_dbm",
+        "link.rssi_dbm"
+      ),
+      packetLoss: firstNumber(
+        source,
+        "telemetry.cellular_5g.packet_loss_percent",
+        "telemetry.lora.loss_rate_percent",
+        "link.packet_loss_pct"
+      ),
+      latency: firstNumber(source, "telemetry.cellular_5g.latency_ms", "link.latency_ms")
     },
     motors: {
       pwm: normalizePwm(
@@ -50,10 +63,16 @@ export function mapTelemetry(source: JsonValue | undefined): TelemetryView {
       )
     },
     battery: {
-      remaining: readNumber(source, "telemetry.battery.battery_remaining"),
-      voltage:
-        readNumber(source, "telemetry.battery.voltage_battery") ??
-        finiteNumber(realBatteryVoltages?.[0])
+      remaining: firstNumber(
+        source,
+        "telemetry.battery.battery_remaining",
+        "telemetry.sys_status.battery_remaining"
+      ),
+      voltage: firstNumber(
+        source,
+        "telemetry.sys_status.voltage_battery",
+        "telemetry.battery.voltage_battery"
+      ) ?? sumNumericArray(readArray(source, "telemetry.battery.voltages"))
     }
   };
 }
@@ -75,13 +94,16 @@ export function formatNumber(value: number | null, suffix = "", digits = 1): str
 
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "--";
+  if (/^\d{2}:\d{2}:\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit"
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function readValue(source: JsonValue | undefined, path: string): JsonValue | undefined {
@@ -105,4 +127,13 @@ function normalizePwm(values: JsonValue[] | null): Array<number | null> {
 
 function finiteNumber(value: JsonValue | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function sumNumericArray(values: JsonValue[] | null): number | null {
+  if (!values) return null;
+  const numbers = values
+    .map(finiteNumber)
+    .filter((value): value is number => value !== null && value > 0);
+  if (numbers.some((value) => value >= 100)) return numbers[0] ?? null;
+  return numbers.length > 0 ? numbers.reduce((sum, value) => sum + value, 0) : null;
 }

@@ -11,3 +11,6 @@ npm-debug.log*
 .backend_service.pid
 .frontend_dev.pids
 .logs/
+.env
+.env.local
+.env.*.local

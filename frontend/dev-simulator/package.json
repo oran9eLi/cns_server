@@ -12,6 +12,7 @@
     "test": "npm run typecheck"
   },
   "dependencies": {
+    "@amap/amap-jsapi-loader": "^1.0.1",
     "@cns/backend-protocol": "file:../../backend_service/protocol",
     "@fastify/websocket": "^10.0.1",
     "fastify": "^4.28.1"

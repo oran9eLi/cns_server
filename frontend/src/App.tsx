@@ -5,19 +5,17 @@ import {
   Button,
   Card,
   Col,
-  Descriptions,
   Empty,
   Form,
   Input,
   InputNumber,
   Layout,
-  Progress,
   Row,
   Select,
+  Slider,
   Space,
   Statistic,
   Table,
-  Tabs,
   Tag,
   Typography,
   notification
@@ -27,10 +25,10 @@ import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient
 import {
   Activity,
   AlertTriangle,
-  BatteryCharging,
   Cpu,
   Gauge,
   LandPlot,
+  MapPin,
   PlaneTakeoff,
   Radio,
   RefreshCw,
@@ -39,14 +37,13 @@ import {
   Square,
   Wifi
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import type {
   CommandStatus,
   CommandUpdatedEvent,
   ConfigCommandRequest,
   DeviceCommandRequest,
-  DeviceDetail,
   DeviceSummary,
   EmergencyStopCommandRequest,
   LandCommandRequest,
@@ -56,7 +53,15 @@ import type {
 
 import logo from "./assets/east-tech-logo.png";
 import { getDevice, getDevices, getHealth, postCommand } from "./api/client.js";
+import {
+  FlightLogPanel,
+  PowerOverview,
+  SelfCheckPanel
+} from "./components/FlightDataPanels.js";
+import { FlightMap } from "./components/FlightMap.js";
+import { TelemetryFramePanel } from "./components/TelemetryFramePanel.js";
 import { useRealtime } from "./realtime/useRealtime.js";
+import { mapFlightDashboard, type FlightDashboardView } from "./utils/flightDashboard.js";
 import {
   formatDateTime,
   formatNumber,
@@ -127,7 +132,6 @@ function ConsoleShell() {
                   connected={realtime.connected}
                   mqttReady={mqttReady}
                   commandEvents={realtime.commandEvents}
-                  lastEventAt={realtime.lastEventAt}
                 />
               }
             />
@@ -262,20 +266,20 @@ function DeviceDetailPage({
   sessionId,
   connected,
   mqttReady,
-  commandEvents,
-  lastEventAt
+  commandEvents
 }: {
   sessionId: string | null;
   connected: boolean;
   mqttReady: boolean;
   commandEvents: CommandUpdatedEvent[];
-  lastEventAt: string | null;
 }) {
   const { vendorId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [api, contextHolder] = notification.useNotification();
   const [commandStatus, setCommandStatus] = useState<CommandStatus | null>(null);
+  const [motorPwm, setMotorPwm] = useState<[number, number, number, number]>([1000, 1000, 1000, 1000]);
+  const notifiedCommandEvents = useRef(new Set<string>());
   const deviceQuery = useQuery({
     queryKey: ["device", vendorId],
     queryFn: () => getDevice(vendorId),
@@ -286,13 +290,16 @@ function DeviceDetailPage({
   const commandMutation = useMutation({
     mutationFn: (request: DeviceCommandRequest) => postCommand(vendorId, request),
     onSuccess: () => {
-      setCommandStatus("submitted");
-      api.info({ message: "命令已提交", description: "正在等待路由和设备返回执行状态。" });
       queryClient.invalidateQueries({ queryKey: ["devices"] });
     },
-    onError: (error) => {
+    onError: (error, request) => {
       setCommandStatus("failed");
-      api.error({ message: "命令提交失败", description: error.message });
+      api.error({
+        key: commandNotificationKey(request.client_request_id),
+        message: "命令提交失败",
+        description: error.message,
+        duration: 4.5
+      });
     }
   });
 
@@ -305,7 +312,64 @@ function DeviceDetailPage({
   useEffect(() => {
     if (!latestCommandEvent) return;
     setCommandStatus(latestCommandEvent.status);
-  }, [latestCommandEvent]);
+
+    const notificationKey = [
+      latestCommandEvent.client_request_id,
+      latestCommandEvent.status,
+      latestCommandEvent.updated_at
+    ].join(":");
+    if (notifiedCommandEvents.current.has(notificationKey)) return;
+    notifiedCommandEvents.current.add(notificationKey);
+
+    if (latestCommandEvent.status === "submitted") return;
+    const commandName = commandNameLabel(latestCommandEvent.command, latestCommandEvent.command_type);
+    const occurredAt = formatDateTime(latestCommandEvent.updated_at);
+    const notificationOptions = {
+      key: commandNotificationKey(latestCommandEvent.client_request_id),
+      duration: 4.5
+    };
+
+    if (latestCommandEvent.status === "dispatched") {
+      api.info({
+        ...notificationOptions,
+        message: "命令已派送",
+        description: `树莓派已返回应答：${commandName} · ${occurredAt}`
+      });
+    } else if (latestCommandEvent.status === "in_progress") {
+      api.info({
+        ...notificationOptions,
+        message: "命令执行中",
+        description: `单片机已收到命令：${commandName} · ${occurredAt}`
+      });
+    } else if (latestCommandEvent.status === "succeeded") {
+      api.success({
+        ...notificationOptions,
+        message: "命令执行成功",
+        description: `单片机执行完成：${commandName} · ${occurredAt}`
+      });
+    } else if (latestCommandEvent.status === "failed") {
+      const failureReason = latestCommandEvent.error?.message
+        ?? latestCommandEvent.business_status
+        ?? "设备未返回失败原因";
+      api.error({
+        ...notificationOptions,
+        message: "命令执行失败",
+        description: `${failureReason} · ${commandName} · ${occurredAt}`
+      });
+    } else if (latestCommandEvent.status === "timeout") {
+      api.warning({
+        ...notificationOptions,
+        message: "命令执行超时",
+        description: `${commandName} · ${occurredAt}`
+      });
+    } else if (latestCommandEvent.status === "delivery_uncertain") {
+      api.warning({
+        ...notificationOptions,
+        message: "命令投递状态不确定",
+        description: `${commandName} · ${occurredAt}`
+      });
+    }
+  }, [api, latestCommandEvent]);
 
   if (!device && deviceQuery.isLoading) {
     return <Card loading />;
@@ -316,6 +380,7 @@ function DeviceDetailPage({
 
   const telemetry = device.latest_telemetry;
   const telemetryView = mapTelemetry(telemetry);
+  const dashboardView = mapFlightDashboard(telemetry);
   const commandInFlight = commandStatus !== null && ![
     "succeeded",
     "failed",
@@ -332,36 +397,59 @@ function DeviceDetailPage({
     | Omit<EmergencyStopCommandRequest, "session_id" | "client_request_id">;
 
   const submit = (request: DraftCommandRequest) => {
-    if (!sessionId) return;
+    if (!sessionId || device.status === "offline") return;
+    const clientRequestId = createUuidV4();
+    const commandName = commandNameLabel(
+      request.type === "control" ? request.command : null,
+      request.type
+    );
+
+    setCommandStatus("submitted");
+    api.info({
+      key: commandNotificationKey(clientRequestId),
+      message: "命令已提交",
+      description: `正在提交：${commandName}`,
+      duration: 4.5
+    });
     commandMutation.mutate({
       ...request,
       session_id: sessionId,
-      client_request_id: createUuidV4()
+      client_request_id: clientRequestId
     } as DeviceCommandRequest);
   };
 
   return (
-    <div className="page-stack">
+    <div className="page-stack flight-console-page">
       {contextHolder}
       <section className="page-heading">
         <div>
-          <Typography.Text className="section-eyebrow">Device Detail</Typography.Text>
+          <Typography.Text className="section-eyebrow">设备详情</Typography.Text>
           <Typography.Title>{device.dcdw_label ?? device.vendor_id}</Typography.Title>
           <Typography.Text type="secondary" className="mono">{device.vendor_id}</Typography.Text>
         </div>
-        <Space>
-          <DeviceStatusTag status={device.status} degraded={device.degraded} />
-          <Button onClick={() => navigate("/devices")}>返回</Button>
-        </Space>
+        <Button onClick={() => navigate("/devices")}>返回</Button>
       </section>
 
       {device.degraded && (
         <Alert type="warning" showIcon message="该设备状态来自尚未持久化的开发事件，真实链路中应等待数据库恢复确认。" />
       )}
 
+      <Card className="identity-strip">
+        <div className="device-facts-grid">
+          <DeviceFact label="学校" value={device.school_name} />
+          <DeviceFact label="型号" value={device.model_version} />
+          <DeviceFact label="注册时间" value={formatDateTime(device.provisioned_at)} />
+          <DeviceFact label="最后活跃" value={formatDateTime(device.last_seen_at)} />
+          <DeviceFact label="遥测接收" value={formatDateTime(device.telemetry_received_at)} />
+          <DeviceFact label="当前状态" value={<DeviceStatusTag status={device.status} degraded={device.degraded} />} />
+        </div>
+      </Card>
+
+      <PowerOverview power={dashboardView.power} />
+
       <div className="detail-workspace">
         <section className="detail-main">
-          <FlightSnapshot device={device} telemetry={telemetryView} lastEventAt={lastEventAt} />
+          <FlightSnapshot telemetry={telemetryView} position={dashboardView.position} />
 
           <div className="telemetry-grid">
             <TelemetryCard title="姿态" icon={<Gauge />} items={[
@@ -371,50 +459,35 @@ function DeviceDetailPage({
             ]} />
             <TelemetryCard title="环境" icon={<Activity />} items={[
               ["温度", formatNumber(telemetryView.environment.temperature, "℃")],
+              ["湿度", formatNumber(dashboardView.environment.humidity, "%")],
               ["气压", formatNumber(telemetryView.environment.pressure, " hPa")],
-              ["高度", formatNumber(telemetryView.environment.altitude, " m")]
+              ["高度", formatNumber(dashboardView.environment.altitude ?? telemetryView.environment.altitude, " m")]
             ]} />
             <TelemetryCard title="链路" icon={<Wifi />} items={[
               ["RSSI", formatNumber(telemetryView.link.rssi, " dBm", 0)],
               ["丢包", formatNumber(telemetryView.link.packetLoss, "%")],
               ["延迟", formatNumber(telemetryView.link.latency, " ms", 0)]
             ]} />
-            <MotorCard values={telemetryView.motors.pwm} />
-            <TelemetryCard title="电池" icon={<BatteryCharging />} items={[
-              ["电量", formatNumber(telemetryView.battery.remaining, "%", 0)],
-              ["电压", formatNumber(telemetryView.battery.voltage, " mV", 0)]
+            <TelemetryCard title="GPS" icon={<MapPin />} items={[
+              ["经度", formatCoordinate(dashboardView.position.longitudeWgs84)],
+              ["纬度", formatCoordinate(dashboardView.position.latitudeWgs84)],
+              ["定位", gpsFixLabel(dashboardView.position.fixType, dashboardView.position.fixValid)],
+              ["卫星", formatNumber(dashboardView.position.satellites, " 颗", 0)]
             ]} />
           </div>
 
-          <Card className="tool-surface">
-            <Tabs
-              items={[
-                {
-                  key: "identity",
-                  label: "设备身份",
-                  children: (
-                    <Descriptions column={2} size="small">
-                      <Descriptions.Item label="学校">{device.school_name}</Descriptions.Item>
-                      <Descriptions.Item label="型号">{device.model_version}</Descriptions.Item>
-                      <Descriptions.Item label="注册时间">{formatDateTime(device.provisioned_at)}</Descriptions.Item>
-                      <Descriptions.Item label="最后活跃">{formatDateTime(device.last_seen_at)}</Descriptions.Item>
-                    </Descriptions>
-                  )
-                },
-                {
-                  key: "json",
-                  label: "完整遥测",
-                  children: <pre className="json-view">{JSON.stringify(telemetry ?? {}, null, 2)}</pre>
-                }
-              ]}
-            />
-          </Card>
+            <div className="flight-support-grid">
+              <SelfCheckPanel modules={dashboardView.modules} />
+              <div className="flight-event-stack">
+                <FlightLogPanel logs={dashboardView.logs} />
+              </div>
+            </div>
+
+          <TelemetryFramePanel source={telemetry} receivedAt={device.telemetry_received_at} />
         </section>
 
         <aside className="detail-side">
-          <CommandReadiness connected={connected} mqttReady={mqttReady} sessionId={sessionId} device={device} />
-
-          <Card className="command-panel" title="运行时配置">
+          <Card className="command-panel runtime-config-panel" title="运行时配置">
             <Form layout="vertical" initialValues={{ interval: 2000, heartbeat: 5000, reconnectDelay: 1, reconnectMax: 30 }}>
               <Form.Item label="遥测上报周期（ms）" name="interval">
                 <InputNumber min={100} max={60000} step={100} style={{ width: "100%" }} />
@@ -463,39 +536,46 @@ function DeviceDetailPage({
             </Form>
           </Card>
 
-          <Card className="command-panel" title="飞控控制">
-            <Form layout="vertical" initialValues={{ m1: 1000, m2: 1000, m3: 1000, m4: 1000 }}>
-              <Row gutter={8}>
-                {["m1", "m2", "m3", "m4"].map((name, index) => (
-                  <Col span={12} key={name}>
-                    <Form.Item label={`PWM ${index + 1}`} name={name}>
-                      <InputNumber min={1000} max={2000} step={10} style={{ width: "100%" }} />
-                    </Form.Item>
-                  </Col>
-                ))}
-              </Row>
-              <Form.Item shouldUpdate>
-                {({ getFieldsValue }) => (
-                  <Button
-                    block
-                    icon={<Send size={16} />}
-                    disabled={disabled}
-                    onClick={() => {
-                      const values = getFieldsValue();
-                      submit({
-                        type: "control",
-                        command: "set_motor_pwm",
-                        parameters: { pwm_us: [values.m1, values.m2, values.m3, values.m4] }
-                      });
+          <Card className="command-panel flight-control-panel" title="电机与飞行控制">
+            <div className="motor-slider-list">
+              {motorPwm.map((value, index) => (
+                <div className="motor-slider-control" key={index}>
+                  <div className="motor-slider-label">
+                    <strong>M{index + 1}</strong>
+                    <span>{value} μs</span>
+                    <small>{Math.round((value - 1000) / 10)}%</small>
+                  </div>
+                  <Slider
+                    min={1000}
+                    max={2000}
+                    step={10}
+                    value={value}
+                    tooltip={{ formatter: (current) => `${current ?? value} μs` }}
+                    onChange={(nextValue) => {
+                      setMotorPwm((current) => current.map((item, itemIndex) => (
+                        itemIndex === index ? nextValue : item
+                      )) as [number, number, number, number]);
                     }}
-                  >
-                    设置四路 PWM
-                  </Button>
-                )}
-              </Form.Item>
-            </Form>
-            <Space.Compact block className="flight-actions">
-              <Button icon={<PlaneTakeoff size={16} />} disabled={disabled} onClick={() => submit({ type: "control", command: "takeoff", parameters: {} })}>
+                  />
+                </div>
+              ))}
+            </div>
+            <Button
+              block
+              type="primary"
+              className="apply-pwm-button"
+              icon={<Send size={16} />}
+              disabled={disabled}
+              onClick={() => submit({
+                type: "control",
+                command: "set_motor_pwm",
+                parameters: { pwm_us: motorPwm }
+              })}
+            >
+              应用四路 PWM
+            </Button>
+            <div className="flight-actions">
+              <Button type="primary" icon={<PlaneTakeoff size={16} />} disabled={disabled} onClick={() => submit({ type: "control", command: "takeoff", parameters: {} })}>
                 起飞
               </Button>
               <Button icon={<LandPlot size={16} />} disabled={disabled} onClick={() => submit({ type: "control", command: "land", parameters: {} })}>
@@ -504,10 +584,10 @@ function DeviceDetailPage({
               <Button danger icon={<Square size={16} />} disabled={disabled} onClick={() => submit({ type: "control", command: "emergency_stop", parameters: {} })}>
                 急停
               </Button>
-            </Space.Compact>
+            </div>
           </Card>
 
-          <Card className="command-panel" title="当前命令">
+          <Card className="command-panel current-command-panel" title="当前命令">
             <Badge status={commandStatus === "failed" ? "error" : commandStatus ? "processing" : "default"} />
             <Typography.Text>{commandStatus ? commandStatusLabel(commandStatus) : "暂无命令"}</Typography.Text>
             <CommandTimeline events={deviceCommandEvents} />
@@ -521,22 +601,16 @@ function DeviceDetailPage({
 }
 
 function FlightSnapshot({
-  device,
   telemetry,
-  lastEventAt
+  position
 }: {
-  device: DeviceDetail;
   telemetry: TelemetryView;
-  lastEventAt: string | null;
+  position: FlightDashboardView["position"];
 }) {
   const { roll, pitch, yaw } = telemetry.attitude;
   const visualRoll = roll ?? 0;
   const visualPitch = pitch ?? 0;
   const visualYaw = yaw ?? 0;
-  const linkQuality = telemetry.link.rssi === null
-    ? null
-    : Math.max(0, Math.min(100, Math.round((telemetry.link.rssi + 95) * 2)));
-
   return (
     <Card className="flight-snapshot">
       <div className="instrument-panel" aria-label="飞行仪表">
@@ -563,29 +637,17 @@ function FlightSnapshot({
         </div>
         <CompassIndicator yaw={visualYaw} />
       </div>
-      <div className="snapshot-copy">
-        <Typography.Text className="section-eyebrow">实时状态</Typography.Text>
-        <Typography.Title level={3}>飞行姿态快照</Typography.Title>
-        <Typography.Text type="secondary">最新事件：{lastEventAt ? formatDateTime(lastEventAt) : "--"}</Typography.Text>
-        <div className="snapshot-tags">
-          <span>Roll {formatNumber(roll, "°")}</span>
-          <span>Pitch {formatNumber(pitch, "°")}</span>
-          <span>Yaw {formatNumber(yaw, "°")}</span>
-        </div>
-      </div>
-      <div className="snapshot-metrics">
-        <div>
-          <small>链路质量</small>
-          {linkQuality === null
-            ? <Typography.Text type="secondary">--</Typography.Text>
-            : <Progress percent={linkQuality} size="small" strokeColor="#132B88" />}
-        </div>
-        <div>
-          <small>设备状态</small>
-          <DeviceStatusTag status={device.status} degraded={device.degraded} />
-        </div>
-      </div>
+      <FlightMap position={position} />
     </Card>
+  );
+}
+
+function DeviceFact({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="device-fact">
+      <small>{label}</small>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -612,42 +674,6 @@ function CompassIndicator({ yaw }: { yaw: number }) {
       </div>
       <strong className="compass-readout">{String(heading).padStart(3, "0")}</strong>
     </div>
-  );
-}
-
-function CommandReadiness({
-  connected,
-  mqttReady,
-  sessionId,
-  device
-}: {
-  connected: boolean;
-  mqttReady: boolean;
-  sessionId: string | null;
-  device: DeviceDetail;
-}) {
-  const items = [
-    ["实时连接", connected],
-    ["路由连接", mqttReady],
-    ["会话令牌", Boolean(sessionId)],
-    ["目标在线", device.status === "online"],
-    ["非降级态", !device.degraded]
-  ] as const;
-
-  return (
-    <Card className="readiness-panel">
-      <Typography.Text className="section-eyebrow">控制前检查</Typography.Text>
-      <Typography.Title level={4}>命令可用性</Typography.Title>
-      <div className="readiness-list">
-        {items.map(([label, ok]) => (
-          <div key={label} className={ok ? "is-ok" : "is-warn"}>
-            <span />
-            <strong>{label}</strong>
-            <small>{ok ? "通过" : "受限"}</small>
-          </div>
-        ))}
-      </div>
-    </Card>
   );
 }
 
@@ -689,7 +715,7 @@ function DeviceStatusTag({ status, degraded }: { status: "online" | "offline"; d
 function commandStatusLabel(status: CommandStatus): string {
   const labels: Record<CommandStatus, string> = {
     submitted: "已提交",
-    dispatched: "已派发",
+    dispatched: "已派送",
     in_progress: "执行中",
     succeeded: "执行成功",
     failed: "执行失败",
@@ -697,6 +723,24 @@ function commandStatusLabel(status: CommandStatus): string {
     delivery_uncertain: "投递不确定"
   };
   return labels[status];
+}
+
+function commandNameLabel(
+  command: CommandUpdatedEvent["command"],
+  commandType: CommandUpdatedEvent["command_type"]
+): string {
+  if (commandType === "config") return "运行时配置";
+  const labels: Record<NonNullable<CommandUpdatedEvent["command"]>, string> = {
+    set_motor_pwm: "设置四路 PWM",
+    takeoff: "起飞",
+    land: "降落",
+    emergency_stop: "急停"
+  };
+  return command ? labels[command] : "控制命令";
+}
+
+function commandNotificationKey(clientRequestId: string): string {
+  return `command-${clientRequestId}`;
 }
 
 function TelemetryCard({ title, icon, items }: { title: string; icon: React.ReactNode; items: Array<[string, string]> }) {
@@ -718,22 +762,19 @@ function TelemetryCard({ title, icon, items }: { title: string; icon: React.Reac
   );
 }
 
-function MotorCard({ values }: { values: Array<number | null> }) {
-  return (
-    <Card className="telemetry-card motor-card">
-      <div className="telemetry-head">
-        <span><Cpu size={18} /></span>
-        <strong>电机</strong>
-      </div>
-      <div className="motor-bars">
-        {values.map((value, index) => (
-          <div key={index} className="motor-row">
-            <small>M{index + 1}</small>
-            <div><i style={{ width: `${value === null ? 0 : Math.min(100, value / 20)}%` }} /></div>
-            <span>{value ?? "--"}</span>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
+function formatCoordinate(value: number | null): string {
+  return value === null ? "--" : value.toFixed(6);
+}
+
+function gpsFixLabel(fixType: number | null, fixValid: boolean | null): string {
+  if (fixValid === false || fixType === 0 || fixType === 1) return "无定位";
+  const labels: Record<number, string> = {
+    2: "2D 定位",
+    3: "3D 定位",
+    4: "DGPS",
+    5: "RTK 浮点",
+    6: "RTK 固定"
+  };
+  if (fixType !== null) return labels[fixType] ?? `定位 ${fixType}`;
+  return fixValid === true ? "定位有效" : "等待定位";
 }
