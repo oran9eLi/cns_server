@@ -304,6 +304,23 @@ TEST_CASE("连接成功后业务订阅失败可通过补订阅入口恢复") {
   CHECK(out.str().find("MQTT业务订阅已恢复") != std::string::npos);
 }
 
+TEST_CASE("业务订阅已恢复后补订阅入口幂等") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->SubscribeDeviceMessages("cns").has_value());
+
+  injection.connect_callback(nullptr, injection.context, 0);
+  REQUIRE(client->EnsureBusinessSubscriptions().has_value());
+
+  CHECK(injection.subscriptions ==
+        std::vector<std::tuple<std::string, int>>{
+            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+}
+
 TEST_CASE("替换handler在状态锁外析构旧capture") {
   std::ostringstream out;
   std::ostringstream err;

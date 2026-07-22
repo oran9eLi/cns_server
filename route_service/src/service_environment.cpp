@@ -382,6 +382,7 @@ struct ServiceEnvironment::State {
   std::vector<command::CommandRecord> active_commands;
   std::shared_ptr<RuntimeExternalBridge> external_bridge;
   std::shared_ptr<RuntimeBundle> runtime_bundle;
+  std::chrono::steady_clock::time_point next_mqtt_subscription_retry{};
   bool accepting_device_messages = false;
   bool device_runtime_stopped = true;
 };
@@ -693,8 +694,16 @@ void ServiceEnvironment::WaitForNextCheck() {
       state_->runtime_bundle->worker && state_->mqtt) {
     state_->runtime_bundle->command_service->SetDatabaseAvailable(
         state_->runtime_bundle->worker->IsDatabaseAvailable());
-    state_->runtime_bundle->command_service->SetMqttAvailable(
-        state_->mqtt->IsConnected());
+    const bool mqtt_connected = state_->mqtt->IsConnected();
+    state_->runtime_bundle->command_service->SetMqttAvailable(mqtt_connected);
+    const auto now = std::chrono::steady_clock::now();
+    if (mqtt_connected && now >= state_->next_mqtt_subscription_retry) {
+      state_->next_mqtt_subscription_retry = now + std::chrono::seconds{5};
+      auto subscribed = state_->mqtt->EnsureBusinessSubscriptions();
+      if (!subscribed && state_->logger) {
+        state_->logger->Warn("MQTT业务订阅重试失败：" + subscribed.error());
+      }
+    }
   }
   std::this_thread::sleep_for(std::chrono::milliseconds{100});
 }
