@@ -20,6 +20,7 @@ import {
   type RouteServiceGateway
 } from "../route/routeServiceGateway.js";
 import type { DeviceStore } from "./deviceStore.js";
+import { enrichTelemetryCoordinates } from "../telemetry/coordinateTransform.js";
 
 const DeviceParamsSchema = z.object({
   vendor_id: VendorIdSchema
@@ -66,7 +67,10 @@ export async function registerDeviceRoutes(
 
       return DeviceDetailResponseSchema.parse({
         schema_version: SCHEMA_VERSION,
-        item
+        item: {
+          ...item,
+          latest_telemetry: enrichTelemetryCoordinates(item.latest_telemetry)
+        }
       });
     } catch {
       return sendError(reply, 503, "database_unavailable", "设备数据库暂不可用");

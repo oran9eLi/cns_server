@@ -12,6 +12,7 @@ import {
 } from "@cns/backend-protocol";
 
 import type { TrackedCommand } from "../commands/commandTracker.js";
+import { enrichTelemetryCoordinates } from "../telemetry/coordinateTransform.js";
 
 const NullableDateTimeSchema = z.string().datetime({ offset: true }).nullable();
 
@@ -95,7 +96,7 @@ export function toDeviceStateEvent(message: RouteDeviceStateMessage): DeviceStat
     event_at: message.event_at,
     last_seen_at: message.last_seen_at,
     telemetry_received_at: message.telemetry_received_at,
-    latest_telemetry: message.latest_telemetry,
+    latest_telemetry: enrichTelemetryCoordinates(message.latest_telemetry),
     change_reason: message.change_reason,
     degraded: message.degraded
   });

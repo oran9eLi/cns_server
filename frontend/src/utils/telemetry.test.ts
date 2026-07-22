@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapTelemetry } from "./telemetry.js";
+import { formatDateTime, mapTelemetry } from "./telemetry.js";
 
 describe("mapTelemetry", () => {
   it("maps real Raspberry Pi telemetry fields", () => {
@@ -8,22 +8,24 @@ describe("mapTelemetry", () => {
       telemetry: {
         attitude: { roll: 1.2, pitch: -2.3, yaw: 278.4 },
         pressure: { temperature: 26.5, press_abs: 1008.2 },
+        gps: { alt: 18.7 },
         motor: { pwm_us: [1100, 1200, 1300, 1400] },
         lora: { loss_rate_percent: 2.5 },
+        cellular_5g: { rssi_dbm: -75, packet_loss_percent: 0.8, latency_ms: 42.7 },
+        sys_status: { voltage_battery: 11.84 },
         battery: {
           battery_remaining: 76,
-          voltage_battery: 11840,
-          voltages: [11700]
+          voltages: [3.95, 3.94, 3.95]
         }
       }
     });
 
     expect(result).toEqual({
       attitude: { roll: 1.2, pitch: -2.3, yaw: 278.4 },
-      environment: { temperature: 26.5, pressure: 1008.2, altitude: null },
-      link: { rssi: null, packetLoss: 2.5, latency: null },
+      environment: { temperature: 26.5, pressure: 1008.2, altitude: 18.7 },
+      link: { rssi: -75, packetLoss: 0.8, latency: 42.7 },
       motors: { pwm: [1100, 1200, 1300, 1400] },
-      battery: { remaining: 76, voltage: 11840 }
+      battery: { remaining: 76, voltage: 11.84 }
     });
   });
 
@@ -49,5 +51,9 @@ describe("mapTelemetry", () => {
     expect(result.link).toEqual({ rssi: null, packetLoss: null, latency: null });
     expect(result.motors.pwm).toEqual([null, null, null, null]);
     expect(result.battery).toEqual({ remaining: null, voltage: 12100 });
+  });
+
+  it("keeps the HH:MM:SS time used by cns_rpi message logs", () => {
+    expect(formatDateTime("14:23:07")).toBe("14:23:07");
   });
 });

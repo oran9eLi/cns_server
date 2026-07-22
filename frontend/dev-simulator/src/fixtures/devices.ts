@@ -44,8 +44,23 @@ function device(
             pitch_deg: round((index % 3) * 2.1 - 1.6),
             yaw_deg: round(42 + index * 17.4)
           },
+          gps: {
+            lat: roundCoordinate(31.230416 + index * 0.0032),
+            lon: roundCoordinate(121.473701 + index * 0.0041),
+            alt: round(11.7 + index * 1.3),
+            fix_type: 3,
+            satellites_visible: 14 - index % 4,
+            h_acc: round(0.8 + index * 0.12)
+          },
+          global_position: {
+            lat: roundCoordinate(31.230416 + index * 0.0032),
+            lon: roundCoordinate(121.473701 + index * 0.0041),
+            alt: round(11.7 + index * 1.3),
+            hdg: round(42 + index * 17.4)
+          },
           environment: {
             temperature_c: round(25.4 + index * 0.7),
+            humidity_percent: round(52.8 + index * 0.9),
             pressure_hpa: round(1009.6 - index * 0.8),
             altitude_m: round(12.5 + index * 1.9)
           },
@@ -57,6 +72,31 @@ function device(
           motors: {
             pwm: [980 + index * 7, 982 + index * 5, 979 + index * 6, 981 + index * 4]
           },
+          battery: {
+            voltages: [11600 - index * 20, 11300 - index * 24],
+            battery_remaining: [78 - index * 3, 72 - index * 4]
+          },
+          self_check: {
+            position: index % 4 === 0 ? "warning" : "normal",
+            attitude: "normal",
+            environment: "normal",
+            lora: index === 3 ? "warning" : "normal",
+            cellular_5g: index === 3 ? "offline" : "normal",
+            remote_id: "normal",
+            storage: "normal",
+            motor: "normal"
+          },
+          alerts: index === 3
+            ? [
+                { code: "0x0301", level: "warning", message: "5G 通信离线", occurred_at: now },
+                { code: "0x0204", level: "warning", message: "定位质量较低", occurred_at: now }
+              ]
+            : [],
+          logs: [
+            { level: "info", message: "姿态模块正常", occurred_at: now },
+            { level: "info", message: "环境模块正常", occurred_at: now },
+            { level: "info", message: "存储模块正常", occurred_at: now }
+          ],
           runtime_config: {
             telemetry_publish_interval_ms: 2000
           }
@@ -81,6 +121,8 @@ export function nudgeTelemetry(device: DeviceDetail, tick: number): DeviceDetail
 
   const telemetry = structuredClone(device.latest_telemetry) as Record<string, JsonValue>;
   const attitude = telemetry.attitude as Record<string, number> | undefined;
+  const gps = telemetry.gps as Record<string, number> | undefined;
+  const globalPosition = telemetry.global_position as Record<string, number> | undefined;
   const environment = telemetry.environment as Record<string, number> | undefined;
   const link = telemetry.link as Record<string, number> | undefined;
   const motors = telemetry.motors as { pwm?: number[] } | undefined;
@@ -89,6 +131,16 @@ export function nudgeTelemetry(device: DeviceDetail, tick: number): DeviceDetail
     attitude.roll_deg = round((attitude.roll_deg ?? 0) + Math.sin(tick / 3) * 0.3);
     attitude.pitch_deg = round((attitude.pitch_deg ?? 0) + Math.cos(tick / 4) * 0.2);
     attitude.yaw_deg = round(((attitude.yaw_deg ?? 0) + 0.8) % 360);
+  }
+  if (gps) {
+    gps.lat = roundCoordinate((gps.lat ?? 31.230416) + Math.sin(tick / 8) * 0.000006);
+    gps.lon = roundCoordinate((gps.lon ?? 121.473701) + Math.cos(tick / 8) * 0.000006);
+  }
+  if (globalPosition && gps) {
+    globalPosition.lat = gps.lat;
+    globalPosition.lon = gps.lon;
+    globalPosition.alt = gps.alt;
+    globalPosition.hdg = attitude?.yaw_deg ?? globalPosition.hdg;
   }
   if (environment) {
     environment.temperature_c = round((environment.temperature_c ?? 25) + Math.sin(tick / 5) * 0.08);
@@ -112,4 +164,8 @@ export function nudgeTelemetry(device: DeviceDetail, tick: number): DeviceDetail
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function roundCoordinate(value: number): number {
+  return Math.round(value * 10_000_000) / 10_000_000;
 }
