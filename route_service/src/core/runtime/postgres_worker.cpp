@@ -159,6 +159,10 @@ void PostgresWorker::Run(std::stop_token stop) {
                   auto value = store_.FindCommand(task.source_id, task.request_id);
                   if (!value) return std::unexpected(value.error());
                   return CommandDatabaseValue{std::move(*value)};
+                } else if constexpr (std::is_same_v<Task, FindCommandByIdTask>) {
+                  auto value = store_.FindCommandById(task.command_id);
+                  if (!value) return std::unexpected(value.error());
+                  return CommandDatabaseValue{std::move(*value)};
                 } else if constexpr (std::is_same_v<Task, InsertCommandTask>) {
                   auto value = store_.InsertCommand(task.command);
                   if (!value) return std::unexpected(value.error());

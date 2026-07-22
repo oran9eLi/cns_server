@@ -26,6 +26,7 @@ struct DatabaseError {
 };
 
 struct FindCommandTask { std::string source_id; std::string request_id; };
+struct FindCommandByIdTask { std::string command_id; };
 struct InsertCommandTask { command::CommandRecord command; };
 struct TransitionCommandTask {
   std::string command_id;
@@ -41,8 +42,9 @@ struct CleanupCommandsTask {
   command::TimePoint before;
   std::size_t batch_size;
 };
-using CommandDatabaseTask = std::variant<FindCommandTask, InsertCommandTask,
-    TransitionCommandTask, RecoverControlCommandsTask, CleanupCommandsTask>;
+using CommandDatabaseTask = std::variant<FindCommandTask, FindCommandByIdTask,
+    InsertCommandTask, TransitionCommandTask, RecoverControlCommandsTask,
+    CleanupCommandsTask>;
 using CommandDatabaseValue = std::variant<std::monostate,
     std::optional<command::CommandRecord>, command::CommandRecord,
     std::vector<command::CommandRecord>, std::size_t>;
@@ -65,6 +67,11 @@ class PostgresWorker {
     FindCommand(std::string_view, std::string_view) {
       return std::unexpected(DatabaseError{DatabaseError::Kind::kPermanent,
                                            "命令查询端口未实现"});
+    }
+    virtual std::expected<std::optional<command::CommandRecord>, DatabaseError>
+    FindCommandById(std::string_view) {
+      return std::unexpected(DatabaseError{DatabaseError::Kind::kPermanent,
+                                           "命令按ID查询端口未实现"});
     }
     virtual std::expected<command::CommandRecord, DatabaseError> InsertCommand(
         const command::CommandRecord&) {

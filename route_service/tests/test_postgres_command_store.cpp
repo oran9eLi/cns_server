@@ -16,6 +16,7 @@ TEST_CASE("PostgreSQL命令仓库公开完整来源命令与清理接口") {
   CHECK(std::is_member_function_pointer_v<decltype(&Store::LoadActiveCommands)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::RecoverActiveControlCommands)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::FindCommand)>);
+  CHECK(std::is_member_function_pointer_v<decltype(&Store::FindCommandById)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::InsertCommand)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::TransitionCommand)>);
   CHECK(std::is_member_function_pointer_v<decltype(&Store::DeleteExpiredTerminalCommands)>);
@@ -92,6 +93,16 @@ TEST_CASE("显式启用时真实数据库完成来源同步命令迁移和限量
   REQUIRE(found);
   REQUIRE(found->has_value());
   CHECK(found->value().request_payload == command.request_payload);
+  auto found_by_id = (*store)->FindCommandById(command.command_id);
+  REQUIRE(found_by_id);
+  REQUIRE(found_by_id->has_value());
+  CHECK(found_by_id->value().command_id == command.command_id);
+  CHECK(found_by_id->value().source_id == command.source_id);
+  CHECK(found_by_id->value().request_id == command.request_id);
+  auto missing_by_id =
+      (*store)->FindCommandById("550e8400-e29b-41d4-a716-446655440099");
+  REQUIRE(missing_by_id);
+  CHECK_FALSE(missing_by_id->has_value());
   CHECK(inserted->command_type == cns::command::CommandType::kConfig);
 
   auto control = command;

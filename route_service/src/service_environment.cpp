@@ -64,6 +64,14 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
                                               result.error()));
   }
 
+  std::expected<std::optional<command::CommandRecord>, runtime::DatabaseError>
+  FindCommandById(std::string_view command_id) override {
+    auto result = store_->FindCommandById(command_id);
+    if (result) return std::move(*result);
+    return std::unexpected(ClassifyWithDetail("数据库命令查询失败",
+                                              result.error()));
+  }
+
   std::expected<command::CommandRecord, runtime::DatabaseError> InsertCommand(
       const command::CommandRecord& command) override {
     auto result = store_->InsertCommand(command);

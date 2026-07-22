@@ -95,6 +95,8 @@ class PostgresStore {
                                std::size_t limit);
   std::expected<std::optional<command::CommandRecord>, std::string> FindCommand(
       std::string_view source_id, std::string_view request_id);
+  std::expected<std::optional<command::CommandRecord>, std::string>
+  FindCommandById(std::string_view command_id);
   std::expected<command::CommandRecord, std::string> InsertCommand(
       const command::CommandRecord& command);
   std::expected<command::CommandRecord, std::string> TransitionCommand(

@@ -60,6 +60,13 @@ struct FakeStore : PostgresWorker::StorePort {
         DatabaseError{DatabaseError::Kind::kUnavailable, "暂不可用"});
     return std::optional<cns::command::CommandRecord>{Record()};
   }
+  std::expected<std::optional<cns::command::CommandRecord>, DatabaseError>
+  FindCommandById(std::string_view) override {
+    Called();
+    if (unavailable) return std::unexpected(
+        DatabaseError{DatabaseError::Kind::kUnavailable, "暂不可用"});
+    return std::optional<cns::command::CommandRecord>{Record()};
+  }
   std::expected<cns::command::CommandRecord, DatabaseError> InsertCommand(
       const cns::command::CommandRecord& command) override {
     Called();
@@ -162,6 +169,27 @@ TEST_CASE("命令暂不可用时保留任务并在迁移校验恢复后完成") 
   CHECK(worker.FlushAndStop(1s));
   std::lock_guard lock(mutex);
   REQUIRE(results.front().value.has_value());
+}
+
+TEST_CASE("PostgresWorker执行按命令ID查询任务") {
+  FakeStore store;
+  std::vector<CommandDatabaseResult> results;
+  PostgresWorker worker(store, [](cns::runtime::DatabaseResult) {}, [] {},
+                        [] { return std::chrono::steady_clock::now(); }, {},
+                        5s, [&](CommandDatabaseResult result) {
+                          results.push_back(std::move(result));
+                        });
+  REQUIRE(worker.SubmitCommand(
+      7, cns::runtime::FindCommandByIdTask{
+             "550e8400-e29b-41d4-a716-446655440000"}));
+  std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });
+  CHECK(worker.FlushAndStop(200ms));
+  REQUIRE(results.size() == 1);
+  const auto* value = std::get_if<std::optional<cns::command::CommandRecord>>(
+      &*results.front().value);
+  REQUIRE(value != nullptr);
+  REQUIRE(value->has_value());
+  CHECK((*value)->command_id == "550e8400-e29b-41d4-a716-446655440000");
 }
 
 TEST_CASE("命令永久错误只结束当前操作且不触发重连") {

@@ -699,6 +699,27 @@ PostgresStore::FindCommand(std::string_view source_id,
   }
 }
 
+std::expected<std::optional<command::CommandRecord>, std::string>
+PostgresStore::FindCommandById(std::string_view command_id) {
+  try {
+    pqxx::read_transaction transaction{*connection_};
+    const auto rows = transaction.exec(
+        "SELECT " + std::string{kCommandColumns} +
+            " FROM commands WHERE command_id = $1::uuid",
+        pqxx::params{command_id});
+    if (rows.empty()) return std::optional<command::CommandRecord>{};
+    auto command = CommandFromRow(rows.front());
+    if (!command) return std::unexpected(command.error());
+    return std::optional<command::CommandRecord>{std::move(*command)};
+  } catch (const pqxx::broken_connection&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), true);
+    return std::unexpected("读取 PostgreSQL 命令失败");
+  } catch (const std::exception&) {
+    last_failure_kind_ = ClassifyOperationFailure(IsOpen(), false);
+    return std::unexpected("读取 PostgreSQL 命令失败");
+  }
+}
+
 std::expected<command::CommandRecord, std::string>
 PostgresStore::InsertCommand(const command::CommandRecord& command) {
   try {
