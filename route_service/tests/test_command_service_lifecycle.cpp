@@ -256,7 +256,11 @@ TEST_CASE("非法和无法关联ACK及幂等回放不产生成功日志") {
   h.service.TryPush({"cns/Z1b2C3d4E5f6G7h8I9j0/config/ack",
       R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow});
   h.service.ProcessReady(kNow);
-  CHECK(h.information.empty());
+  REQUIRE(h.information.size() == 1);
+  CHECK(h.information.front().find("迟到或无法关联应答 applied") !=
+        std::string::npos);
+  CHECK(h.information.front().find("已转发至") == std::string::npos);
+  h.information.clear();
 
   REQUIRE(h.service.TryPush({"cns/sources/web-console/config/request",
       R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})", kNow}));
@@ -345,6 +349,38 @@ TEST_CASE("超时从创建时间计算并通过条件转换落库") {
   const auto task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
   CHECK(task.desired == cns::command::CommandStatus::kTimeout);
   CHECK(task.update.error_code == "command_timeout");
+  REQUIRE(task.update.dispatched_at);
+  CHECK(*task.update.dispatched_at == kNow - 16s);
+}
+
+TEST_CASE("飞控超时后的迟到ACK记录为信息日志且不报无法关联错误") {
+  Harness h;
+  h.service.LoadActive({ActiveControl(cns::command::CommandStatus::kDispatched)});
+  h.service.ProcessReady(kNow + 31s);
+  REQUIRE(h.db.size() == 1);
+  auto timeout_task = std::get<cns::runtime::TransitionCommandTask>(h.db.front().second);
+  CHECK(timeout_task.desired == cns::command::CommandStatus::kTimeout);
+  auto timed_out = ActiveControl(cns::command::CommandStatus::kTimeout);
+  timed_out.error_code = "control_timeout";
+  timed_out.error_message = "设备飞控命令超时";
+  timed_out.completed_at = kNow + 31s;
+  h.Reply(timed_out);
+  REQUIRE(h.service.ActiveCommandCount() == 0);
+  REQUIRE(h.db.empty());
+  h.diagnostics.clear();
+  h.information.clear();
+
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/control/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","command":"takeoff","status":"accepted","mavlink_command":31091,"result":0,"result_code":"accepted"})",
+      kNow + 32s}));
+  h.service.ProcessReady(kNow + 32s);
+
+  h.RemoveCleanupTask();
+  CHECK(h.db.empty());
+  CHECK(h.diagnostics.empty());
+  REQUIRE(h.information.size() == 1);
+  CHECK(h.information.front().find("应答 accepted") != std::string::npos);
+  CHECK(h.information.front().find("未反转结果") != std::string::npos);
 }
 
 TEST_CASE("恢复pending命令沿用原command_id重发") {

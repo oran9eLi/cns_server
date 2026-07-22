@@ -90,6 +90,10 @@ class CommandService {
     RequestContext context;
     TransitionCommandTask task;
   };
+  struct CompletedCommand {
+    RequestContext context;
+    command::TimePoint remembered_at;
+  };
   struct EarlyDeviceAck {
     std::string vendor_id;
     std::string payload;
@@ -114,6 +118,12 @@ class CommandService {
   void ConvergeAfterConflict(Operation operation,
                              const command::CommandRecord& current,
                              command::TimePoint now);
+  void RememberCompletedCommand(RequestContext context, command::TimePoint now);
+  bool TryHandleLateDeviceAck(std::string_view vendor_id,
+                              command::CommandType command_type,
+                              std::string_view command_id,
+                              std::string_view business_status,
+                              command::TimePoint now);
   bool IsStateChangedError(const DatabaseError& error) const;
   void Reject(std::string_view source_id,
               std::optional<std::string_view> request_id,
@@ -142,6 +152,7 @@ class CommandService {
   std::unordered_map<std::uint64_t, Operation> operations_;
   std::unordered_map<std::uint64_t, PublishedCommand> publications_;
   std::unordered_map<std::string, RequestContext> active_commands_;
+  std::unordered_map<std::string, CompletedCommand> completed_commands_;
   std::unordered_set<std::string> recovery_started_;
   std::unordered_map<std::string, DeferredTransition> deferred_transitions_;
   std::unordered_map<std::string, EarlyDeviceAck> early_device_acks_;

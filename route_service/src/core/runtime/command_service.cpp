@@ -126,6 +126,26 @@ std::string DescribeCommand(
   return "未知命令";
 }
 
+std::string_view CommandStatusName(command::CommandStatus status) noexcept {
+  switch (status) {
+    case command::CommandStatus::kPending:
+      return "pending";
+    case command::CommandStatus::kDispatched:
+      return "dispatched";
+    case command::CommandStatus::kInProgress:
+      return "in_progress";
+    case command::CommandStatus::kSucceeded:
+      return "succeeded";
+    case command::CommandStatus::kFailed:
+      return "failed";
+    case command::CommandStatus::kTimeout:
+      return "timeout";
+    case command::CommandStatus::kDeliveryUncertain:
+      return "delivery_uncertain";
+  }
+  return "unknown";
+}
+
 }  // namespace
 
 CommandService::CommandService(
@@ -212,6 +232,7 @@ void CommandService::CancelOutstandingWork() {
   publications_.clear();
   deferred_transitions_.clear();
   early_device_acks_.clear();
+  completed_commands_.clear();
 }
 
 void CommandService::SetDatabaseAvailable(bool available) {
@@ -565,6 +586,7 @@ void CommandService::Handle(CommandDatabaseResult result,
       operation.context.device_ack_business_status.reset();
     }
     if (command::IsTerminal(record->status)) {
+      RememberCompletedCommand(operation.context, now);
       active_commands_.erase(record->command_id);
       recovery_started_.erase(record->command_id);
       early_device_acks_.erase(record->command_id);
@@ -661,7 +683,19 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
   if (found == active_commands_.end() || !found->second.record ||
       found->second.record->target_vendor_id != vendor_id ||
       found->second.command_type != command_type) {
-    Diagnose("设备命令ACK无法关联活动命令");
+    if (TryHandleLateDeviceAck(vendor_id, command_type, command_id,
+                               business_status, now)) {
+      return;
+    }
+    if (const auto* target = devices_.Find(vendor_id)) {
+      Inform("收到来自设备 " +
+             DescribeTarget({target->vendor_id, target->school_name,
+                             target->dcdw_label}) +
+             "的迟到或无法关联应答 " + business_status + "，未反转结果");
+    } else {
+      Inform("收到来自未知设备 " + std::string{vendor_id} +
+             "的迟到或无法关联应答 " + business_status + "，未反转结果");
+    }
     return;
   }
   auto context = found->second;
@@ -772,7 +806,7 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
         timed_out.completed_at = now;
         context.record = timed_out;
         command::CommandUpdate update{timed_out.error_code, timed_out.error_message,
-                                      std::nullopt, std::nullopt, now, now};
+                                      std::nullopt, timed_out.dispatched_at, now, now};
         SubmitTransitionOrDefer(
             std::move(context),
             TransitionCommandTask{id, record.status,
@@ -870,6 +904,43 @@ bool CommandService::IsStateChangedError(const DatabaseError& error) const {
   return error.message.find("状态已变化") != std::string::npos;
 }
 
+void CommandService::RememberCompletedCommand(RequestContext context,
+                                              command::TimePoint now) {
+  if (!context.record || !command::IsTerminal(context.record->status)) return;
+  completed_commands_.insert_or_assign(
+      context.record->command_id,
+      CompletedCommand{std::move(context), now});
+  while (completed_commands_.size() > max_inflight_commands_) {
+    auto oldest = completed_commands_.begin();
+    for (auto current = completed_commands_.begin();
+         current != completed_commands_.end(); ++current) {
+      if (current->second.remembered_at < oldest->second.remembered_at) {
+        oldest = current;
+      }
+    }
+    completed_commands_.erase(oldest);
+  }
+}
+
+bool CommandService::TryHandleLateDeviceAck(
+    std::string_view vendor_id, command::CommandType command_type,
+    std::string_view command_id, std::string_view business_status,
+    command::TimePoint now) {
+  static_cast<void>(now);
+  const auto found = completed_commands_.find(std::string{command_id});
+  if (found == completed_commands_.end() || !found->second.context.record ||
+      found->second.context.record->target_vendor_id != vendor_id ||
+      found->second.context.command_type != command_type ||
+      !found->second.context.target) {
+    return false;
+  }
+  Inform("收到来自设备 " + DescribeTarget(*found->second.context.target) +
+         "的迟到应答 " + std::string{business_status} + "，命令已是 " +
+         std::string{CommandStatusName(found->second.context.record->status)} +
+         "，未反转结果");
+  return true;
+}
+
 void CommandService::HandleTransitionConflict(Operation operation,
                                               command::TimePoint now) {
   static_cast<void>(now);
@@ -892,6 +963,7 @@ void CommandService::ConvergeAfterConflict(
   const bool was_active = active_commands_.contains(current.command_id);
 
   if (command::IsTerminal(current.status)) {
+    RememberCompletedCommand(context, now);
     active_commands_.erase(current.command_id);
     recovery_started_.erase(current.command_id);
     early_device_acks_.erase(current.command_id);
