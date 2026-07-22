@@ -83,6 +83,8 @@ V1 阶段核心职责：
 
 运行时全量加载设备目录，当前方案面向约 1,000 台以内的规模保持简单。PostgreSQL 冷启动不可用时服务退出；运行中断线时，已登记设备继续维护内存状态并发布降级事件，未登记新设备暂不接纳，数据库线程默认每 5 秒重连并在恢复后补写。
 
+MQTT 连接恢复后会继续确认业务订阅状态。`MQTT连接已恢复` 只表示客户端已连上 Broker；registration、telemetry、来源命令请求和设备 ACK 等业务 topic 全部订阅成功后，才记录 `MQTT业务订阅已恢复`。连接恢复但业务订阅失败时，服务按短周期补订阅，retained registration 会在订阅恢复后重新进入现有注册处理链路。
+
 ## 当前状态
 
 - 里程碑一“工程基础与数据库骨架”已实现并完成本机验收；现场 PostgreSQL、Mosquitto、迁移重复执行和信号退出尚未验证，等待用户授权。
@@ -93,6 +95,7 @@ V1 阶段核心职责：
 - 里程碑三“固定来源与配置命令”已完成代码实现、本机自动化测试、独立 PostgreSQL/Mosquitto 真实链路和真实 RPi 配置命令验证，验收记录见 `docs/change_history/2026-07-20-里程碑三固定来源与配置命令验收.md`。现场服务器验证仍待补充。
 - 里程碑四“飞控命令路由”已完成代码和本机自动化验收：支持四种飞控请求、QoS 2 非 retained 下发、进度与终态 ACK、30 秒可刷新期限，以及重启后收敛为 `delivery_uncertain` 且不重发。独立真实依赖联调与真实 RPi 飞控验证仍待安全条件和明确授权，实际证据见 `docs/change_history/2026-07-21-里程碑四飞控命令路由验收.md`。
 - 里程碑五公网安全接入已完成设计确认：使用 CNS 私有 CA、端到端 MQTT TLS `8883`、每设备独立凭据和 Mosquitto ACL；云服务器 frps 仅做 TCP 透传，最终由现场服务器 frpc 转发到回环地址的 Mosquitto。设计见 `docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`，尚未开始实施。
+- 收尾里程碑“展示链路固化”用于当前本机演示链路，范围限定为 Broker 晚启动后的业务订阅恢复、命令状态转换竞态收敛、部署入口和验收记录；不包含正式 TLS/ACL、现场服务器迁移或前端体验优化。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。
 
@@ -178,6 +181,29 @@ sudo -u "$service_user" route_service/build-fresh/route_service \
 ```
 
 当前能力包括工程与数据库骨架、设备注册和最新状态，以及配置与飞控命令共用的固定来源、寻址、权限、幂等、QoS 2 下发、设备 ACK、超时和终态清理。配置命令重启后可按原 `command_id` 恢复；飞控命令重启后不重发，非终态统一收敛为 `delivery_uncertain`。
+
+### 当前本机展示链路
+
+当前展示环境使用本机作为临时服务器：
+
+```text
+树莓派 → 云端 frps → 本机 frpc → 本机 Mosquitto 18884 → route_service → PostgreSQL → backend_service → 前端
+```
+
+相关服务：
+
+- `mosquitto-18884.service`：本机测试 Broker，监听 `18884`。
+- `cns-frpc.service`：把云端 MQTT 入口转发到本机 Broker。
+- `cns-route-service.service`：路由服务。
+- `cns-backend-service.service`：后端服务。
+
+查看 route_service 日志：
+
+```bash
+journalctl -u cns-route-service.service -f
+```
+
+本链路使用匿名明文 MQTT，仅用于展示和开发验证；正式 TLS/ACL/8883 部署后续单独实施。Broker 晚于 route_service 启动时，应看到 `MQTT连接已恢复` 后继续出现 `MQTT业务订阅已恢复`，否则设备 retained registration 不会可靠进入注册链路。
 
 里程碑三非破坏性联调入口：
 
