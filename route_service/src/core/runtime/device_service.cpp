@@ -1,6 +1,7 @@
 #include "core/runtime/device_service.hpp"
 
 #include <algorithm>
+#include <string>
 #include <utility>
 
 #include "core/mqtt_topic/device_topic.hpp"
@@ -9,6 +10,14 @@
 namespace cns::runtime {
 namespace {
 constexpr auto kOfflineScan = std::chrono::seconds{1};
+
+std::string DescribeDeviceForLog(const device::DeviceRecord& record) {
+  std::string text = record.school_name + "/";
+  text += record.dcdw_label ? *record.dcdw_label : "未编号";
+  text += " vendor_id=";
+  text += record.vendor_id;
+  return text;
+}
 
 persistence::DesiredDeviceWrite WriteFor(device::Mutation mutation,
                                          persistence::Urgency urgency) {
@@ -27,12 +36,13 @@ DeviceService::DeviceService(device::DeviceRegistry& registry,
     ProvisionSubmitter provision, WriteSubmitter write, EventSink events,
     SteadyNow steady_now, DiagnosticSink diagnostic, std::size_t queue_capacity,
     std::string topic_namespace, std::chrono::seconds telemetry_interval,
-    std::chrono::seconds offline_timeout)
+    std::chrono::seconds offline_timeout, InformationSink information)
     : registry_(registry), provision_(std::move(provision)),
       write_(std::move(write)), events_(std::move(events)),
       steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)),
       mqtt_queue_(queue_capacity), topic_namespace_(std::move(topic_namespace)),
-      telemetry_interval_(telemetry_interval), offline_timeout_(offline_timeout) {
+      telemetry_interval_(telemetry_interval), offline_timeout_(offline_timeout),
+      information_(std::move(information)) {
   try {
     next_scan_ = steady_now_() + kOfflineScan;
     scan_initialized_ = true;
@@ -303,11 +313,13 @@ void DeviceService::Handle(DatabaseResult result) {
       pending_.clear();
       completed += static_cast<std::ptrdiff_t>(submitted_.size());
       submitted_.clear();
+      pending_status_logs_.clear();
       if (completed != 0) AdjustOutstandingDatabaseWork(-completed);
     } else {
       if (submitted_.erase(result.vendor_id) != 0) {
         AdjustOutstandingDatabaseWork(-1);
       }
+      pending_status_logs_.erase(result.vendor_id);
     }
     if (const auto* record = registry_.Find(result.vendor_id)) {
       degraded_[result.vendor_id] = std::max(record->revision, result.revision);
@@ -352,6 +364,17 @@ void DeviceService::Handle(DatabaseResult result) {
   if (result.kind == DatabaseResult::Kind::kWriteCompleted) {
     const auto it = submitted_.find(result.vendor_id);
     if (it != submitted_.end() && result.revision >= it->second.revision) {
+      const auto status_log = pending_status_logs_.find(result.vendor_id);
+      if (status_log != pending_status_logs_.end() &&
+          result.revision >= status_log->second.revision &&
+          it->second.write_status) {
+        const auto& record = status_log->second.record;
+        Inform(std::string{record.status == device::Status::kOnline
+                               ? "设备上线："
+                               : "设备离线："} +
+               DescribeDeviceForLog(record));
+        pending_status_logs_.erase(status_log);
+      }
       dirty_.Complete(it->second);
       submitted_.erase(it);
       AdjustOutstandingDatabaseWork(-1);
@@ -403,6 +426,11 @@ void DeviceService::Mark(device::Mutation mutation) {
   const auto reason = mutation.reason;
   const auto record = mutation.record;
   last_reason_[record.vendor_id] = reason;
+  if (mutation.status_changed) {
+    pending_status_logs_[record.vendor_id] =
+        persistence::DesiredDeviceWrite{record, record.revision, false, true,
+                                        false, persistence::Urgency::kImmediate};
+  }
   const bool telemetry = reason == state_event::ChangeReason::kTelemetry;
   dirty_.Mark(WriteFor(std::move(mutation), telemetry
       ? persistence::Urgency::kTelemetryBatch : persistence::Urgency::kImmediate),
@@ -485,6 +513,11 @@ void DeviceService::Publish(PublishedState state) noexcept {
 void DeviceService::Diagnose(std::string message) noexcept {
   if (!diagnostic_) return;
   try { diagnostic_(std::move(message)); } catch (...) {}
+}
+
+void DeviceService::Inform(std::string message) noexcept {
+  if (!information_) return;
+  try { information_(std::move(message)); } catch (...) {}
 }
 
 void DeviceService::Notify() { wake_.notify_all(); }

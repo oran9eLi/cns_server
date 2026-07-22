@@ -46,6 +46,7 @@ class DeviceService {
   using EventSink = std::function<void(PublishedState)>;
   using SteadyNow = std::function<std::chrono::steady_clock::time_point()>;
   using DiagnosticSink = std::function<void(std::string)>;
+  using InformationSink = std::function<void(std::string)>;
   using CycleHook = std::function<void(TimePoint)>;
 
   DeviceService(device::DeviceRegistry& registry, ProvisionSubmitter provision,
@@ -54,7 +55,8 @@ class DeviceService {
                 std::size_t queue_capacity = 1024,
                 std::string topic_namespace = "cns",
                 std::chrono::seconds telemetry_interval = std::chrono::seconds{5},
-                std::chrono::seconds offline_timeout = std::chrono::seconds{60});
+                std::chrono::seconds offline_timeout = std::chrono::seconds{60},
+                InformationSink information = {});
 
   bool TryPush(mqtt::InboundMessage message);
   void PushDatabaseResult(DatabaseResult result);
@@ -88,6 +90,7 @@ class DeviceService {
   bool SubmitWrite(persistence::DesiredDeviceWrite write);
   void Publish(PublishedState state) noexcept;
   void Diagnose(std::string message) noexcept;
+  void Inform(std::string message) noexcept;
   void Notify();
   bool HasOutstandingDatabaseWork() const;
   bool IsInputDrained() const;
@@ -113,6 +116,7 @@ class DeviceService {
   std::unordered_map<std::string, std::uint64_t> degraded_;
   std::unordered_map<std::string, state_event::ChangeReason> last_reason_;
   std::unordered_map<std::string, persistence::DesiredDeviceWrite> submitted_;
+  std::unordered_map<std::string, persistence::DesiredDeviceWrite> pending_status_logs_;
   std::chrono::steady_clock::time_point next_scan_{};
   bool scan_initialized_ = false;
   bool database_unavailable_ = false;
@@ -127,6 +131,7 @@ class DeviceService {
   std::string topic_namespace_;
   std::chrono::seconds telemetry_interval_;
   std::chrono::seconds offline_timeout_;
+  InformationSink information_;
   mutable std::mutex wake_mutex_;
   std::condition_variable_any wake_;
 };

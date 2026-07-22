@@ -57,6 +57,7 @@ struct Harness {
   std::vector<DesiredDeviceWrite> writes;
   std::vector<cns::runtime::PublishedState> events;
   std::vector<std::string> diagnostics;
+  std::vector<std::string> information;
   std::chrono::steady_clock::time_point steady{};
 
   DeviceService Make(std::size_t capacity = 8) {
@@ -73,7 +74,10 @@ struct Harness {
         [this](cns::runtime::PublishedState e) { events.push_back(std::move(e)); },
         [this] { return steady; },
         [this](std::string error) { diagnostics.push_back(std::move(error)); },
-        capacity);
+        capacity, "cns", 5s, 60s,
+        [this](std::string message) {
+          information.push_back(std::move(message));
+        });
   }
 };
 
@@ -399,6 +403,35 @@ TEST_CASE("offline scan runs each second and writes status immediately") {
   REQUIRE(h.writes.size() == 1);
   CHECK(h.writes[0].write_status);
   CHECK(h.registry.Find(kKnown)->status == Status::kOffline);
+}
+
+TEST_CASE("设备上线和离线状态持久化完成后输出信息日志") {
+  Harness h;
+  REQUIRE(h.registry.Load({Record(kKnown)}));
+  auto service = h.Make();
+
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/registration",
+                          RegistrationJson(kKnown)));
+  service.ProcessReady(cns::runtime::TimePoint{} + 1s);
+  REQUIRE(h.writes.size() == 1);
+  CHECK(h.information.empty());
+  service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kKnown,
+                              h.writes.back().revision, std::nullopt, {}});
+  service.ProcessReady(cns::runtime::TimePoint{} + 1s);
+  REQUIRE(h.information.size() == 1);
+  CHECK(h.information.back() ==
+        std::string{"设备上线：SEU/DCDW-001 vendor_id="} + kKnown);
+
+  h.steady += 1s;
+  service.ProcessReady(cns::runtime::TimePoint{} + 62s);
+  REQUIRE(h.writes.size() == 2);
+  CHECK(h.information.size() == 1);
+  service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kKnown,
+                              h.writes.back().revision, std::nullopt, {}});
+  service.ProcessReady(cns::runtime::TimePoint{} + 62s);
+  REQUIRE(h.information.size() == 2);
+  CHECK(h.information.back() ==
+        std::string{"设备离线：SEU/DCDW-001 vendor_id="} + kKnown);
 }
 
 TEST_CASE("database failure degrades events and recovery uses revisions") {

@@ -285,7 +285,10 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         },
         config.queues.mqtt_inbound_capacity, config.mqtt.topic_namespace,
         config.device_state.telemetry_flush_interval,
-        config.device_state.offline_timeout);
+        config.device_state.offline_timeout,
+        [weak = external](std::string message) {
+          if (const auto bridge = weak.lock()) bridge->Inform(message);
+        });
     ingress = std::make_shared<runtime::DeviceIngress>(
         [weak_self](mqtt::InboundMessage message) {
           const auto self = weak_self.lock();
