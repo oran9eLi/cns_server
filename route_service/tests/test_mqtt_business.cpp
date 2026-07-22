@@ -276,7 +276,32 @@ TEST_CASE("订阅失败不标记当前连接代并允许完整重试") {
         std::vector<std::tuple<std::string, int>>{
             {"cns/+/registration", 2}, {"cns/+/telemetry", 0},
             {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
-  CHECK(err.str().find("MQTT设备消息订阅失败") != std::string::npos);
+  CHECK(err.str().find("MQTT业务订阅失败：订阅telemetry消息") !=
+        std::string::npos);
+}
+
+TEST_CASE("连接成功后业务订阅失败可通过补订阅入口恢复") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  injection.subscribe_results = {MOSQ_ERR_SUCCESS, MOSQ_ERR_NOMEM,
+                                 MOSQ_ERR_SUCCESS, MOSQ_ERR_SUCCESS};
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->SubscribeDeviceMessages("cns").has_value());
+
+  injection.connect_callback(nullptr, injection.context, 0);
+  CHECK(injection.subscriptions.size() == 2);
+  CHECK(err.str().find("MQTT业务订阅失败：订阅telemetry消息") !=
+        std::string::npos);
+
+  REQUIRE(client->EnsureBusinessSubscriptions().has_value());
+  CHECK(injection.subscriptions ==
+        std::vector<std::tuple<std::string, int>>{
+            {"cns/+/registration", 2}, {"cns/+/telemetry", 0},
+            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+  CHECK(out.str().find("MQTT业务订阅已恢复") != std::string::npos);
 }
 
 TEST_CASE("替换handler在状态锁外析构旧capture") {

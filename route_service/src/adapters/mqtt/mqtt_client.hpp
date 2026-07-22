@@ -65,6 +65,7 @@ class MqttClient {
       MessageHandler handler, std::size_t max_payload_bytes);
   std::expected<void, std::string> SubscribeDeviceMessages(
       std::string_view topic_namespace);
+  std::expected<void, std::string> EnsureBusinessSubscriptions();
   std::expected<void, std::string> ConfigureCommandPublishing(
       PublishCompletionHandler handler, std::size_t capacity);
   std::expected<void, std::string> SubscribeCommandMessages(

@@ -183,6 +183,9 @@ struct MqttClient::CallbackState {
           source_request_generation = generation;
           device_ack_generation = generation;
         }
+        if (logger != nullptr && (subscribe_devices || subscribe_commands)) {
+          logger->Info("MQTT业务订阅已恢复");
+        }
       }
     }
     return {};
@@ -522,6 +525,11 @@ std::expected<void, std::string> MqttClient::SubscribeDeviceMessages(
   return {};
 }
 
+std::expected<void, std::string> MqttClient::EnsureBusinessSubscriptions() {
+  if (IsConnected()) return callback_state_->SubscribeConfigured(client_);
+  return {};
+}
+
 std::expected<void, std::string> MqttClient::ReplayRetainedRegistrations(
     std::string_view topic_namespace) {
   if (topic_namespace.empty()) return std::unexpected("MQTT topic命名空间不能为空");
@@ -653,7 +661,7 @@ void MqttClient::HandleConnect(struct mosquitto* client, void* context,
       const auto subscribed = state.SubscribeConfigured(client);
       if (!subscribed.has_value()) {
         state.WarnBusiness("mqtt_business_subscribe",
-                           "MQTT设备消息订阅失败");
+                           "MQTT业务订阅失败：" + subscribed.error());
       }
       return;
     }
