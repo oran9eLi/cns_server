@@ -60,14 +60,16 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
   FindCommand(std::string_view source_id, std::string_view request_id) override {
     auto result = store_->FindCommand(source_id, request_id);
     if (result) return std::move(*result);
-    return std::unexpected(Classify("数据库命令查询失败"));
+    return std::unexpected(ClassifyWithDetail("数据库命令查询失败",
+                                              result.error()));
   }
 
   std::expected<command::CommandRecord, runtime::DatabaseError> InsertCommand(
       const command::CommandRecord& command) override {
     auto result = store_->InsertCommand(command);
     if (result) return std::move(*result);
-    return std::unexpected(Classify("数据库命令写入失败"));
+    return std::unexpected(ClassifyWithDetail("数据库命令写入失败",
+                                              result.error()));
   }
 
   std::expected<command::CommandRecord, runtime::DatabaseError>
@@ -77,7 +79,8 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
                     const command::CommandUpdate& update) override {
     auto result = store_->TransitionCommand(command_id, expected, desired, update);
     if (result) return std::move(*result);
-    return std::unexpected(Classify("数据库命令状态转换失败"));
+    return std::unexpected(ClassifyWithDetail("数据库命令状态转换失败",
+                                              result.error()));
   }
 
   std::expected<std::size_t, runtime::DatabaseError> CleanupCommands(
@@ -129,6 +132,13 @@ class RuntimePostgresBridge final : public runtime::PostgresWorker::StorePort {
                           ? runtime::DatabaseError::Kind::kPermanent
                           : runtime::DatabaseError::Kind::kUnavailable;
     return {kind, std::move(context)};
+  }
+
+  runtime::DatabaseError ClassifyWithDetail(std::string context,
+                                            const std::string& detail) const {
+    auto error = Classify(std::move(context));
+    if (!detail.empty()) error.message = detail;
+    return error;
   }
 
   std::unique_ptr<postgres::PostgresStore> store_;
