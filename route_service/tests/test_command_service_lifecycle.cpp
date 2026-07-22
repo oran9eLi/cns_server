@@ -417,6 +417,74 @@ TEST_CASE("命令数据库失败日志保留具体错误原因") {
   CHECK(h.diagnostics.front() == "命令数据库操作失败：状态迁移非法");
 }
 
+TEST_CASE("发布完成状态已变化后读取当前终态并收敛") {
+  Harness h;
+  auto pending = Active(cns::command::CommandStatus::kPending);
+  h.service.LoadActive({pending});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.publishes.size() == 1);
+
+  h.service.PushPublishCompletion({std::get<0>(h.publishes.front()), {}});
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  const auto transition_id = h.db.front().first;
+  h.db.pop_front();
+  h.service.PushDatabaseResult({transition_id, std::unexpected(
+      cns::runtime::DatabaseError{cns::runtime::DatabaseError::Kind::kPermanent,
+                                  "转换 PostgreSQL 命令状态失败：状态已变化"})});
+  h.service.ProcessReady(kNow);
+
+  REQUIRE(h.db.size() == 1);
+  CHECK(std::holds_alternative<cns::runtime::FindCommandByIdTask>(
+      h.db.front().second));
+  const auto find_id = h.db.front().first;
+  h.db.pop_front();
+  auto succeeded = Active(cns::command::CommandStatus::kSucceeded);
+  succeeded.completed_at = kNow;
+  h.service.PushDatabaseResult(
+      {find_id, cns::runtime::CommandDatabaseValue{
+                    std::optional<cns::command::CommandRecord>{succeeded}}});
+  h.service.ProcessReady(kNow);
+
+  CHECK(h.diagnostics.empty());
+  CHECK(h.service.ActiveCommandCount() == 0);
+}
+
+TEST_CASE("设备ACK状态已变化后遇到超时终态不反转") {
+  Harness h;
+  h.service.LoadActive({Active(cns::command::CommandStatus::kDispatched)});
+  REQUIRE(h.service.TryPush({"cns/" + std::string{kVendor} + "/config/ack",
+      R"({"command_id":"550e8400-e29b-41d4-a716-446655440000","status":"applied","restart_required":false})", kNow}));
+  h.service.ProcessReady(kNow);
+  REQUIRE(h.db.size() == 1);
+  const auto transition_id = h.db.front().first;
+  h.db.pop_front();
+  h.service.PushDatabaseResult({transition_id, std::unexpected(
+      cns::runtime::DatabaseError{cns::runtime::DatabaseError::Kind::kPermanent,
+                                  "转换 PostgreSQL 命令状态失败：状态已变化"})});
+  h.service.ProcessReady(kNow);
+
+  REQUIRE(h.db.size() == 1);
+  CHECK(std::holds_alternative<cns::runtime::FindCommandByIdTask>(
+      h.db.front().second));
+  const auto find_id = h.db.front().first;
+  h.db.pop_front();
+  auto timeout = Active(cns::command::CommandStatus::kTimeout);
+  timeout.error_code = "command_timeout";
+  timeout.error_message = "设备配置命令超时";
+  timeout.completed_at = kNow;
+  h.service.PushDatabaseResult(
+      {find_id, cns::runtime::CommandDatabaseValue{
+                    std::optional<cns::command::CommandRecord>{timeout}}});
+  h.service.ProcessReady(kNow);
+
+  CHECK(h.diagnostics.empty());
+  CHECK(h.service.ActiveCommandCount() == 0);
+  REQUIRE(h.acks.size() == 1);
+  CHECK(h.acks.back()["status"] == "timeout");
+  CHECK(h.acks.back()["error"]["code"] == "command_timeout");
+}
+
 TEST_CASE("终态清理按周期单实例限量提交") {
   Harness h;
   h.service.ProcessReady(kNow);

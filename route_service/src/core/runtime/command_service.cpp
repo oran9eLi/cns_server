@@ -371,6 +371,12 @@ void CommandService::Handle(CommandDatabaseResult result,
   operations_.erase(found);
   outstanding_operations_.fetch_sub(1, std::memory_order_acq_rel);
   if (!result.value) {
+    if (operation.kind == OperationKind::kTransition &&
+        IsStateChangedError(result.value.error()) &&
+        operation.context.record) {
+      HandleTransitionConflict(std::move(operation), now);
+      return;
+    }
     if (result.value.error().kind == DatabaseError::Kind::kUnavailable) {
       database_available_ = false;
     }
@@ -382,6 +388,21 @@ void CommandService::Handle(CommandDatabaseResult result,
     if (std::get_if<std::size_t>(&*result.value) == nullptr) {
       Diagnose("命令清理返回类型异常");
     }
+    return;
+  }
+
+  if (operation.kind == OperationKind::kFindByIdForConvergence) {
+    const auto* current =
+        std::get_if<std::optional<command::CommandRecord>>(&*result.value);
+    if (current == nullptr) {
+      Diagnose("命令按ID查询返回类型异常");
+      return;
+    }
+    if (!current->has_value()) {
+      Diagnose("命令状态变化后未找到当前命令记录");
+      return;
+    }
+    ConvergeAfterConflict(std::move(operation), **current, now);
     return;
   }
 
@@ -843,6 +864,63 @@ void CommandService::RetryDeferredTransitions() {
         DeferredTransition{std::move(fallback_context),
                            std::move(fallback_task)});
   }
+}
+
+bool CommandService::IsStateChangedError(const DatabaseError& error) const {
+  return error.message.find("状态已变化") != std::string::npos;
+}
+
+void CommandService::HandleTransitionConflict(Operation operation,
+                                              command::TimePoint now) {
+  static_cast<void>(now);
+  const auto command_id = operation.context.record->command_id;
+  if (!Submit(OperationKind::kFindByIdForConvergence, std::move(operation.context),
+              FindCommandByIdTask{command_id})) {
+    database_available_.store(false, std::memory_order_release);
+    Diagnose("命令状态变化后查询当前状态失败：数据库当前不可用");
+  }
+}
+
+void CommandService::ConvergeAfterConflict(
+    Operation operation, const command::CommandRecord& current,
+    command::TimePoint now) {
+  if (!operation.context.record) return;
+  auto context = std::move(operation.context);
+  const auto desired = *context.record;
+  context.record = current;
+  context.target = TargetFor(current);
+  const bool was_active = active_commands_.contains(current.command_id);
+
+  if (command::IsTerminal(current.status)) {
+    active_commands_.erase(current.command_id);
+    recovery_started_.erase(current.command_id);
+    early_device_acks_.erase(current.command_id);
+    if (was_active) PublishAck(context, now);
+    return;
+  }
+
+  if (current.status == desired.status) {
+    active_commands_.insert_or_assign(current.command_id, std::move(context));
+    return;
+  }
+
+  if (command::CanTransition(current.status, desired.status)) {
+    command::CommandUpdate update{
+        .error_code = desired.error_code,
+        .error_message = desired.error_message,
+        .device_ack = desired.device_ack,
+        .dispatched_at = desired.dispatched_at,
+        .completed_at = desired.completed_at,
+        .updated_at = desired.updated_at};
+    context.record = desired;
+    SubmitTransitionOrDefer(
+        std::move(context),
+        TransitionCommandTask{current.command_id, current.status,
+                              desired.status, std::move(update)});
+    return;
+  }
+
+  active_commands_.insert_or_assign(current.command_id, std::move(context));
 }
 
 bool CommandService::Submit(OperationKind kind, RequestContext context,

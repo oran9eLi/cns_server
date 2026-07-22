@@ -72,7 +72,13 @@ class CommandService {
     std::optional<std::string> device_ack_business_status;
   };
 
-  enum class OperationKind { kFind, kInsert, kTransition, kCleanup };
+  enum class OperationKind {
+    kFind,
+    kFindByIdForConvergence,
+    kInsert,
+    kTransition,
+    kCleanup
+  };
   struct Operation {
     OperationKind kind;
     RequestContext context;
@@ -103,6 +109,12 @@ class CommandService {
   void SubmitTransitionOrDefer(RequestContext context,
                                TransitionCommandTask task);
   void RetryDeferredTransitions();
+  void HandleTransitionConflict(Operation operation,
+                                command::TimePoint now);
+  void ConvergeAfterConflict(Operation operation,
+                             const command::CommandRecord& current,
+                             command::TimePoint now);
+  bool IsStateChangedError(const DatabaseError& error) const;
   void Reject(std::string_view source_id,
               std::optional<std::string_view> request_id,
               command::ProtocolError error, command::TimePoint now,
