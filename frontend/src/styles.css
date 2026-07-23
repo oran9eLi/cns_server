@@ -2327,6 +2327,45 @@ select {
   box-shadow: 0 0 0 2px #1769e0;
 }
 
+.motor-slider-control.is-editing {
+  border-color: rgba(23, 105, 224, 0.34);
+  background: #f5f9ff;
+}
+
+.motor-slider-control.is-following .ant-slider-track {
+  transition:
+    width 460ms cubic-bezier(0.22, 1, 0.36, 1),
+    inset-inline-start 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.motor-slider-control.is-following .ant-slider-handle {
+  transition: inset-inline-start 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.motor-slider-control.is-editing .ant-slider-track,
+.motor-slider-control.is-editing .ant-slider-handle {
+  transition: none;
+}
+
+.motor-edit-hint {
+  margin-top: 10px;
+  color: #718198;
+  font-size: 11px;
+  text-align: center;
+}
+
+.motor-edit-hint.is-active {
+  color: #1769e0;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motor-slider-control.is-following .ant-slider-track,
+  .motor-slider-control.is-following .ant-slider-handle {
+    transition: none;
+  }
+}
+
 .apply-pwm-button {
   min-height: 40px;
   margin-top: 14px;
