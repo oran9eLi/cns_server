@@ -279,6 +279,10 @@ function DeviceDetailPage({
   const [api, contextHolder] = notification.useNotification();
   const [commandStatus, setCommandStatus] = useState<CommandStatus | null>(null);
   const [motorPwm, setMotorPwm] = useState<[number, number, number, number]>([1000, 1000, 1000, 1000]);
+  const [motorEditActive, setMotorEditActive] = useState(false);
+  const [motorEditSecondsLeft, setMotorEditSecondsLeft] = useState(0);
+  const motorEditTimeoutRef = useRef<number | null>(null);
+  const motorEditCountdownRef = useRef<number | null>(null);
   const notifiedCommandEvents = useRef(new Set<string>());
   const deviceQuery = useQuery({
     queryKey: ["device", vendorId],
@@ -371,6 +375,15 @@ function DeviceDetailPage({
     }
   }, [api, latestCommandEvent]);
 
+  useEffect(() => () => {
+    if (motorEditTimeoutRef.current !== null) {
+      window.clearTimeout(motorEditTimeoutRef.current);
+    }
+    if (motorEditCountdownRef.current !== null) {
+      window.clearInterval(motorEditCountdownRef.current);
+    }
+  }, []);
+
   if (!device && deviceQuery.isLoading) {
     return <Card loading />;
   }
@@ -382,6 +395,10 @@ function DeviceDetailPage({
   const telemetryView = mapTelemetry(telemetry);
   const dashboardView = mapFlightDashboard(telemetry);
   const liveMotorPwm = telemetryView.motors.pwm;
+  const liveMotorSliderValues = liveMotorPwm.map(normalizeMotorSliderValue) as [number, number, number, number];
+  const motorPwmChanged = motorEditActive && motorPwm.some((value, index) => (
+    value !== liveMotorSliderValues[index]
+  ));
   const commandInFlight = commandStatus !== null && ![
     "succeeded",
     "failed",
@@ -417,6 +434,76 @@ function DeviceDetailPage({
       session_id: sessionId,
       client_request_id: clientRequestId
     } as DeviceCommandRequest);
+  };
+
+  const scheduleMotorEditReset = () => {
+    if (motorEditTimeoutRef.current !== null) {
+      window.clearTimeout(motorEditTimeoutRef.current);
+    }
+    if (motorEditCountdownRef.current !== null) {
+      window.clearInterval(motorEditCountdownRef.current);
+    }
+
+    const deadline = Date.now() + 5_000;
+    setMotorEditSecondsLeft(5);
+    motorEditCountdownRef.current = window.setInterval(() => {
+      setMotorEditSecondsLeft(Math.max(1, Math.ceil((deadline - Date.now()) / 1_000)));
+    }, 200);
+    motorEditTimeoutRef.current = window.setTimeout(() => {
+      setMotorEditActive(false);
+      setMotorEditSecondsLeft(0);
+      if (motorEditCountdownRef.current !== null) {
+        window.clearInterval(motorEditCountdownRef.current);
+        motorEditCountdownRef.current = null;
+      }
+      motorEditTimeoutRef.current = null;
+    }, 5_000);
+  };
+
+  const changeMotorPwm = (index: number, nextValue: number) => {
+    const base = motorEditActive ? motorPwm : liveMotorSliderValues;
+    const nextMotorPwm = base.map((item, itemIndex) => (
+      itemIndex === index ? nextValue : item
+    )) as [number, number, number, number];
+    const hasChanges = nextMotorPwm.some((value, itemIndex) => (
+      value !== liveMotorSliderValues[itemIndex]
+    ));
+
+    setMotorPwm(nextMotorPwm);
+    if (!hasChanges) {
+      if (motorEditTimeoutRef.current !== null) {
+        window.clearTimeout(motorEditTimeoutRef.current);
+        motorEditTimeoutRef.current = null;
+      }
+      if (motorEditCountdownRef.current !== null) {
+        window.clearInterval(motorEditCountdownRef.current);
+        motorEditCountdownRef.current = null;
+      }
+      setMotorEditSecondsLeft(0);
+      setMotorEditActive(false);
+      return;
+    }
+    setMotorEditActive(true);
+    scheduleMotorEditReset();
+  };
+
+  const applyMotorPwm = () => {
+    if (!motorPwmChanged) return;
+    if (motorEditTimeoutRef.current !== null) {
+      window.clearTimeout(motorEditTimeoutRef.current);
+      motorEditTimeoutRef.current = null;
+    }
+    if (motorEditCountdownRef.current !== null) {
+      window.clearInterval(motorEditCountdownRef.current);
+      motorEditCountdownRef.current = null;
+    }
+    setMotorEditSecondsLeft(0);
+    setMotorEditActive(false);
+    submit({
+      type: "control",
+      command: "set_motor_pwm",
+      parameters: { pwm_us: motorPwm }
+    });
   };
 
   return (
@@ -539,57 +626,44 @@ function DeviceDetailPage({
 
           <Card className="command-panel flight-control-panel" title="电机与飞行控制">
             <div className="motor-slider-list">
-              {motorPwm.map((value, index) => {
+              {motorPwm.map((draftValue, index) => {
                 const liveValue = liveMotorPwm[index];
-                const livePercent = motorPwmPercent(liveValue);
+                const value = motorEditActive ? draftValue : normalizeMotorSliderValue(liveValue);
+                const displayValue = motorEditActive ? draftValue : liveValue;
                 return (
-                <div className="motor-slider-control" key={index}>
-                  <div className="motor-slider-label">
-                    <strong>M{index + 1}</strong>
-                    <span>{value} μs</span>
-                    <small>{Math.round((value - 1000) / 10)}%</small>
-                  </div>
-                  <Slider
-                    min={1000}
-                    max={2000}
-                    step={10}
-                    value={value}
-                    tooltip={{ formatter: (current) => `${current ?? value} μs` }}
-                    onChange={(nextValue) => {
-                      setMotorPwm((current) => current.map((item, itemIndex) => (
-                        itemIndex === index ? nextValue : item
-                      )) as [number, number, number, number]);
-                    }}
-                  />
-                  <div className="motor-live-output">
-                    <small>实时输出</small>
-                    <div
-                      className="motor-live-progress"
-                      role="progressbar"
-                      aria-label={`M${index + 1} 实时输出`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={liveValue === null ? undefined : Math.round(livePercent)}
-                    >
-                      <i style={{ width: `${livePercent}%` }} />
+                  <div
+                    className={`motor-slider-control ${motorPwmChanged ? "is-editing" : "is-following"}`}
+                    key={index}
+                  >
+                    <div className="motor-slider-label">
+                      <strong>M{index + 1}</strong>
+                      <span>{displayValue === null ? "等待遥测" : `${Math.round(displayValue)} μs`}</span>
+                      <small>{displayValue === null ? "--" : `${Math.round(motorPwmPercent(displayValue))}%`}</small>
                     </div>
-                    <span>{liveValue === null ? "等待遥测" : `${Math.round(liveValue)} μs · ${Math.round(livePercent)}%`}</span>
+                    <Slider
+                      min={1000}
+                      max={2000}
+                      step={10}
+                      value={value}
+                      tooltip={{ formatter: (current) => `${current ?? value} μs` }}
+                      onChange={(nextValue) => changeMotorPwm(index, nextValue)}
+                    />
                   </div>
-                </div>
                 );
               })}
+            </div>
+            <div className={`motor-edit-hint${motorPwmChanged ? " is-active" : ""}`}>
+              {motorPwmChanged
+                ? `PWM 已修改，请在 ${Math.max(1, motorEditSecondsLeft)} 秒内点击应用`
+                : "当前显示实时输出，拖动任一滑条后可修改 PWM"}
             </div>
             <Button
               block
               type="primary"
               className="apply-pwm-button"
               icon={<Send size={16} />}
-              disabled={disabled}
-              onClick={() => submit({
-                type: "control",
-                command: "set_motor_pwm",
-                parameters: { pwm_us: motorPwm }
-              })}
+              disabled={disabled || !motorPwmChanged}
+              onClick={applyMotorPwm}
             >
               应用四路 PWM
             </Button>
@@ -673,6 +747,12 @@ function DeviceFact({ label, value }: { label: string; value: React.ReactNode })
 function motorPwmPercent(value: number | null): number {
   if (value === null || !Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, (value - 1000) / 10));
+}
+
+function normalizeMotorSliderValue(value: number | null): number {
+  if (value === null || !Number.isFinite(value)) return 1000;
+  const clamped = Math.max(1000, Math.min(2000, value));
+  return Math.round(clamped / 10) * 10;
 }
 
 function CompassIndicator({ yaw }: { yaw: number }) {
