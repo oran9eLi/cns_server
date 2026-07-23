@@ -1543,6 +1543,16 @@ select {
   overflow: auto;
 }
 
+.log-panel-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.log-panel-error-icon {
+  color: var(--red);
+}
+
 .flight-event-item {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -2491,7 +2501,9 @@ select {
 }
 
 .flight-console-page .self-check-list {
-  align-content: start;
+  height: 100%;
+  grid-auto-rows: minmax(44px, 1fr);
+  align-content: stretch;
 }
 
 .flight-console-page .flight-event-stack {
