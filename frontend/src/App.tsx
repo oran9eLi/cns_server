@@ -381,6 +381,7 @@ function DeviceDetailPage({
   const telemetry = device.latest_telemetry;
   const telemetryView = mapTelemetry(telemetry);
   const dashboardView = mapFlightDashboard(telemetry);
+  const liveMotorPwm = telemetryView.motors.pwm;
   const commandInFlight = commandStatus !== null && ![
     "succeeded",
     "failed",
@@ -538,7 +539,10 @@ function DeviceDetailPage({
 
           <Card className="command-panel flight-control-panel" title="电机与飞行控制">
             <div className="motor-slider-list">
-              {motorPwm.map((value, index) => (
+              {motorPwm.map((value, index) => {
+                const liveValue = liveMotorPwm[index];
+                const livePercent = motorPwmPercent(liveValue);
+                return (
                 <div className="motor-slider-control" key={index}>
                   <div className="motor-slider-label">
                     <strong>M{index + 1}</strong>
@@ -557,8 +561,23 @@ function DeviceDetailPage({
                       )) as [number, number, number, number]);
                     }}
                   />
+                  <div className="motor-live-output">
+                    <small>实时输出</small>
+                    <div
+                      className="motor-live-progress"
+                      role="progressbar"
+                      aria-label={`M${index + 1} 实时输出`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={liveValue === null ? undefined : Math.round(livePercent)}
+                    >
+                      <i style={{ width: `${livePercent}%` }} />
+                    </div>
+                    <span>{liveValue === null ? "等待遥测" : `${Math.round(liveValue)} μs · ${Math.round(livePercent)}%`}</span>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <Button
               block
@@ -649,6 +668,11 @@ function DeviceFact({ label, value }: { label: string; value: React.ReactNode })
       <strong>{value}</strong>
     </div>
   );
+}
+
+function motorPwmPercent(value: number | null): number {
+  if (value === null || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, (value - 1000) / 10));
 }
 
 function CompassIndicator({ yaw }: { yaw: number }) {
