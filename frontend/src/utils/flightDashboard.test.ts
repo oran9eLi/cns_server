@@ -42,7 +42,7 @@ describe("mapFlightDashboard", () => {
 
     expect(result.modules.find((item) => item.key === "position")?.status).toBe("error");
     expect(result.modules.find((item) => item.key === "attitude")?.status).toBe("normal");
-    expect(result.modules.find((item) => item.key === "lora")?.status).toBe("warning");
+    expect(result.modules.find((item) => item.key === "lora")?.status).toBe("error");
     expect(result.alerts[0]).toMatchObject({ code: "0x0301", message: "5G 通信离线" });
     expect(result.logs[0]).toMatchObject({ level: "info", message: "姿态正常" });
   });
@@ -52,10 +52,10 @@ describe("mapFlightDashboard", () => {
 
     const result = mapFlightDashboard({ telemetry: { attitude: { roll: 1 } } });
     expect(result.modules.find((item) => item.key === "attitude")).toMatchObject({
-      status: "data",
-      detail: "已上报"
+      status: "error",
+      detail: "异常"
     });
-    expect(result.modules.find((item) => item.key === "storage")?.status).toBe("unknown");
+    expect(result.modules.find((item) => item.key === "storage")?.status).toBe("error");
   });
 
   it("does not reuse the controller battery scalar as the motor battery", () => {
@@ -169,11 +169,44 @@ describe("mapFlightDashboard", () => {
     expect(result.power.motor.voltage).toBeCloseTo(11.4, 8);
     expect(result.power.motor.remaining).toBe(72);
     expect(result.modules.find((item) => item.key === "position")).toMatchObject({ status: "normal", detail: "正常" });
-    expect(result.modules.find((item) => item.key === "environment")).toMatchObject({ status: "warning", detail: "告警" });
+    expect(result.modules.find((item) => item.key === "environment")).toMatchObject({ status: "error", detail: "异常" });
     expect(result.modules.find((item) => item.key === "lora")).toMatchObject({ status: "error", detail: "异常" });
     expect(result.modules.find((item) => item.key === "motor")).toMatchObject({ status: "normal", detail: "正常" });
     expect(result.logs).toHaveLength(2);
     expect(result.logs[0]).toMatchObject({ message: "5G 正常", level: "info", occurredAt: "14:23:06" });
     expect(result.logs[1]).toMatchObject({ message: "5G 断开", level: "error", occurredAt: "14:23:07" });
+  });
+
+  it("only allows position and motor modules to use the yellow warning state", () => {
+    const result = mapFlightDashboard({
+      self_check: {
+        position: "warning",
+        attitude: "warning",
+        environment: "starting",
+        lora: "degraded",
+        cellular_5g: "warning",
+        remote_id: "warning",
+        storage: "warning",
+        motor: "warning"
+      }
+    });
+
+    expect(result.modules.find((item) => item.key === "position")?.status).toBe("warning");
+    expect(result.modules.find((item) => item.key === "motor")?.status).toBe("warning");
+    for (const key of ["attitude", "environment", "lora", "cellular", "remote_id", "storage"]) {
+      expect(result.modules.find((item) => item.key === key)?.status).toBe("error");
+    }
+  });
+
+  it("colors disconnected and offline log messages red even without an error severity", () => {
+    const result = mapFlightDashboard({
+      logs: [
+        { message_id: 12, time: "00:00:01" },
+        { message: "5G 离线", severity: 0, time: "00:00:02" },
+        { message_id: 30, severity: 2, time: "00:00:03" }
+      ]
+    });
+
+    expect(result.logs.map((item) => item.level)).toEqual(["error", "error", "info"]);
   });
 });

@@ -368,7 +368,7 @@ function mapModule(
   const reportedModule = findReportedModule(source, definition.moduleNames);
   if (reportedModule !== undefined) {
     const parsed = parseModuleStatus(reportedModule);
-    if (parsed) return { key: definition.key, label: definition.label, ...parsed };
+    if (parsed) return moduleState(definition, parsed);
   }
 
   const statusPaths = definition.aliases.flatMap((alias) => [
@@ -385,7 +385,7 @@ function mapModule(
   ]);
   const explicit = firstValue(source, statusPaths);
   const parsed = parseModuleStatus(explicit);
-  if (parsed) return { key: definition.key, label: definition.label, ...parsed };
+  if (parsed) return moduleState(definition, parsed);
 
   const evidence = firstValue(source, definition.aliases.flatMap((alias) => [
     `telemetry.${alias}`,
@@ -393,20 +393,22 @@ function mapModule(
   ]));
 
   if (evidence !== undefined && evidence !== null) {
-    return {
-      key: definition.key,
-      label: definition.label,
-      status: "data",
-      detail: "已上报"
-    };
+    return moduleState(definition, { status: "data", detail: "已上报" });
   }
 
-  return {
-    key: definition.key,
-    label: definition.label,
-    status: "unknown",
-    detail: "暂无数据"
-  };
+  return moduleState(definition, { status: "unknown", detail: "暂无数据" });
+}
+
+function moduleState(
+  definition: typeof MODULE_DEFINITIONS[number],
+  parsed: Pick<FlightModuleState, "status" | "detail">
+): FlightModuleState {
+  const supportsIntermediateState = definition.key === "position" || definition.key === "motor";
+  const state = !supportsIntermediateState && parsed.status !== "normal"
+    ? { status: "error" as const, detail: "异常" }
+    : parsed;
+
+  return { key: definition.key, label: definition.label, ...state };
 }
 
 function parseModuleStatus(value: JsonValue | undefined): Pick<FlightModuleState, "status" | "detail"> | null {
@@ -460,7 +462,8 @@ function normalizeLogs(value: JsonValue | undefined): FlightLogItem[] {
       ?? messageLogText(messageId)
       ?? primitiveText(item)
       ?? `${key}: ${JSON.stringify(item)}`;
-    const level = normalizeLevel(stringField(record, ["level", "severity", "status", "type"]), "info");
+    const reportedLevel = normalizeLevel(stringField(record, ["level", "severity", "status", "type"]), "info");
+    const level = normalizeLogLevel(messageId, message, reportedLevel);
     const occurredAt = stringField(record, ["occurred_at", "time", "timestamp", "created_at", "event_at"]);
     const sequence = stringField(record, ["sequence"]);
     return { id: `log-${sequence ?? key}-${index}`, level, message, occurredAt };
@@ -517,6 +520,28 @@ function messageLogText(messageId: string | null): string | null {
   if (messageId === null) return null;
   const id = Number(messageId);
   return Number.isInteger(id) ? MESSAGE_LOG_TEXT[id] ?? `消息 ID ${id}` : null;
+}
+
+const INFO_MESSAGE_IDS = new Set([0, 1, 4, 7, 9, 11, 13, 15, 27, 28, 30]);
+const WARNING_MESSAGE_IDS = new Set([2, 5, 17, 24, 25, 26]);
+const ERROR_MESSAGE_IDS = new Set([3, 6, 8, 10, 12, 14, 16, 18, 19, 20, 21, 22, 23, 29, 31, 32, 33, 34, 35, 36, 37]);
+
+function normalizeLogLevel(messageId: string | null, message: string, reportedLevel: string): string {
+  const id = messageId === null ? Number.NaN : Number(messageId);
+  if (Number.isInteger(id)) {
+    if (ERROR_MESSAGE_IDS.has(id)) return "error";
+    if (WARNING_MESSAGE_IDS.has(id)) return "warning";
+    if (INFO_MESSAGE_IDS.has(id)) return "info";
+  }
+
+  const normalizedMessage = message.trim().toLocaleLowerCase();
+  if (/(断开|离线|异常|故障|失败|没电|disconnected|offline|fault|failed|error)/u.test(normalizedMessage)) {
+    return "error";
+  }
+  if (/(正常|恢复|通过|online|normal|healthy|passed)/u.test(normalizedMessage)) {
+    return "info";
+  }
+  return reportedLevel;
 }
 
 function normalizeLevel(value: string | null, fallback: string): string {

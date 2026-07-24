@@ -1543,6 +1543,16 @@ select {
   overflow: auto;
 }
 
+.log-panel-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.log-panel-error-icon {
+  color: var(--red);
+}
+
 .flight-event-item {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -2491,7 +2501,9 @@ select {
 }
 
 .flight-console-page .self-check-list {
-  align-content: start;
+  height: 100%;
+  grid-auto-rows: minmax(44px, 1fr);
+  align-content: stretch;
 }
 
 .flight-console-page .flight-event-stack {
@@ -2576,6 +2588,180 @@ select {
 
 @media (max-width: 640px) {
   .flight-console-page .telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Mobile flight console */
+@media (max-width: 640px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .topbar {
+    position: static;
+    gap: 10px;
+    min-height: 0;
+    padding: 10px 12px;
+  }
+
+  .topbar-brand {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .topbar-brand img {
+    width: 64px;
+    height: 40px;
+  }
+
+  .topbar-brand strong {
+    font-size: 17px;
+  }
+
+  .topbar-brand small {
+    margin-top: 3px;
+    font-size: 11px;
+  }
+
+  .content-stage {
+    padding: 12px 12px 24px;
+  }
+
+  .page-stack {
+    gap: 12px;
+  }
+
+  .flight-console-page {
+    min-height: 100svh;
+    margin: -12px -12px -24px;
+    padding: 14px 12px 28px;
+  }
+
+  .flight-console-page .page-heading {
+    gap: 10px;
+  }
+
+  .flight-console-page .page-heading h1 {
+    max-width: calc(100vw - 24px);
+    font-size: 22px !important;
+    overflow-wrap: anywhere;
+  }
+
+  .flight-console-page .page-heading > .ant-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .flight-console-page .ant-card-head {
+    min-height: 46px;
+    padding: 0 12px;
+  }
+
+  .flight-console-page .ant-card-body,
+  .flight-console-page .flight-panel .ant-card-body,
+  .flight-console-page .identity-strip .ant-card-body,
+  .flight-console-page .flight-snapshot .ant-card-body {
+    padding: 12px;
+  }
+
+  .power-metric .ant-card-body {
+    min-height: 112px;
+  }
+
+  .flight-console-page .flight-snapshot .ant-card-body {
+    gap: 14px;
+  }
+
+  .flight-console-page .instrument-panel {
+    width: min(186px, 100%);
+    margin: 0 auto;
+  }
+
+  .flight-console-page .snapshot-metrics {
+    padding-top: 12px;
+  }
+
+  .flight-console-page .telemetry-grid,
+  .flight-console-page .flight-support-grid,
+  .detail-main,
+  .detail-side {
+    gap: 12px;
+  }
+
+  .flight-console-page .telemetry-grid > .telemetry-card .ant-card-body {
+    min-height: 0;
+  }
+
+  .flight-console-page .self-check-panel,
+  .flight-console-page .flight-event-stack,
+  .flight-console-page .flight-event-stack > .flight-panel {
+    height: auto;
+  }
+
+  .flight-console-page .self-check-panel .ant-card-body {
+    height: auto;
+  }
+
+  .flight-console-page .self-check-list {
+    height: auto;
+    grid-auto-rows: minmax(48px, auto);
+  }
+
+  .flight-console-page .flight-event-stack {
+    grid-template-rows: auto;
+  }
+
+  .flight-console-page .flight-event-list {
+    max-height: 65svh;
+    overscroll-behavior: contain;
+  }
+
+  .flight-event-item {
+    min-width: 0;
+    padding: 10px 9px;
+  }
+
+  .flight-event-item span,
+  .telemetry-field-value,
+  .flight-console-page .json-view {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .flight-console-page .telemetry-frame-group,
+  .flight-console-page .raw-telemetry-frame {
+    min-width: 0;
+  }
+
+  .flight-console-page .telemetry-frame-group > header {
+    align-items: flex-start;
+    gap: 6px;
+    flex-direction: column;
+  }
+
+  .detail-side .ant-row {
+    row-gap: 0;
+    flex-direction: column;
+  }
+
+  .detail-side .ant-col-12 {
+    max-width: 100%;
+    flex: 0 0 100%;
+  }
+
+  .flight-console-page .ant-btn,
+  .flight-console-page .ant-input,
+  .flight-console-page .ant-input-number,
+  .flight-console-page .ant-input-affix-wrapper {
+    min-height: 44px;
+  }
+
+  .flight-actions {
     grid-template-columns: 1fr;
   }
 }

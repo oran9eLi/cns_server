@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   ScrollText,
   ShieldAlert,
+  XCircle,
   Zap
 } from "lucide-react";
 
@@ -105,11 +106,18 @@ export function AlertPanel({ alerts }: { alerts: FlightAlertItem[] }) {
 }
 
 export function FlightLogPanel({ logs }: { logs: FlightLogItem[] }) {
+  const hasError = logs.some((log) => levelClass(log.level) === "error");
+
   return (
     <Card
       className="flight-panel log-panel"
       title={<PanelTitle icon={<ScrollText size={16} />} text="消息日志" />}
-      extra={<Tag>{logs.length} 条</Tag>}
+      extra={
+        <span className="log-panel-summary">
+          {hasError && <XCircle className="log-panel-error-icon" size={16} aria-label="存在异常日志" />}
+          <Tag>{logs.length} 条</Tag>
+        </span>
+      }
     >
       {logs.length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前遥测帧无日志" />
@@ -117,7 +125,7 @@ export function FlightLogPanel({ logs }: { logs: FlightLogItem[] }) {
         <div className="flight-event-list">
           {logs.map((log) => (
             <div className={`flight-event-item level-${levelClass(log.level)}`} key={log.id}>
-              {isInfoLevel(log.level) ? <CheckCircle2 size={15} /> : <CircleDashed size={15} />}
+              {logIcon(log.level)}
               <div>
                 <strong>{levelLabel(log.level)}</strong>
                 <span>{log.message}</span>
@@ -129,6 +137,14 @@ export function FlightLogPanel({ logs }: { logs: FlightLogItem[] }) {
       )}
     </Card>
   );
+}
+
+function logIcon(level: string): React.ReactNode {
+  const tone = levelClass(level);
+  if (tone === "error") return <XCircle size={15} />;
+  if (tone === "warning") return <AlertTriangle size={15} />;
+  if (tone === "info") return <CheckCircle2 size={15} />;
+  return <CircleDashed size={15} />;
 }
 
 function PowerMetric({
