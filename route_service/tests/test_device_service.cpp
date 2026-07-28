@@ -390,6 +390,28 @@ TEST_CASE("外部快照请求只在业务线程发布排序后的在线设备") 
         cns::state_event::ChangeReason::kTelemetry);
 }
 
+TEST_CASE("外部全量快照保留单设备降级状态") {
+  Harness h;
+  auto online = Record(kKnown, 7);
+  online.status = Status::kOnline;
+  REQUIRE(h.registry.Load({online}));
+  auto service = h.Make();
+
+  service.PushDatabaseResult(
+      {DatabaseResult::Kind::kPermanentFailure, kKnown, 7, std::nullopt,
+       "测试数据库故障"});
+  service.ProcessReady();
+  REQUIRE(service.IsDeviceDegraded(kKnown));
+
+  service.RequestExternalSnapshot();
+  service.ProcessReady();
+
+  REQUIRE(h.snapshots.size() == 1);
+  REQUIRE(h.snapshots.front().size() == 1);
+  CHECK(h.snapshots.front().front().record.vendor_id == kKnown);
+  CHECK(h.snapshots.front().front().degraded);
+}
+
 TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
   Harness h;
   auto online = Record(kKnown);

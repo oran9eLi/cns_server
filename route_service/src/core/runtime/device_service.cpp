@@ -539,8 +539,8 @@ void DeviceService::PublishCurrentSnapshot() noexcept {
           : record.latest_telemetry
                 ? state_event::ChangeReason::kTelemetry
                 : state_event::ChangeReason::kRegistrationOnline;
-      states.push_back(
-          {std::move(record), reason, IsDeviceDegraded(record.vendor_id)});
+      const bool degraded = IsDeviceDegraded(record.vendor_id);
+      states.push_back({std::move(record), reason, degraded});
     }
     snapshots_(std::move(states));
   } catch (const std::exception&) {
