@@ -246,6 +246,17 @@ std::vector<DeviceRecord> DeviceRegistry::ListOnlineDevices() const {
   return online;
 }
 
+std::vector<DeviceRecord> DeviceRegistry::ListDevices() const {
+  std::vector<DeviceRecord> devices;
+  devices.reserve(records_.size());
+  for (const auto& [vendor_id, record] : records_) {
+    static_cast<void>(vendor_id);
+    devices.push_back(record);
+  }
+  std::ranges::sort(devices, {}, &DeviceRecord::vendor_id);
+  return devices;
+}
+
 const DeviceRecord* DeviceRegistry::Find(std::string_view vendor_id) const {
   const auto iterator = records_.find(std::string{vendor_id});
   return iterator == records_.end() ? nullptr : &iterator->second;

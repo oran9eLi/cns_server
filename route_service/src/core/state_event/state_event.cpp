@@ -30,18 +30,28 @@ nlohmann::json OptionalTime(
 }
 }  // namespace
 
-nlohmann::json BuildOnlineDeviceSnapshot(
-    const std::vector<std::string>& vendor_ids, std::uint64_t revision,
+nlohmann::json BuildDeviceDirectorySnapshot(
+    const std::vector<DirectoryEntry>& entries, std::uint64_t revision,
     std::chrono::system_clock::time_point generated_at) {
-  auto sorted_ids = vendor_ids;
-  std::ranges::sort(sorted_ids);
-  sorted_ids.erase(std::unique(sorted_ids.begin(), sorted_ids.end()),
-                   sorted_ids.end());
+  auto sorted_entries = entries;
+  std::ranges::sort(sorted_entries, {}, &DirectoryEntry::vendor_id);
+  auto devices = nlohmann::json::array();
+  for (const auto& entry : sorted_entries) {
+    devices.push_back({
+        {"vendor_id", entry.vendor_id},
+        {"school_name", entry.school_name},
+        {"dcdw_label", entry.dcdw_label
+                           ? nlohmann::json(*entry.dcdw_label)
+                           : nlohmann::json(nullptr)},
+        {"model_version", entry.model_version},
+        {"status", entry.online ? "online" : "offline"},
+    });
+  }
   return {{"schema_version", 1},
-          {"event_type", "online_device_snapshot"},
+          {"event_type", "device_directory_snapshot"},
           {"generated_at", FormatUtcRfc3339Millis(generated_at)},
           {"revision", revision},
-          {"device_ids", std::move(sorted_ids)}};
+          {"devices", std::move(devices)}};
 }
 
 nlohmann::json BuildStateEvent(
@@ -51,7 +61,6 @@ nlohmann::json BuildStateEvent(
           {"event_at", FormatUtcRfc3339Millis(event_at)},
           {"revision", snapshot.revision},
           {"vendor_id", snapshot.vendor_id},
-          {"school_id", snapshot.school_id},
           {"school_name", snapshot.school_name},
           {"dcdw_label", snapshot.dcdw_label ? nlohmann::json(*snapshot.dcdw_label)
                                                : nlohmann::json(nullptr)},
@@ -64,14 +73,12 @@ nlohmann::json BuildStateEvent(
           {"change_reason", ToString(reason)}, {"degraded", snapshot.degraded}};
 }
 
-bool OnlineDeviceDirectory::Update(std::string_view vendor_id, bool online) {
-  bool changed = false;
-  if (online) {
-    changed = vendor_ids_.insert(std::string{vendor_id}).second;
-  } else {
-    changed = vendor_ids_.erase(std::string{vendor_id}) != 0;
-  }
+bool DeviceDirectory::Update(DirectoryEntry entry) {
+  const auto iterator = entries_.find(entry.vendor_id);
+  const bool changed =
+      iterator == entries_.end() || iterator->second != entry;
   if (!initialized_ || changed) {
+    entries_.insert_or_assign(entry.vendor_id, std::move(entry));
     initialized_ = true;
     ++revision_;
     return true;
@@ -79,21 +86,30 @@ bool OnlineDeviceDirectory::Update(std::string_view vendor_id, bool online) {
   return false;
 }
 
-bool OnlineDeviceDirectory::Replace(
-    const std::vector<std::string>& vendor_ids) {
-  const std::set<std::string> replacement(vendor_ids.begin(), vendor_ids.end());
-  if (initialized_ && replacement == vendor_ids_) return false;
-  vendor_ids_ = replacement;
+bool DeviceDirectory::Replace(
+    const std::vector<DirectoryEntry>& entries) {
+  std::map<std::string, DirectoryEntry> replacement;
+  for (const auto& entry : entries) {
+    replacement.insert_or_assign(entry.vendor_id, entry);
+  }
+  if (initialized_ && replacement == entries_) return false;
+  entries_ = std::move(replacement);
   initialized_ = true;
   ++revision_;
   return true;
 }
 
-std::vector<std::string> OnlineDeviceDirectory::DeviceIds() const {
-  return {vendor_ids_.begin(), vendor_ids_.end()};
+std::vector<DirectoryEntry> DeviceDirectory::Entries() const {
+  std::vector<DirectoryEntry> entries;
+  entries.reserve(entries_.size());
+  for (const auto& [vendor_id, entry] : entries_) {
+    static_cast<void>(vendor_id);
+    entries.push_back(entry);
+  }
+  return entries;
 }
 
-std::uint64_t OnlineDeviceDirectory::Revision() const noexcept {
+std::uint64_t DeviceDirectory::Revision() const noexcept {
   return revision_;
 }
 

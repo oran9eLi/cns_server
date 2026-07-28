@@ -103,6 +103,21 @@ TEST_CASE("在线设备快照只返回在线记录并按vendor_id排序") {
   CHECK(online[1].vendor_id == kVendorB);
 }
 
+TEST_CASE("全量设备快照返回在线和离线记录并按vendor_id排序") {
+  DeviceRegistry registry;
+  REQUIRE(registry.Load(
+      {Record(kVendorB, 1, std::nullopt, Status::kOnline),
+       Record(kVendorA, 1, std::nullopt, Status::kOffline),
+       Record(kVendorC, 1, std::nullopt, Status::kOnline)}));
+
+  const auto all = registry.ListDevices();
+
+  REQUIRE(all.size() == 3);
+  CHECK(all[0].vendor_id == kVendorA);
+  CHECK(all[1].vendor_id == kVendorC);
+  CHECK(all[2].vendor_id == kVendorB);
+}
+
 TEST_CASE("启动加载保留 last_seen 并按原时间立即修正超时状态") {
   DeviceRegistry registry;
   auto record = Record(kVendorA, 1, std::nullopt, Status::kOnline);

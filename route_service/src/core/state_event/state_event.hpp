@@ -2,8 +2,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,15 +34,25 @@ struct Snapshot {
   bool degraded;
 };
 
-class OnlineDeviceDirectory {
+struct DirectoryEntry {
+  std::string vendor_id;
+  std::string school_name;
+  std::optional<std::string> dcdw_label;
+  std::string model_version;
+  bool online;
+
+  auto operator<=>(const DirectoryEntry&) const = default;
+};
+
+class DeviceDirectory {
  public:
-  bool Update(std::string_view vendor_id, bool online);
-  bool Replace(const std::vector<std::string>& vendor_ids);
-  [[nodiscard]] std::vector<std::string> DeviceIds() const;
+  bool Update(DirectoryEntry entry);
+  bool Replace(const std::vector<DirectoryEntry>& entries);
+  [[nodiscard]] std::vector<DirectoryEntry> Entries() const;
   [[nodiscard]] std::uint64_t Revision() const noexcept;
 
  private:
-  std::set<std::string> vendor_ids_;
+  std::map<std::string, DirectoryEntry> entries_;
   std::uint64_t revision_ = 0;
   bool initialized_ = false;
 };
@@ -52,8 +62,8 @@ std::string FormatUtcRfc3339Millis(
 nlohmann::json BuildStateEvent(
     const Snapshot& snapshot, ChangeReason reason,
     std::chrono::system_clock::time_point event_at);
-nlohmann::json BuildOnlineDeviceSnapshot(
-    const std::vector<std::string>& vendor_ids, std::uint64_t revision,
+nlohmann::json BuildDeviceDirectorySnapshot(
+    const std::vector<DirectoryEntry>& entries, std::uint64_t revision,
     std::chrono::system_clock::time_point generated_at);
 
 }  // namespace cns::state_event
