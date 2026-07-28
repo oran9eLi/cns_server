@@ -12,6 +12,14 @@
 
 ## MQTT Topic
 
+面向软件部的 Route Service 全量设备目录为：
+
+```text
+{namespace}/events/devices/directory
+```
+
+该目录包含全部已入库设备和在线状态。当前 backend_service 仍通过 PostgreSQL 建立 REST 冷启动快照，因此运行时只订阅下列单设备状态和命令 ACK，不重复维护全量目录缓存。
+
 订阅：
 
 ```text

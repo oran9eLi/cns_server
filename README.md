@@ -68,7 +68,7 @@ React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/Web
 
 - 使用 C++23 单体 systemd 服务、libmosquitto、libpqxx、nlohmann/json 和 doctest。
 - PostgreSQL 将稳定设备元数据与高频最新状态分表，遥测以 JSONB 保存最新快照并默认每 5 秒合并写入。
-- route_service 通过 MQTT 发布 QoS 1、retained 的在线设备目录和单设备当前状态快照，软件部无需读取数据库即可发现在线设备并获得设备资料和最新遥测。
+- route_service 通过 MQTT 发布 QoS 1、retained 的全量设备目录和单设备当前状态快照；目录包含全部已入库设备及其在线状态，软件部无需读取数据库即可获得设备清单、设备资料和最新遥测。
 - 配置命令请求、设备下发和两侧 ACK 使用 QoS 2、非 retained；来源幂等键为 `(source_id, request_id)`，设备执行幂等键为服务器 UUID v4 `command_id`。
 - 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。

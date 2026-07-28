@@ -18,7 +18,7 @@ V1 阶段核心职责：
 4. **命令路由**：登记固定命令来源，按学校名与内部编号或 `vendor_id` 寻址，执行来源权限与设备同校限制，向目标设备发布规范化配置或飞控命令。
 5. **幂等与结果回程**：持久化来源 `request_id`、服务器 `command_id` 和目标 ACK 状态，把路由失败或执行结果返回原命令来源。
 
-本服务是设备数据库核心表的唯一写入者。软件部系统通过本服务发布的 retained MQTT 在线目录和设备当前状态读取设备数据，无需连接 PostgreSQL；后续控制能力仍通过固定命令来源接入，不直接修改设备核心表，也不绕过本服务控制设备。
+本服务是设备数据库核心表的唯一写入者。软件部系统通过本服务发布的 retained MQTT 全量设备目录和设备当前状态读取设备数据，无需连接 PostgreSQL；后续控制能力仍通过固定命令来源接入，不直接修改设备核心表，也不绕过本服务控制设备。
 
 ## 数据来源
 
@@ -32,10 +32,10 @@ V1 阶段核心职责：
 | `{namespace}/sources/{source_id}/control/request` | 命令来源→本服务 | 提交飞控请求，最终由目标 RPi 转为 MAVLink |
 | `{namespace}/{vendor_id}/config/ack` | RPi→本服务 | 返回配置应用结果 |
 | `{namespace}/{vendor_id}/control/ack` | RPi→本服务 | 返回 STM32 执行结果 |
-| `{namespace}/events/devices/online` | 本服务→软件部 | QoS 1、retained；当前全部在线 `vendor_id` 的完整目录 |
+| `{namespace}/events/devices/directory` | 本服务→软件部 | QoS 1、retained；全部已入库设备的基础资料和在线状态 |
 | `{namespace}/events/devices/{vendor_id}/state` | 本服务→软件部 | QoS 1、retained；设备资料、在线状态和最新遥测的完整当前快照 |
 
-注册 payload 格式见 `cns_rpi` 仓库 `docs/superpowers/specs/2026-07-10-mqtt-registration-discovery-design.md`；设备侧配置与飞控协议见关联仓库文档。来源侧飞控请求和统一命令表见 `docs/2026-07-18-路由服务V1设计.md`；面向软件部的在线目录和设备状态协议见 `docs/2026-07-27-MQTT设备数据对外发布设计.md`。
+注册 payload 格式见 `cns_rpi` 仓库 `docs/superpowers/specs/2026-07-10-mqtt-registration-discovery-design.md`；设备侧配置与飞控协议见关联仓库文档。来源侧飞控请求和统一命令表见 `docs/2026-07-18-路由服务V1设计.md`；面向软件部的最终全量目录和设备状态协议见 `docs/2026-07-28-MQTT全量设备目录对外发布变更设计.md`。
 
 ## 数据库
 
@@ -86,7 +86,7 @@ V1 阶段核心职责：
 
 MQTT 连接恢复后会继续确认业务订阅状态。`MQTT连接已恢复` 只表示客户端已连上 Broker；registration、telemetry、来源命令请求和设备 ACK 等业务 topic 全部订阅成功后，才记录 `MQTT业务订阅已恢复`。连接恢复但业务订阅失败时，服务按短周期补订阅，retained registration 会在订阅恢复后重新进入现有注册处理链路。
 
-业务订阅在某次 MQTT 连接上全部就绪后，设备业务线程会发布一次完整在线目录和全部在线设备当前快照。设备上线、离线和有效遥测继续增量刷新 retained 快照；在线目录是判断当前在线集合的权威消息。
+业务订阅在某次 MQTT 连接上全部就绪后，设备业务线程会发布一次全量设备目录和全部设备当前快照，包括离线设备。设备上线、离线和有效遥测继续增量刷新单设备 retained 快照；只有设备新增、在线状态或目录基础资料变化时才重新发布全量目录，普通遥测不会触发全量目录重发。
 
 ## 当前状态
 
@@ -99,7 +99,7 @@ MQTT 连接恢复后会继续确认业务订阅状态。`MQTT连接已恢复` �
 - 里程碑四“飞控命令路由”已完成代码和本机自动化验收：支持四种飞控请求、QoS 2 非 retained 下发、进度与终态 ACK、30 秒可刷新期限，以及重启后收敛为 `delivery_uncertain` 且不重发。独立真实依赖联调与真实 RPi 飞控验证仍待安全条件和明确授权，实际证据见 `docs/change_history/2026-07-21-里程碑四飞控命令路由验收.md`。
 - 里程碑五公网安全接入已完成设计确认：使用 CNS 私有 CA、端到端 MQTT TLS `8883`、每设备独立凭据和 Mosquitto ACL；云服务器 frps 仅做 TCP 透传，最终由现场服务器 frpc 转发到回环地址的 Mosquitto。设计见 `docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`，尚未开始实施。
 - 收尾里程碑“展示链路固化”已用于本机演示链路，并在 2026-07-28 迁移到硬件服务器；正式 TLS/ACL 和前端体验优化仍不属于该里程碑。
-- 面向软件部的 MQTT 只读设备数据接口已完成代码实现和协议单元测试：在线目录与单设备状态均为 QoS 1 retained，启动或 MQTT 重连后自动全量重发；设计见 `docs/2026-07-27-MQTT设备数据对外发布设计.md`。硬件服务器真实 Broker retained 行为已验证，现场 ACL 仍待正式安全接入阶段实施。
+- 面向软件部的 MQTT 只读设备数据接口已升级为全量设备目录：目录与单设备状态均为 QoS 1 retained，目录包含全部已入库设备及在线状态，启动或 MQTT 重连后重发全部设备快照；MQTT 对外 JSON 不暴露内部 `school_id`，重放状态使用 `change_reason=snapshot_replay`。代码和本机测试已完成，设计见 `docs/2026-07-28-MQTT全量设备目录对外发布变更设计.md`，硬件服务器部署和旧在线目录 retained 清理待验收。
 - 硬件服务器部署记录见 `docs/change_history/2026-07-28-硬件服务器迁移验收.md`。当前局域网入口为 `http://192.168.11.3/`，树莓派 MQTT 演示入口为 `112.124.52.232:1883`，由硬件服务器 FRP 转发到本机 Broker；真实命令闭环尚未完成，不得写成已验收。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。

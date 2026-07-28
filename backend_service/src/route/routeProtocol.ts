@@ -16,13 +16,23 @@ import { enrichTelemetryCoordinates } from "../telemetry/coordinateTransform.js"
 
 const NullableDateTimeSchema = z.string().datetime({ offset: true }).nullable();
 
-export const RouteOnlineDeviceSnapshotSchema = z
+const RouteDeviceDirectoryEntrySchema = z
+  .object({
+    vendor_id: z.string().length(20),
+    school_name: z.string().min(1),
+    dcdw_label: z.string().min(1).nullable(),
+    model_version: z.string().min(1),
+    status: z.enum(["online", "offline"])
+  })
+  .strict();
+
+export const RouteDeviceDirectorySnapshotSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),
-    event_type: z.literal("online_device_snapshot"),
+    event_type: z.literal("device_directory_snapshot"),
     generated_at: z.string().datetime({ offset: true }),
     revision: z.number().int().nonnegative(),
-    device_ids: z.array(z.string().length(20))
+    devices: z.array(RouteDeviceDirectoryEntrySchema)
   })
   .strict();
 
@@ -33,7 +43,6 @@ export const RouteDeviceStateMessageSchema = z
     event_at: z.string().datetime({ offset: true }),
     revision: z.number().int().nonnegative(),
     vendor_id: z.string().length(20),
-    school_id: z.number().int().positive(),
     school_name: z.string().min(1),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
@@ -46,7 +55,8 @@ export const RouteDeviceStateMessageSchema = z
       "registration_offline",
       "telemetry",
       "activity_timeout",
-      "database_recovered"
+      "database_recovered",
+      "snapshot_replay"
     ]),
     degraded: z.boolean()
   })
@@ -80,8 +90,8 @@ export const RouteCommandAckSchema = z
   .passthrough();
 
 export type RouteDeviceStateMessage = z.infer<typeof RouteDeviceStateMessageSchema>;
-export type RouteOnlineDeviceSnapshot = z.infer<
-  typeof RouteOnlineDeviceSnapshotSchema
+export type RouteDeviceDirectorySnapshot = z.infer<
+  typeof RouteDeviceDirectorySnapshotSchema
 >;
 export type RouteCommandAck = z.infer<typeof RouteCommandAckSchema>;
 

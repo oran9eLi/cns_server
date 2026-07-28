@@ -14,7 +14,8 @@ export const DeviceStateChangeReasonSchema = z.enum([
   "registration_offline",
   "telemetry",
   "activity_timeout",
-  "database_recovered"
+  "database_recovered",
+  "snapshot_replay"
 ]);
 
 export const DeviceListQuerySchema = z

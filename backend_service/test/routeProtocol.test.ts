@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   RouteCommandAckSchema,
+  RouteDeviceDirectorySnapshotSchema,
   RouteDeviceStateMessageSchema,
-  RouteOnlineDeviceSnapshotSchema,
   buildRouteCommandRequest,
   isTerminalRouteStatus,
   toCommandUpdatedEvent,
@@ -34,7 +34,6 @@ describe("route_service protocol adapter", () => {
       event_at: "2026-07-21T05:00:00.000Z",
       revision: 12,
       vendor_id: "CNS00000000000000001",
-      school_id: 7,
       school_name: "东创航空实训中心",
       dcdw_label: "DCDW-001",
       model_version: "CNS v1.0",
@@ -42,7 +41,7 @@ describe("route_service protocol adapter", () => {
       last_seen_at: "2026-07-21T05:00:00.000Z",
       telemetry_received_at: "2026-07-21T05:00:00.000Z",
       latest_telemetry: { attitude: { roll_deg: 1.2 } },
-      change_reason: "telemetry",
+      change_reason: "snapshot_replay",
       degraded: false
     });
 
@@ -50,21 +49,34 @@ describe("route_service protocol adapter", () => {
       type: "device.state",
       event_at: "2026-07-21T05:00:00.000Z",
       school_name: "东创航空实训中心",
-      change_reason: "telemetry"
+      change_reason: "snapshot_replay"
     });
   });
 
-  it("accepts the retained online device snapshot contract", () => {
-    expect(RouteOnlineDeviceSnapshotSchema.parse({
+  it("accepts the retained full device directory contract", () => {
+    const directory = RouteDeviceDirectorySnapshotSchema.parse({
       schema_version: 1,
-      event_type: "online_device_snapshot",
-      generated_at: "2026-07-27T05:00:00.000Z",
+      event_type: "device_directory_snapshot",
+      generated_at: "2026-07-28T05:00:00.000Z",
       revision: 3,
-      device_ids: [
-        "CNS00000000000000001",
-        "CNS00000000000000002"
+      devices: [
+        {
+          vendor_id: "CNS00000000000000001",
+          school_name: "东创航空实训中心",
+          dcdw_label: "DCDW-001",
+          model_version: "CNS v1.0",
+          status: "online"
+        },
+        {
+          vendor_id: "CNS00000000000000002",
+          school_name: "东创航空实训中心",
+          dcdw_label: null,
+          model_version: "CNS v1.0",
+          status: "offline"
+        }
       ]
-    }).device_ids).toHaveLength(2);
+    });
+    expect(directory.devices).toHaveLength(2);
   });
 
   it("maps pending ACK to submitted and preserves terminal ACK details", () => {
