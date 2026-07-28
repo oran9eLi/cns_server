@@ -71,7 +71,7 @@ class DeviceService {
   void SetBeforeDatabaseIdleWaitHookForTesting(std::function<void()> hook);
   /** 请求业务线程放弃已停止数据库运行时不可能再完成的在途工作。 */
   void CancelOutstandingDatabaseWork();
-  /** 请求设备业务线程发布当前在线目录及全部在线设备快照。 */
+  /** 请求设备业务线程发布全量设备目录及全部设备当前快照。 */
   void RequestExternalSnapshot();
 
   // 可确定驱动的测试入口；生产运行仍由 Run 独占调用。

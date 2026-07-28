@@ -18,6 +18,7 @@ enum class ChangeReason {
   kTelemetry,
   kActivityTimeout,
   kDatabaseRecovered,
+  kSnapshotReplay,
 };
 
 struct Snapshot {

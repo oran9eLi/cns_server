@@ -160,7 +160,7 @@ struct RuntimeExternalBridge {
   mqtt::MqttClient* mqtt = nullptr;
   logging::Logger* logger = nullptr;
   std::string topic_namespace;
-  state_event::OnlineDeviceDirectory online_directory;
+  state_event::DeviceDirectory device_directory;
   bool enabled = true;
 
   void Disable() noexcept {
@@ -199,6 +199,17 @@ struct RuntimeExternalBridge {
     };
   }
 
+  state_event::DirectoryEntry DirectoryEntryFor(
+      const runtime::PublishedState& published) const {
+    return {
+        .vendor_id = published.record.vendor_id,
+        .school_name = published.record.school_name,
+        .dcdw_label = published.record.dcdw_label,
+        .model_version = published.record.model_version,
+        .online = published.record.status == device::Status::kOnline,
+    };
+  }
+
   void PublishStateLocked(const runtime::PublishedState& published) {
     const auto payload = state_event::BuildStateEvent(
         SnapshotFor(published), published.reason,
@@ -211,21 +222,20 @@ struct RuntimeExternalBridge {
   }
 
   void PublishDirectoryLocked() {
-    const auto payload = state_event::BuildOnlineDeviceSnapshot(
-        online_directory.DeviceIds(), online_directory.Revision(),
+    const auto payload = state_event::BuildDeviceDirectorySnapshot(
+        device_directory.Entries(), device_directory.Revision(),
         std::chrono::system_clock::now()).dump();
     const auto result = mqtt->PublishStateEvent(
-        mqtt_topic::OnlineDevicesTopic(topic_namespace), payload);
-    if (!result) logger->Error("发布在线设备目录失败");
+        mqtt_topic::DeviceDirectoryTopic(topic_namespace), payload);
+    if (!result) logger->Error("发布全量设备目录失败");
   }
 
   void Publish(runtime::PublishedState published) noexcept {
     std::lock_guard lock(mutex);
     if (!enabled) return;
     try {
-      const bool directory_changed = online_directory.Update(
-          published.record.vendor_id,
-          published.record.status == device::Status::kOnline);
+      const bool directory_changed =
+          device_directory.Update(DirectoryEntryFor(published));
       if (mqtt == nullptr || logger == nullptr) return;
       PublishStateLocked(published);
       if (directory_changed) PublishDirectoryLocked();
@@ -241,14 +251,12 @@ struct RuntimeExternalBridge {
     std::lock_guard lock(mutex);
     if (!enabled) return;
     try {
-      std::vector<std::string> online_ids;
-      online_ids.reserve(published_states.size());
+      std::vector<state_event::DirectoryEntry> entries;
+      entries.reserve(published_states.size());
       for (const auto& published : published_states) {
-        if (published.record.status == device::Status::kOnline) {
-          online_ids.push_back(published.record.vendor_id);
-        }
+        entries.push_back(DirectoryEntryFor(published));
       }
-      static_cast<void>(online_directory.Replace(online_ids));
+      static_cast<void>(device_directory.Replace(entries));
       if (mqtt == nullptr || logger == nullptr) return;
       PublishDirectoryLocked();
       for (const auto& published : published_states) {

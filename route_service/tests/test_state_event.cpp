@@ -31,7 +31,7 @@ TEST_CASE("状态事件稳定输出完整字段和显式 null") {
       {"degraded", true}});
 }
 
-TEST_CASE("状态事件输出五种原因完整 telemetry 与 degraded 原值") {
+TEST_CASE("状态事件输出六种原因完整 telemetry 与 degraded 原值") {
   const auto at = std::chrono::sys_days{std::chrono::year{2026}/7/20};
   cns::state_event::Snapshot snapshot{
       .vendor_id = "A1b2C3d4E5f6G7h8I9j0", .revision = 9,
@@ -48,7 +48,8 @@ TEST_CASE("状态事件输出五种原因完整 telemetry 与 degraded 原值") 
       {cns::state_event::ChangeReason::kRegistrationOffline, "registration_offline"},
       {cns::state_event::ChangeReason::kTelemetry, "telemetry"},
       {cns::state_event::ChangeReason::kActivityTimeout, "activity_timeout"},
-      {cns::state_event::ChangeReason::kDatabaseRecovered, "database_recovered"}};
+      {cns::state_event::ChangeReason::kDatabaseRecovered, "database_recovered"},
+      {cns::state_event::ChangeReason::kSnapshotReplay, "snapshot_replay"}};
   for (const auto& [reason, text] : cases) {
     const auto event = cns::state_event::BuildStateEvent(snapshot, reason, at);
     CHECK(event["change_reason"] == text);

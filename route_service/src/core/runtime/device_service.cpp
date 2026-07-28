@@ -533,14 +533,11 @@ void DeviceService::PublishCurrentSnapshot() noexcept {
   if (!snapshots_) return;
   try {
     std::vector<PublishedState> states;
-    for (auto& record : registry_.ListOnlineDevices()) {
-      const auto reason = last_reason_.contains(record.vendor_id)
-          ? last_reason_.at(record.vendor_id)
-          : record.latest_telemetry
-                ? state_event::ChangeReason::kTelemetry
-                : state_event::ChangeReason::kRegistrationOnline;
+    for (auto& record : registry_.ListDevices()) {
       const bool degraded = IsDeviceDegraded(record.vendor_id);
-      states.push_back({std::move(record), reason, degraded});
+      states.push_back({std::move(record),
+                        state_event::ChangeReason::kSnapshotReplay,
+                        degraded});
     }
     snapshots_(std::move(states));
   } catch (const std::exception&) {

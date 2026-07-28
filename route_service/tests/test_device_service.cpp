@@ -362,7 +362,7 @@ TEST_CASE("existing device updates immediately and telemetry waits five seconds"
   CHECK_FALSE(h.writes[0].write_status);
 }
 
-TEST_CASE("外部快照请求只在业务线程发布排序后的在线设备") {
+TEST_CASE("外部快照请求只在业务线程发布排序后的全部设备") {
   Harness h;
   auto online_b = Record(kNew, 5);
   online_b.dcdw_label = "DCDW-002";
@@ -381,13 +381,16 @@ TEST_CASE("外部快照请求只在业务线程发布排序后的在线设备") 
   service.ProcessReady();
 
   REQUIRE(h.snapshots.size() == 1);
-  REQUIRE(h.snapshots.front().size() == 2);
+  REQUIRE(h.snapshots.front().size() == 3);
   CHECK(h.snapshots.front()[0].record.vendor_id == kKnown);
-  CHECK(h.snapshots.front()[1].record.vendor_id == kNew);
-  CHECK(h.snapshots.front()[1].record.latest_telemetry ==
+  CHECK(h.snapshots.front()[1].record.vendor_id == kOther);
+  CHECK(h.snapshots.front()[1].record.status == Status::kOffline);
+  CHECK(h.snapshots.front()[2].record.vendor_id == kNew);
+  CHECK(h.snapshots.front()[2].record.latest_telemetry ==
         online_b.latest_telemetry);
-  CHECK(h.snapshots.front()[1].reason ==
-        cns::state_event::ChangeReason::kTelemetry);
+  for (const auto& state : h.snapshots.front()) {
+    CHECK(state.reason == cns::state_event::ChangeReason::kSnapshotReplay);
+  }
 }
 
 TEST_CASE("外部全量快照保留单设备降级状态") {

@@ -19,6 +19,7 @@ const char* ToString(ChangeReason reason) {
     case ChangeReason::kTelemetry: return "telemetry";
     case ChangeReason::kActivityTimeout: return "activity_timeout";
     case ChangeReason::kDatabaseRecovered: return "database_recovered";
+    case ChangeReason::kSnapshotReplay: return "snapshot_replay";
   }
   return "";
 }
