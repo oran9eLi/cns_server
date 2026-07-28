@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -66,6 +67,8 @@ class MqttClient {
   std::expected<void, std::string> SubscribeDeviceMessages(
       std::string_view topic_namespace);
   std::expected<void, std::string> EnsureBusinessSubscriptions();
+  /** 业务订阅全部就绪时返回当前连接代，否则返回空。 */
+  std::optional<std::size_t> BusinessSubscriptionGeneration() const;
   std::expected<void, std::string> ConfigureCommandPublishing(
       PublishCompletionHandler handler, std::size_t capacity);
   std::expected<void, std::string> SubscribeCommandMessages(
@@ -76,6 +79,7 @@ class MqttClient {
       std::string_view topic, std::string_view payload);
   std::expected<void, std::string> ReplayRetainedRegistrations(
       std::string_view topic_namespace);
+  /** 以 QoS 1 retained 发布对外当前状态快照。 */
   std::expected<void, std::string> PublishStateEvent(std::string_view topic,
                                                      std::string_view payload);
 

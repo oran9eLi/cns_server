@@ -51,6 +51,8 @@ class DeviceRegistry {
   std::vector<Mutation> ExpireInactive(TimePoint now,
                                        std::chrono::seconds timeout);
   std::expected<void, std::string> AddProvisioned(DeviceRecord record);
+  /** 返回按 vendor_id 排序的在线设备副本，仅由设备业务线程调用。 */
+  std::vector<DeviceRecord> ListOnlineDevices() const;
   // 返回的指针只保证在本目录下一次修改操作前有效。
   const DeviceRecord* Find(std::string_view vendor_id) const;
   const DeviceRecord* FindBySchoolAndLabel(std::int64_t school_id,

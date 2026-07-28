@@ -56,6 +56,7 @@ struct Harness {
   std::vector<Registration> provisions;
   std::vector<DesiredDeviceWrite> writes;
   std::vector<cns::runtime::PublishedState> events;
+  std::vector<std::vector<cns::runtime::PublishedState>> snapshots;
   std::vector<std::string> diagnostics;
   std::vector<std::string> information;
   std::chrono::steady_clock::time_point steady{};
@@ -77,6 +78,9 @@ struct Harness {
         capacity, "cns", 5s, 60s,
         [this](std::string message) {
           information.push_back(std::move(message));
+        },
+        [this](std::vector<cns::runtime::PublishedState> snapshot) {
+          snapshots.push_back(std::move(snapshot));
         });
   }
 };
@@ -356,6 +360,34 @@ TEST_CASE("existing device updates immediately and telemetry waits five seconds"
   REQUIRE(h.writes.size() == 1);
   CHECK(h.writes[0].write_telemetry);
   CHECK_FALSE(h.writes[0].write_status);
+}
+
+TEST_CASE("外部快照请求只在业务线程发布排序后的在线设备") {
+  Harness h;
+  auto online_b = Record(kNew, 5);
+  online_b.dcdw_label = "DCDW-002";
+  online_b.status = Status::kOnline;
+  online_b.latest_telemetry = nlohmann::json{{"alarms", nlohmann::json::array()}};
+  auto online_a = Record(kKnown, 7);
+  online_a.status = Status::kOnline;
+  auto offline = Record(kOther, 9);
+  offline.dcdw_label = "DCDW-003";
+  REQUIRE(h.registry.Load({online_b, offline, online_a}));
+  auto service = h.Make();
+
+  service.RequestExternalSnapshot();
+  service.RequestExternalSnapshot();
+  CHECK(h.snapshots.empty());
+  service.ProcessReady();
+
+  REQUIRE(h.snapshots.size() == 1);
+  REQUIRE(h.snapshots.front().size() == 2);
+  CHECK(h.snapshots.front()[0].record.vendor_id == kKnown);
+  CHECK(h.snapshots.front()[1].record.vendor_id == kNew);
+  CHECK(h.snapshots.front()[1].record.latest_telemetry ==
+        online_b.latest_telemetry);
+  CHECK(h.snapshots.front()[1].reason ==
+        cns::state_event::ChangeReason::kTelemetry);
 }
 
 TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {

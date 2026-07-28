@@ -44,6 +44,10 @@ std::string TelemetryFilter(std::string_view topic_namespace) {
   return std::string{topic_namespace} + "/+/telemetry";
 }
 
+std::string OnlineDevicesTopic(std::string_view topic_namespace) {
+  return std::string{topic_namespace} + "/events/devices/online";
+}
+
 std::string StateEventTopic(std::string_view topic_namespace,
                             std::string_view vendor_id) {
   return std::string{topic_namespace} + "/events/devices/" +
