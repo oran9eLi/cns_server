@@ -89,6 +89,20 @@ TEST_CASE("同校多个空角色和不同学校相同角色均可共存") {
   CHECK(registry.Find(kVendorC));
 }
 
+TEST_CASE("在线设备快照只返回在线记录并按vendor_id排序") {
+  DeviceRegistry registry;
+  REQUIRE(registry.Load(
+      {Record(kVendorB, 1, std::nullopt, Status::kOnline),
+       Record(kVendorA, 1, std::nullopt, Status::kOffline),
+       Record(kVendorC, 1, std::nullopt, Status::kOnline)}));
+
+  const auto online = registry.ListOnlineDevices();
+
+  REQUIRE(online.size() == 2);
+  CHECK(online[0].vendor_id == kVendorC);
+  CHECK(online[1].vendor_id == kVendorB);
+}
+
 TEST_CASE("启动加载保留 last_seen 并按原时间立即修正超时状态") {
   DeviceRegistry registry;
   auto record = Record(kVendorA, 1, std::nullopt, Status::kOnline);

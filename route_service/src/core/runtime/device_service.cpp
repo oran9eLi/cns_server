@@ -36,9 +36,11 @@ DeviceService::DeviceService(device::DeviceRegistry& registry,
     ProvisionSubmitter provision, WriteSubmitter write, EventSink events,
     SteadyNow steady_now, DiagnosticSink diagnostic, std::size_t queue_capacity,
     std::string topic_namespace, std::chrono::seconds telemetry_interval,
-    std::chrono::seconds offline_timeout, InformationSink information)
+    std::chrono::seconds offline_timeout, InformationSink information,
+    SnapshotSink snapshots)
     : registry_(registry), provision_(std::move(provision)),
       write_(std::move(write)), events_(std::move(events)),
+      snapshots_(std::move(snapshots)),
       steady_now_(std::move(steady_now)), diagnostic_(std::move(diagnostic)),
       mqtt_queue_(queue_capacity), topic_namespace_(std::move(topic_namespace)),
       telemetry_interval_(telemetry_interval), offline_timeout_(offline_timeout),
@@ -88,7 +90,8 @@ void DeviceService::Run(std::stop_token stop, CycleHook cycle_hook) {
       wake_.wait_for(lock, stop, std::chrono::milliseconds{100}, [this] {
         std::lock_guard results_lock(results_mutex_);
         return (!input_drained_ && closed_) || mqtt_queue_.Size() != 0 ||
-               !results_.empty() || cancel_database_work_requested_;
+               !results_.empty() || cancel_database_work_requested_ ||
+               external_snapshot_requested_;
       });
     }
     ProcessReady();
@@ -104,6 +107,7 @@ void DeviceService::Close() {
   {
     std::lock_guard lock(wake_mutex_);
     closed_ = true;
+    external_snapshot_requested_ = false;
     drain_dispatch_pending_ = true;
   }
   mqtt_queue_.Close();
@@ -143,6 +147,15 @@ void DeviceService::CancelOutstandingDatabaseWork() {
   Notify();
 }
 
+void DeviceService::RequestExternalSnapshot() {
+  {
+    std::lock_guard lock(wake_mutex_);
+    if (closed_) return;
+    external_snapshot_requested_ = true;
+  }
+  Notify();
+}
+
 bool DeviceService::IsClosed() const {
   std::lock_guard lock(wake_mutex_);
   return closed_;
@@ -151,6 +164,11 @@ bool DeviceService::IsClosed() const {
 bool DeviceService::ConsumeCancelDatabaseWorkRequest() {
   std::lock_guard lock(wake_mutex_);
   return std::exchange(cancel_database_work_requested_, false);
+}
+
+bool DeviceService::ConsumeExternalSnapshotRequest() {
+  std::lock_guard lock(wake_mutex_);
+  return std::exchange(external_snapshot_requested_, false);
 }
 
 void DeviceService::SetDrainDispatchPending(bool value) {
@@ -270,6 +288,7 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     next_scan_ = now + kOfflineScan;
   }
   DispatchWrites();
+  if (ConsumeExternalSnapshotRequest()) PublishCurrentSnapshot();
 }
 
 std::size_t DeviceService::PendingRegistrationCount() const { return pending_.size(); }
@@ -508,6 +527,27 @@ void DeviceService::Publish(PublishedState state) noexcept {
   try { events_(std::move(state)); }
   catch (const std::exception&) { Diagnose("状态事件发布回调异常"); }
   catch (...) { Diagnose("状态事件发布回调发生未知异常"); }
+}
+
+void DeviceService::PublishCurrentSnapshot() noexcept {
+  if (!snapshots_) return;
+  try {
+    std::vector<PublishedState> states;
+    for (auto& record : registry_.ListOnlineDevices()) {
+      const auto reason = last_reason_.contains(record.vendor_id)
+          ? last_reason_.at(record.vendor_id)
+          : record.latest_telemetry
+                ? state_event::ChangeReason::kTelemetry
+                : state_event::ChangeReason::kRegistrationOnline;
+      const bool degraded = IsDeviceDegraded(record.vendor_id);
+      states.push_back({std::move(record), reason, degraded});
+    }
+    snapshots_(std::move(states));
+  } catch (const std::exception&) {
+    Diagnose("设备全量快照发布回调异常");
+  } catch (...) {
+    Diagnose("设备全量快照发布回调发生未知异常");
+  }
 }
 
 void DeviceService::Diagnose(std::string message) noexcept {

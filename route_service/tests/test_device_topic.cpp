@@ -30,6 +30,8 @@ TEST_CASE("拒绝错误 namespace 额外层级和非法 vendor") {
 TEST_CASE("构造订阅过滤器和状态事件主题") {
   CHECK(cns::mqtt_topic::RegistrationFilter("cns_rpi") == "cns_rpi/+/registration");
   CHECK(cns::mqtt_topic::TelemetryFilter("cns_rpi") == "cns_rpi/+/telemetry");
+  CHECK(cns::mqtt_topic::OnlineDevicesTopic("cns_rpi") ==
+        "cns_rpi/events/devices/online");
   CHECK(cns::mqtt_topic::StateEventTopic("cns_rpi", "A1b2C3d4E5f6G7h8I9j0") ==
         "cns_rpi/events/devices/A1b2C3d4E5f6G7h8I9j0/state");
 }

@@ -44,6 +44,7 @@ class DeviceService {
   using ProvisionSubmitter = std::function<bool(protocol::Registration, TimePoint)>;
   using WriteSubmitter = std::function<bool(persistence::DesiredDeviceWrite)>;
   using EventSink = std::function<void(PublishedState)>;
+  using SnapshotSink = std::function<void(std::vector<PublishedState>)>;
   using SteadyNow = std::function<std::chrono::steady_clock::time_point()>;
   using DiagnosticSink = std::function<void(std::string)>;
   using InformationSink = std::function<void(std::string)>;
@@ -56,7 +57,8 @@ class DeviceService {
                 std::string topic_namespace = "cns",
                 std::chrono::seconds telemetry_interval = std::chrono::seconds{5},
                 std::chrono::seconds offline_timeout = std::chrono::seconds{60},
-                InformationSink information = {});
+                InformationSink information = {},
+                SnapshotSink snapshots = {});
 
   bool TryPush(mqtt::InboundMessage message);
   void PushDatabaseResult(DatabaseResult result);
@@ -69,6 +71,8 @@ class DeviceService {
   void SetBeforeDatabaseIdleWaitHookForTesting(std::function<void()> hook);
   /** 请求业务线程放弃已停止数据库运行时不可能再完成的在途工作。 */
   void CancelOutstandingDatabaseWork();
+  /** 请求设备业务线程发布当前在线目录及全部在线设备快照。 */
+  void RequestExternalSnapshot();
 
   // 可确定驱动的测试入口；生产运行仍由 Run 独占调用。
   void ProcessReady(TimePoint system_now = std::chrono::system_clock::now());
@@ -89,6 +93,7 @@ class DeviceService {
   void DispatchWrites();
   bool SubmitWrite(persistence::DesiredDeviceWrite write);
   void Publish(PublishedState state) noexcept;
+  void PublishCurrentSnapshot() noexcept;
   void Diagnose(std::string message) noexcept;
   void Inform(std::string message) noexcept;
   void Notify();
@@ -100,12 +105,14 @@ class DeviceService {
   void ResetOutstandingDatabaseWork();
   bool IsClosed() const;
   bool ConsumeCancelDatabaseWorkRequest();
+  bool ConsumeExternalSnapshotRequest();
   void SetDrainDispatchPending(bool value);
 
   device::DeviceRegistry& registry_;
   ProvisionSubmitter provision_;
   WriteSubmitter write_;
   EventSink events_;
+  SnapshotSink snapshots_;
   SteadyNow steady_now_;
   DiagnosticSink diagnostic_;
   queue::BoundedQueue<mqtt::InboundMessage> mqtt_queue_;
@@ -123,6 +130,7 @@ class DeviceService {
   bool closed_ = false;
   bool input_drained_ = false;
   bool cancel_database_work_requested_ = false;
+  bool external_snapshot_requested_ = false;
   bool drain_dispatch_pending_ = false;
   bool drain_submission_blocked_ = false;
   bool processing_ready_ = false;

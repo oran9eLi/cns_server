@@ -628,7 +628,7 @@ TEST_CASE("回调内放弃路径catch不无锁写logger") {
         std::string::npos);
 }
 
-TEST_CASE("状态事件使用QoS0且retain为false") {
+TEST_CASE("设备当前状态使用QoS1且retain为true") {
   std::ostringstream out;
   std::ostringstream err;
   cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
@@ -640,7 +640,29 @@ TEST_CASE("状态事件使用QoS0且retain为false") {
               .has_value());
   CHECK(injection.publications ==
         std::vector<std::tuple<std::string, std::string, int, bool>>{
-            {"cns/events/devices/id/state", "{\"on\":true}", 0, false}});
+            {"cns/events/devices/id/state", "{\"on\":true}", 1, true}});
+}
+
+TEST_CASE("只在当前连接代全部业务订阅成功后报告就绪") {
+  std::ostringstream out;
+  std::ostringstream err;
+  cns::logging::Logger logger(cns::logging::Level::kDebug, out, err);
+  Injection injection;
+  ScopedInjection scoped{injection};
+  auto client = MakeClient(logger, injection);
+  REQUIRE(client->SubscribeDeviceMessages("cns").has_value());
+  REQUIRE_FALSE(client->BusinessSubscriptionGeneration());
+
+  injection.connect_callback(nullptr, injection.context, 0);
+  const auto first = client->BusinessSubscriptionGeneration();
+  REQUIRE(first);
+
+  injection.disconnect_callback(nullptr, injection.context, MOSQ_ERR_CONN_LOST);
+  REQUIRE_FALSE(client->BusinessSubscriptionGeneration());
+  injection.connect_callback(nullptr, injection.context, 0);
+  const auto second = client->BusinessSubscriptionGeneration();
+  REQUIRE(second);
+  CHECK(*second > *first);
 }
 
 TEST_CASE("恢复registration retained消息先unsubscribe再以QoS2 subscribe") {

@@ -111,20 +111,22 @@ struct MqttClient::CallbackState {
     std::string device_namespace;
     std::string command_namespace;
     std::size_t generation = 0;
+    bool subscribe_devices = false;
+    bool subscribe_commands = false;
     {
       std::lock_guard lock{mutex};
       device_namespace = device_topic_namespace;
       command_namespace = command_topic_namespace;
       generation = connection_generation;
+      subscribe_devices =
+          !device_namespace.empty() &&
+          (registration_generation != generation ||
+           telemetry_generation != generation);
+      subscribe_commands =
+          !command_namespace.empty() &&
+          (source_request_generation != generation ||
+           device_ack_generation != generation);
     }
-    const bool subscribe_devices =
-        !device_namespace.empty() &&
-        (registration_generation != generation ||
-         telemetry_generation != generation);
-    const bool subscribe_commands =
-        !command_namespace.empty() &&
-        (source_request_generation != generation ||
-         device_ack_generation != generation);
     if (subscribe_devices) {
       const auto registration = mqtt_topic::RegistrationFilter(device_namespace);
       const int result = mosquitto_subscribe(client, nullptr,
@@ -189,6 +191,27 @@ struct MqttClient::CallbackState {
       }
     }
     return {};
+  }
+
+  std::optional<std::size_t> BusinessSubscriptionGeneration() {
+    std::lock_guard lock{mutex};
+    if (!connected.load(std::memory_order_acquire)) return std::nullopt;
+    const bool has_device_subscriptions = !device_topic_namespace.empty();
+    const bool has_command_subscriptions = !command_topic_namespace.empty();
+    if (!has_device_subscriptions && !has_command_subscriptions) {
+      return std::nullopt;
+    }
+    if (has_device_subscriptions &&
+        (registration_generation != connection_generation ||
+         telemetry_generation != connection_generation)) {
+      return std::nullopt;
+    }
+    if (has_command_subscriptions &&
+        (source_request_generation != connection_generation ||
+         device_ack_generation != connection_generation)) {
+      return std::nullopt;
+    }
+    return connection_generation;
   }
 
   void Dispatch(const struct mosquitto_message* message,
@@ -530,6 +553,10 @@ std::expected<void, std::string> MqttClient::EnsureBusinessSubscriptions() {
   return {};
 }
 
+std::optional<std::size_t> MqttClient::BusinessSubscriptionGeneration() const {
+  return callback_state_->BusinessSubscriptionGeneration();
+}
+
 std::expected<void, std::string> MqttClient::ReplayRetainedRegistrations(
     std::string_view topic_namespace) {
   if (topic_namespace.empty()) return std::unexpected("MQTT topic命名空间不能为空");
@@ -643,9 +670,9 @@ std::expected<void, std::string> MqttClient::PublishStateEvent(
   int mid = 0;
   const int result = mosquitto_publish(
       client_, &mid, std::string{topic}.c_str(), static_cast<int>(payload.size()),
-      payload.data(), 0, false);
+      payload.data(), 1, true);
   if (result != MOSQ_ERR_SUCCESS) {
-    return std::unexpected(MosquittoError("发布设备状态事件", result));
+    return std::unexpected(MosquittoError("发布设备当前状态快照", result));
   }
   callback_state_->untracked_completion_mids.insert(mid);
   return {};

@@ -16,14 +16,27 @@ import { enrichTelemetryCoordinates } from "../telemetry/coordinateTransform.js"
 
 const NullableDateTimeSchema = z.string().datetime({ offset: true }).nullable();
 
+export const RouteOnlineDeviceSnapshotSchema = z
+  .object({
+    schema_version: z.literal(SCHEMA_VERSION),
+    event_type: z.literal("online_device_snapshot"),
+    generated_at: z.string().datetime({ offset: true }),
+    revision: z.number().int().nonnegative(),
+    device_ids: z.array(z.string().length(20))
+  })
+  .strict();
+
 export const RouteDeviceStateMessageSchema = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),
     event_type: z.literal("device_state"),
     event_at: z.string().datetime({ offset: true }),
+    revision: z.number().int().nonnegative(),
     vendor_id: z.string().length(20),
+    school_id: z.number().int().positive(),
     school_name: z.string().min(1),
     dcdw_label: z.string().min(1).nullable(),
+    model_version: z.string().min(1),
     status: z.enum(["online", "offline"]),
     last_seen_at: NullableDateTimeSchema,
     telemetry_received_at: NullableDateTimeSchema,
@@ -67,6 +80,9 @@ export const RouteCommandAckSchema = z
   .passthrough();
 
 export type RouteDeviceStateMessage = z.infer<typeof RouteDeviceStateMessageSchema>;
+export type RouteOnlineDeviceSnapshot = z.infer<
+  typeof RouteOnlineDeviceSnapshotSchema
+>;
 export type RouteCommandAck = z.infer<typeof RouteCommandAckSchema>;
 
 export function buildRouteCommandRequest(vendorId: string, request: DeviceCommandRequest) {

@@ -160,6 +160,7 @@ struct RuntimeExternalBridge {
   mqtt::MqttClient* mqtt = nullptr;
   logging::Logger* logger = nullptr;
   std::string topic_namespace;
+  state_event::OnlineDeviceDirectory online_directory;
   bool enabled = true;
 
   void Disable() noexcept {
@@ -181,29 +182,82 @@ struct RuntimeExternalBridge {
     try { logger->Info(message); } catch (...) {}
   }
 
+  state_event::Snapshot SnapshotFor(
+      const runtime::PublishedState& published) const {
+    return {
+        .vendor_id = published.record.vendor_id,
+        .revision = published.record.revision,
+        .school_id = published.record.school_id,
+        .school_name = published.record.school_name,
+        .dcdw_label = published.record.dcdw_label,
+        .model_version = published.record.model_version,
+        .online = published.record.status == device::Status::kOnline,
+        .last_seen_at = published.record.last_seen_at,
+        .telemetry_received_at = published.record.telemetry_received_at,
+        .latest_telemetry = published.record.latest_telemetry,
+        .degraded = published.degraded,
+    };
+  }
+
+  void PublishStateLocked(const runtime::PublishedState& published) {
+    const auto payload = state_event::BuildStateEvent(
+        SnapshotFor(published), published.reason,
+        std::chrono::system_clock::now()).dump();
+    const auto result = mqtt->PublishStateEvent(
+        mqtt_topic::StateEventTopic(topic_namespace,
+                                    published.record.vendor_id),
+        payload);
+    if (!result) logger->Error("发布设备当前状态快照失败");
+  }
+
+  void PublishDirectoryLocked() {
+    const auto payload = state_event::BuildOnlineDeviceSnapshot(
+        online_directory.DeviceIds(), online_directory.Revision(),
+        std::chrono::system_clock::now()).dump();
+    const auto result = mqtt->PublishStateEvent(
+        mqtt_topic::OnlineDevicesTopic(topic_namespace), payload);
+    if (!result) logger->Error("发布在线设备目录失败");
+  }
+
   void Publish(runtime::PublishedState published) noexcept {
     std::lock_guard lock(mutex);
-    if (!enabled || mqtt == nullptr || logger == nullptr) return;
+    if (!enabled) return;
     try {
-      state_event::Snapshot snapshot{
-          .vendor_id = published.record.vendor_id,
-          .school_name = published.record.school_name,
-          .dcdw_label = published.record.dcdw_label,
-          .online = published.record.status == device::Status::kOnline,
-          .last_seen_at = published.record.last_seen_at,
-          .telemetry_received_at = published.record.telemetry_received_at,
-          .latest_telemetry = published.record.latest_telemetry,
-          .degraded = published.degraded,
-      };
-      const auto payload = state_event::BuildStateEvent(
-          snapshot, published.reason, std::chrono::system_clock::now()).dump();
-      auto result = mqtt->PublishStateEvent(
-          mqtt_topic::StateEventTopic(topic_namespace,
-                                      published.record.vendor_id),
-          payload);
-      if (!result) logger->Error("发布设备状态事件失败");
+      const bool directory_changed = online_directory.Update(
+          published.record.vendor_id,
+          published.record.status == device::Status::kOnline);
+      if (mqtt == nullptr || logger == nullptr) return;
+      PublishStateLocked(published);
+      if (directory_changed) PublishDirectoryLocked();
     } catch (...) {
-      try { logger->Error("发布设备状态事件发生异常"); } catch (...) {}
+      if (logger != nullptr) {
+        try { logger->Error("发布设备对外快照发生异常"); } catch (...) {}
+      }
+    }
+  }
+
+  void PublishFullSnapshot(
+      std::vector<runtime::PublishedState> published_states) noexcept {
+    std::lock_guard lock(mutex);
+    if (!enabled) return;
+    try {
+      std::vector<std::string> online_ids;
+      online_ids.reserve(published_states.size());
+      for (const auto& published : published_states) {
+        if (published.record.status == device::Status::kOnline) {
+          online_ids.push_back(published.record.vendor_id);
+        }
+      }
+      static_cast<void>(online_directory.Replace(online_ids));
+      if (mqtt == nullptr || logger == nullptr) return;
+      PublishDirectoryLocked();
+      for (const auto& published : published_states) {
+        PublishStateLocked(published);
+      }
+    } catch (...) {
+      if (logger != nullptr) {
+        try { logger->Error("发布设备全量对外快照发生异常"); } catch (...) {}
+      }
     }
   }
 };
@@ -288,6 +342,12 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
         config.device_state.offline_timeout,
         [weak = external](std::string message) {
           if (const auto bridge = weak.lock()) bridge->Inform(message);
+        },
+        [weak = external](
+            std::vector<runtime::PublishedState> published_states) {
+          if (const auto bridge = weak.lock()) {
+            bridge->PublishFullSnapshot(std::move(published_states));
+          }
         });
     ingress = std::make_shared<runtime::DeviceIngress>(
         [weak_self](mqtt::InboundMessage message) {
@@ -404,6 +464,7 @@ struct ServiceEnvironment::State {
   std::shared_ptr<RuntimeExternalBridge> external_bridge;
   std::shared_ptr<RuntimeBundle> runtime_bundle;
   std::chrono::steady_clock::time_point next_mqtt_subscription_retry{};
+  std::optional<std::size_t> last_external_snapshot_generation;
   bool accepting_device_messages = false;
   bool device_runtime_stopped = true;
 };
@@ -723,6 +784,14 @@ void ServiceEnvironment::WaitForNextCheck() {
       auto subscribed = state_->mqtt->EnsureBusinessSubscriptions();
       if (!subscribed && state_->logger) {
         state_->logger->Warn("MQTT业务订阅重试失败：" + subscribed.error());
+      }
+      const auto generation =
+          state_->mqtt->BusinessSubscriptionGeneration();
+      if (subscribed && generation &&
+          generation != state_->last_external_snapshot_generation &&
+          state_->runtime_bundle->service) {
+        state_->runtime_bundle->service->RequestExternalSnapshot();
+        state_->last_external_snapshot_generation = generation;
       }
     }
   }

@@ -1,5 +1,6 @@
 #include "core/device/device_registry.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <utility>
@@ -232,6 +233,17 @@ std::expected<void, std::string> DeviceRegistry::AddProvisioned(
     throw;
   }
   return {};
+}
+
+std::vector<DeviceRecord> DeviceRegistry::ListOnlineDevices() const {
+  std::vector<DeviceRecord> online;
+  online.reserve(records_.size());
+  for (const auto& [vendor_id, record] : records_) {
+    static_cast<void>(vendor_id);
+    if (record.status == Status::kOnline) online.push_back(record);
+  }
+  std::ranges::sort(online, {}, &DeviceRecord::vendor_id);
+  return online;
 }
 
 const DeviceRecord* DeviceRegistry::Find(std::string_view vendor_id) const {

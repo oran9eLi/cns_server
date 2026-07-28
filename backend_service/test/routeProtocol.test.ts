@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   RouteCommandAckSchema,
   RouteDeviceStateMessageSchema,
+  RouteOnlineDeviceSnapshotSchema,
   buildRouteCommandRequest,
   isTerminalRouteStatus,
   toCommandUpdatedEvent,
@@ -31,9 +32,12 @@ describe("route_service protocol adapter", () => {
       schema_version: 1,
       event_type: "device_state",
       event_at: "2026-07-21T05:00:00.000Z",
+      revision: 12,
       vendor_id: "CNS00000000000000001",
+      school_id: 7,
       school_name: "东创航空实训中心",
       dcdw_label: "DCDW-001",
+      model_version: "CNS v1.0",
       status: "online",
       last_seen_at: "2026-07-21T05:00:00.000Z",
       telemetry_received_at: "2026-07-21T05:00:00.000Z",
@@ -48,6 +52,19 @@ describe("route_service protocol adapter", () => {
       school_name: "东创航空实训中心",
       change_reason: "telemetry"
     });
+  });
+
+  it("accepts the retained online device snapshot contract", () => {
+    expect(RouteOnlineDeviceSnapshotSchema.parse({
+      schema_version: 1,
+      event_type: "online_device_snapshot",
+      generated_at: "2026-07-27T05:00:00.000Z",
+      revision: 3,
+      device_ids: [
+        "CNS00000000000000001",
+        "CNS00000000000000002"
+      ]
+    }).device_ids).toHaveLength(2);
   });
 
   it("maps pending ACK to submitted and preserves terminal ACK details", () => {

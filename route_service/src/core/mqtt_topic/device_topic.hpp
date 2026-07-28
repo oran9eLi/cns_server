@@ -17,6 +17,7 @@ std::expected<ParsedDeviceTopic, std::string> ParseDeviceTopic(
     std::string_view topic_namespace, std::string_view topic);
 std::string RegistrationFilter(std::string_view topic_namespace);
 std::string TelemetryFilter(std::string_view topic_namespace);
+std::string OnlineDevicesTopic(std::string_view topic_namespace);
 std::string StateEventTopic(std::string_view topic_namespace,
                             std::string_view vendor_id);
 bool IsValidVendorId(std::string_view vendor_id);
