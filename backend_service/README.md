@@ -64,3 +64,16 @@ npm.cmd run build
 ```
 
 真实联调时应确认 `/api/health` 中 `database` 和 `mqtt` 都为 `ready`，然后验证设备状态事件和命令 ACK 能通过 `/ws` 到达浏览器。
+
+## 硬件服务器部署
+
+2026-07-28 已在 `hardware@192.168.11.3` 完成生产构建和 systemd 部署：
+
+- 配置文件：`/etc/cns/backend_service.json`，权限 `0600`，不进入 Git。
+- 服务单元：`cns-backend-service.service`，以 `hardware` 用户运行并设置为开机自启。
+- HTTP 监听：`0.0.0.0:3000`，由 Nginx 在 `80` 端口代理 `/api/` 和 `/ws`。
+- PostgreSQL：使用 `cns_backend_read`，仅对 `schools`、`devices`、`device_latest_states` 具有 `SELECT` 权限。
+- MQTT：连接硬件服务器本机 `127.0.0.1:1883`。
+- 局域网入口：`http://192.168.11.3/`。
+
+部署验收时 `/api/health` 的 `database` 和 `mqtt` 均为 `ready`。树莓派当时离线，因此真实遥测增量、WebSocket 推送和命令 ACK 闭环仍待设备切换 Broker 后补验。

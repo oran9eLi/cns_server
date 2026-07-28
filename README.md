@@ -19,7 +19,7 @@ cns_server/
 
 当前优先实施的核心服务。它以 MQTT 客户端身份连接 Mosquitto，消费设备注册、遥测和命令 ACK，以 PostgreSQL 作为权威持久化存储，并向目标设备发布规范化命令。
 
-当前状态：里程碑一至四已完成并合入 `main`。里程碑五已确认采用私有 CA、MQTT TLS、每设备独立凭据、最小权限 ACL，以及云端 frps 到现场 frpc 的 TCP 透传；详细设计见 `route_service/docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`。现场服务器部署与综合验收仍待实施。
+当前状态：里程碑一至四已完成并合入 `main`。2026-07-28 已将 PostgreSQL、Mosquitto、route_service、backend_service、前端和 Nginx 部署到硬件服务器 `192.168.11.3`，服务端构建、迁移、数据恢复、systemd、自启、HTTP、数据库权限和 retained 快照均已验证；树莓派因当时离线，真实设备切换和命令闭环仍待补验。里程碑五正式安全接入仍按私有 CA、MQTT TLS、每设备独立凭据、最小权限 ACL，以及云端 frps 到现场 frpc 的 TCP 透传设计继续实施；详细设计见 `route_service/docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`。
 
 详细边界见 `route_service/README.md`。具体架构、表结构和实现步骤必须先经过设计文档与实施计划确认。
 

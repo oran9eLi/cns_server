@@ -1,6 +1,6 @@
 .worktrees/
 .superpowers/
-route_service/build/
+route_service/build*/
 node_modules/
 dist/
 backend_service/node_modules/
