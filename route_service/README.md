@@ -99,7 +99,7 @@ MQTT 连接恢复后会继续确认业务订阅状态。`MQTT连接已恢复` �
 - 里程碑四“飞控命令路由”已完成代码和本机自动化验收：支持四种飞控请求、QoS 2 非 retained 下发、进度与终态 ACK、30 秒可刷新期限，以及重启后收敛为 `delivery_uncertain` 且不重发。独立真实依赖联调与真实 RPi 飞控验证仍待安全条件和明确授权，实际证据见 `docs/change_history/2026-07-21-里程碑四飞控命令路由验收.md`。
 - 里程碑五公网安全接入已完成设计确认：使用 CNS 私有 CA、端到端 MQTT TLS `8883`、每设备独立凭据和 Mosquitto ACL；云服务器 frps 仅做 TCP 透传，最终由现场服务器 frpc 转发到回环地址的 Mosquitto。设计见 `docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`，尚未开始实施。
 - 收尾里程碑“展示链路固化”已用于本机演示链路，并在 2026-07-28 迁移到硬件服务器；正式 TLS/ACL 和前端体验优化仍不属于该里程碑。
-- 面向软件部的 MQTT 只读设备数据接口已升级为全量设备目录：目录与单设备状态均为 QoS 1 retained，目录包含全部已入库设备及在线状态，启动或 MQTT 重连后重发全部设备快照；MQTT 对外 JSON 不暴露内部 `school_id`，重放状态使用 `change_reason=snapshot_replay`。代码和本机测试已完成，设计见 `docs/2026-07-28-MQTT全量设备目录对外发布变更设计.md`，硬件服务器部署和旧在线目录 retained 清理待验收。
+- 面向软件部的 MQTT 只读设备数据接口已升级为全量设备目录：目录与单设备状态均为 QoS 1 retained，目录包含全部已入库设备及在线状态，启动或 MQTT 重连后重发全部设备快照；MQTT 对外 JSON 不暴露内部 `school_id`，重放状态使用 `change_reason=snapshot_replay`。2026-07-28 已在硬件服务器部署并通过本机 Broker 与公网 FRP 入口验证，旧在线目录 retained 已清理；设计见 `docs/2026-07-28-MQTT全量设备目录对外发布变更设计.md`。
 - 硬件服务器部署记录见 `docs/change_history/2026-07-28-硬件服务器迁移验收.md`。当前局域网入口为 `http://192.168.11.3/`，树莓派 MQTT 演示入口为 `112.124.52.232:1883`，由硬件服务器 FRP 转发到本机 Broker；真实命令闭环尚未完成，不得写成已验收。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。

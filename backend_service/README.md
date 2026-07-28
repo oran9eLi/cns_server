@@ -84,4 +84,4 @@ npm.cmd run build
 - MQTT：连接硬件服务器本机 `127.0.0.1:1883`。
 - 局域网入口：`http://192.168.11.3/`。
 
-部署验收时 `/api/health` 的 `database` 和 `mqtt` 均为 `ready`。树莓派已通过公网 FRP 接入硬件服务器，真实遥测已到达 Broker、数据库和后端设备详情接口；浏览器 WebSocket 展示和命令 ACK 闭环仍待补验。
+部署验收时 `/api/health` 的 `database` 和 `mqtt` 均为 `ready`。2026-07-28 已随 Route Service 全量设备目录协议同步重建并重启，能够接受不含内部 `school_id` 的目录和单设备状态消息。树莓派已通过公网 FRP 接入硬件服务器，真实遥测已到达 Broker、数据库和后端设备详情接口；浏览器 WebSocket 展示和命令 ACK 闭环仍待补验。
