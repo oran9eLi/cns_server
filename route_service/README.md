@@ -94,13 +94,13 @@ MQTT 连接恢复后会继续确认业务订阅状态。`MQTT连接已恢复` �
 - Route Service V1 设计已逐节确认，书面规格见 `docs/2026-07-18-路由服务V1设计.md`。
 - 技术方案为 C++23 单体服务，使用 libmosquitto、libpqxx、nlohmann/json、doctest 和 CMake。
 - 里程碑二“设备注册与最新状态”已完成代码实现，包含 registration、telemetry、设备在线状态、最新值合并写库、数据库降级恢复和规范化状态事件；书面设计见 `docs/superpowers/specs/2026-07-20-里程碑二设备注册与最新状态设计.md`。
-- 干净构建、本机单元测试和一次性临时 PostgreSQL/Mosquitto 真实链路已通过，结果记录在 `docs/change_history/2026-07-20-里程碑二设备注册与最新状态验收.md`。硬件服务器上的构建、数据库、Broker、systemd 和 retained 快照验证已于 2026-07-28 完成；树莓派当时离线，真实设备上报仍待补验。
+- 干净构建、本机单元测试和一次性临时 PostgreSQL/Mosquitto 真实链路已通过，结果记录在 `docs/change_history/2026-07-20-里程碑二设备注册与最新状态验收.md`。硬件服务器上的构建、数据库、Broker、systemd 和 retained 快照验证已于 2026-07-28 完成；随后已补验树莓派经公网 FRP 上报 registration 和 telemetry、数据库在线状态及后端设备详情。
 - 里程碑三“固定来源与配置命令”已完成代码实现、本机自动化测试、独立 PostgreSQL/Mosquitto 真实链路和真实 RPi 配置命令验证，验收记录见 `docs/change_history/2026-07-20-里程碑三固定来源与配置命令验收.md`。现场服务器验证仍待补充。
 - 里程碑四“飞控命令路由”已完成代码和本机自动化验收：支持四种飞控请求、QoS 2 非 retained 下发、进度与终态 ACK、30 秒可刷新期限，以及重启后收敛为 `delivery_uncertain` 且不重发。独立真实依赖联调与真实 RPi 飞控验证仍待安全条件和明确授权，实际证据见 `docs/change_history/2026-07-21-里程碑四飞控命令路由验收.md`。
 - 里程碑五公网安全接入已完成设计确认：使用 CNS 私有 CA、端到端 MQTT TLS `8883`、每设备独立凭据和 Mosquitto ACL；云服务器 frps 仅做 TCP 透传，最终由现场服务器 frpc 转发到回环地址的 Mosquitto。设计见 `docs/2026-07-21-MQTT公网安全接入与FRP部署设计.md`，尚未开始实施。
 - 收尾里程碑“展示链路固化”已用于本机演示链路，并在 2026-07-28 迁移到硬件服务器；正式 TLS/ACL 和前端体验优化仍不属于该里程碑。
 - 面向软件部的 MQTT 只读设备数据接口已完成代码实现和协议单元测试：在线目录与单设备状态均为 QoS 1 retained，启动或 MQTT 重连后自动全量重发；设计见 `docs/2026-07-27-MQTT设备数据对外发布设计.md`。硬件服务器真实 Broker retained 行为已验证，现场 ACL 仍待正式安全接入阶段实施。
-- 硬件服务器部署记录见 `docs/change_history/2026-07-28-硬件服务器迁移验收.md`。当前局域网入口为 `http://192.168.11.3/`，MQTT 演示入口为 `192.168.11.3:1883`；树莓派切换和真实命令闭环尚未完成，不得写成已验收。
+- 硬件服务器部署记录见 `docs/change_history/2026-07-28-硬件服务器迁移验收.md`。当前局域网入口为 `http://192.168.11.3/`，树莓派 MQTT 演示入口为 `112.124.52.232:1883`，由硬件服务器 FRP 转发到本机 Broker；真实命令闭环尚未完成，不得写成已验收。
 
 本子项目全局设计和全局计划放在 `docs/` 根目录。当前并行开发期间，Route Service 每个里程碑的设计和详细计划直接在长期 `route_service` 分支编写，分别放在 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`；计划确认后才从最新 `route_service` 建立隔离实施工作树。验收记录在实施工作树的 `docs/change_history/` 编写，完成验收并合入长期 `route_service` 分支后才进入下一里程碑。文件名统一使用“`YYYY-MM-DD-中文主题.md`”。何时把长期分支合回 `main` 由用户统一协调，不在功能工作树中自行处理。
 
