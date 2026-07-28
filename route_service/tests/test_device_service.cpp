@@ -692,8 +692,13 @@ TEST_CASE("postgres worker reconnects after five seconds then requests replay") 
   now_ms += 1;
   REQUIRE(WaitUntil([&] { return replay == 1; }));
   REQUIRE(WaitUntil([&] { return store.Calls().back() == "write"; }));
+  REQUIRE(WaitUntil([&] {
+    std::lock_guard lock(observed);
+    return results.size() >= 3;
+  }));
   { std::lock_guard lock(observed);
-    CHECK(results[results.size() - 2].kind == DatabaseResult::Kind::kRecovered); }
+    CHECK(results[results.size() - 2].kind == DatabaseResult::Kind::kRecovered);
+    CHECK(results.back().kind == DatabaseResult::Kind::kWriteCompleted); }
   CHECK(worker.FlushAndStop(500ms));
 }
 
