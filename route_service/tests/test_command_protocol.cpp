@@ -50,8 +50,13 @@ TEST_CASE("命令topic必须准确匹配约定层级和标识") {
                            "cns_rpi/sources/web+console/config/request"}) {
     CHECK_FALSE(cns::command::ParseSourceRequestTopic("cns_rpi", topic).has_value());
   }
+  const auto px4_device = cns::command::ParseDeviceConfigAckTopic(
+      "cns_rpi", "cns_rpi/PX4U2-00112233445566778899AABBCCDDEEFF/config/ack");
+  REQUIRE(px4_device.has_value());
+  CHECK(*px4_device == "PX4U2-00112233445566778899AABBCCDDEEFF");
+
   CHECK_FALSE(cns::command::ParseDeviceConfigAckTopic(
-                  "cns_rpi", "cns_rpi/short/config/ack")
+                  "cns_rpi", "cns_rpi/bad+id/config/ack")
                   .has_value());
 }
 

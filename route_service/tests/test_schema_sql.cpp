@@ -386,7 +386,7 @@ TEST_CASE("迁移不包含破坏性或级联删除语句") {
 
 TEST_CASE("005 扩展通用设备标识、设备类型并允许 PX4 暂不绑定学校") {
   const auto sql = Normalize(
-      ScanSupportedSql(ReadMigration("005_增加通用设备类型与扩展标识.sql")).code);
+      ScanSupportedSql(ReadMigration("005_增加通用设备类型与扩展标识.sql")).text);
   CHECK(sql.find("alter table devices alter column vendor_id type varchar(64)") !=
         std::string::npos);
   CHECK(sql.find("add column device_type text not null default 'cns_box'") !=

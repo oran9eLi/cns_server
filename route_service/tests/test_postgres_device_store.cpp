@@ -177,9 +177,11 @@ TEST_CASE("建档在单个工作事务写入四张表且不重新启用冲突来
   CHECK(provision.find("enabled = true") == std::string::npos);
   CHECK(source.find("ON CONFLICT (source_id) DO NOTHING") != std::string::npos);
   CHECK(source.find("pqxx::params{request.registration.vendor_id, school_id,\n"
-                    "                        request.registration.dcdw_label}") !=
+                    "                        request.registration.dcdw_label,") !=
         std::string::npos);
-  CHECK(source.find("SELECT d.vendor_id, d.school_id, s.school_name") !=
+  CHECK(source.find("SELECT d.vendor_id, COALESCE(d.school_id, 0)") !=
+        std::string::npos);
+  CHECK(source.find("LEFT JOIN schools AS s ON s.school_id = d.school_id") !=
         std::string::npos);
   const auto school = source.find("INSERT INTO schools");
   const auto device = source.find("INSERT INTO devices", school);
