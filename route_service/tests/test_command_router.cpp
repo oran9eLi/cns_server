@@ -146,3 +146,30 @@ TEST_CASE("离线设备来源不能发起命令") {
   REQUIRE_FALSE(result);
   CHECK(result.error().code == "source_device_offline");
 }
+
+TEST_CASE("真实 PX4 允许配置但拒绝主控箱私有控制命令") {
+  auto px4 = Record("PX4U2-00112233445566778899AABBCCDDEEFF0011",
+                    0, "", "");
+  px4.model_version = "PX4";
+  px4.device_type = cns::protocol::DeviceType::kFlightController;
+  px4.dcdw_label = std::nullopt;
+  DeviceRegistry devices;
+  REQUIRE(devices.Load({px4}));
+  const CommandSource source{
+      "web-console", SourceKind::kHostApp, std::nullopt, true};
+
+  auto config = cns::command::ResolveConfigTarget(
+      source, VendorRequest(px4.vendor_id), devices);
+  REQUIRE(config);
+
+  const cns::command::SourceControlRequest control{
+      .request_id = "req-px4",
+      .target = cns::command::VendorTarget{px4.vendor_id},
+      .command = cns::command::ControlCommand::kTakeoff,
+      .parameters = {},
+      .comparison_payload = nlohmann::json::object(),
+  };
+  auto result = cns::command::ResolveControlTarget(source, control, devices);
+  REQUIRE_FALSE(result);
+  CHECK(result.error().code == "unsupported_device_type");
+}

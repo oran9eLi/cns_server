@@ -97,6 +97,15 @@ export async function registerDeviceRoutes(
     if (!item) {
       return sendError(reply, 404, "not_found", "未找到设备");
     }
+    if (item.device_type === "flight_controller" &&
+        command.data.type === "control") {
+      return sendError(
+        reply,
+        409,
+        "unsupported_device_type",
+        "真实飞控当前只接收遥测与 Remote ID，不支持主控箱私有控制命令"
+      );
+    }
     if (item.status !== "online") {
       return sendError(reply, 409, "target_offline", "目标设备离线");
     }

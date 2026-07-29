@@ -14,7 +14,8 @@ import type { DeviceStore } from "./deviceStore.js";
 
 type DeviceRow = {
   vendor_id: string;
-  school_name: string;
+  device_type: "cns_box" | "flight_controller";
+  school_name: string | null;
   dcdw_label: string | null;
   model_version: string;
   status: "online" | "offline";
@@ -35,6 +36,7 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
         `
           select
             d.vendor_id,
+            d.device_type,
             s.school_name,
             d.dcdw_label,
             d.model_version,
@@ -45,7 +47,7 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
             state.latest_telemetry,
             false as degraded
           from devices d
-          join schools s on s.school_id = d.school_id
+          left join schools s on s.school_id = d.school_id
           join device_latest_states state on state.vendor_id = d.vendor_id
           ${where}
           order by d.school_id asc, d.vendor_id asc
@@ -60,6 +62,7 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
         `
           select
             d.vendor_id,
+            d.device_type,
             s.school_name,
             d.dcdw_label,
             d.model_version,
@@ -70,7 +73,7 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
             state.latest_telemetry,
             false as degraded
           from devices d
-          join schools s on s.school_id = d.school_id
+          left join schools s on s.school_id = d.school_id
           join device_latest_states state on state.vendor_id = d.vendor_id
           where d.vendor_id = $1
         `,
@@ -103,7 +106,7 @@ function buildListWhere(query: DeviceListQuery): { where: string; values: unknow
     clauses.push(`(
       lower(d.vendor_id) like $${values.length}
       or lower(coalesce(d.dcdw_label, '')) like $${values.length}
-      or lower(s.school_name) like $${values.length}
+      or lower(coalesce(s.school_name, '')) like $${values.length}
       or lower(d.model_version) like $${values.length}
     )`);
   }
@@ -126,6 +129,8 @@ function buildListWhere(query: DeviceListQuery): { where: string; values: unknow
 
 function toSummary(row: DeviceRow): DeviceSummary {
   return {
+    device_id: row.vendor_id,
+    device_type: row.device_type,
     vendor_id: row.vendor_id,
     school_name: row.school_name,
     dcdw_label: row.dcdw_label,

@@ -41,8 +41,10 @@ function matchesQuery(device: DeviceDetail, query: DeviceListQuery): boolean {
   if (!query.keyword) return true;
   const keyword = query.keyword.toLowerCase();
   return [
+    device.device_id,
     device.vendor_id,
-    device.school_name,
+    device.device_type,
+    device.school_name ?? "",
     device.dcdw_label ?? "",
     device.model_version
   ].some((value) => value.toLowerCase().includes(keyword));
@@ -50,6 +52,8 @@ function matchesQuery(device: DeviceDetail, query: DeviceListQuery): boolean {
 
 function toSummary(device: DeviceDetail): DeviceSummary {
   return {
+    device_id: device.device_id,
+    device_type: device.device_type,
     vendor_id: device.vendor_id,
     school_name: device.school_name,
     dcdw_label: device.dcdw_label,

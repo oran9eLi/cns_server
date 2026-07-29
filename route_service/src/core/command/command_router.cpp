@@ -92,11 +92,20 @@ std::expected<ResolvedTarget, ProtocolError> ResolveConfigTarget(
 std::expected<ResolvedTarget, ProtocolError> ResolveControlTarget(
     const CommandSource& source, const SourceControlRequest& request,
     const device::DeviceRegistry& devices) {
-  return ResolveConfigTarget(
+  auto resolved = ResolveConfigTarget(
       source,
       SourceConfigRequest{request.request_id, request.target, {},
                           request.comparison_payload},
       devices);
+  if (!resolved) return resolved;
+  const auto* target = devices.Find(resolved->vendor_id);
+  if (target != nullptr &&
+      target->DeviceType() == protocol::DeviceType::kFlightController) {
+    return std::unexpected(Error(
+        "unsupported_device_type",
+        "真实飞控当前只接收遥测与 Remote ID，不支持主控箱私有控制命令"));
+  }
+  return resolved;
 }
 
 }  // namespace cns::command

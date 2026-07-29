@@ -39,8 +39,12 @@ nlohmann::json BuildDeviceDirectorySnapshot(
   auto devices = nlohmann::json::array();
   for (const auto& entry : sorted_entries) {
     devices.push_back({
+        {"device_id", entry.vendor_id},
+        {"device_type", entry.device_type},
         {"vendor_id", entry.vendor_id},
-        {"school_name", entry.school_name},
+        {"school_name", entry.school_name.empty()
+                            ? nlohmann::json(nullptr)
+                            : nlohmann::json(entry.school_name)},
         {"dcdw_label", entry.dcdw_label
                            ? nlohmann::json(*entry.dcdw_label)
                            : nlohmann::json(nullptr)},
@@ -61,8 +65,12 @@ nlohmann::json BuildStateEvent(
   return {{"schema_version", 1}, {"event_type", "device_state"},
           {"event_at", FormatUtcRfc3339Millis(event_at)},
           {"revision", snapshot.revision},
+          {"device_id", snapshot.vendor_id},
+          {"device_type", snapshot.device_type},
           {"vendor_id", snapshot.vendor_id},
-          {"school_name", snapshot.school_name},
+          {"school_name", snapshot.school_name.empty()
+                              ? nlohmann::json(nullptr)
+                              : nlohmann::json(snapshot.school_name)},
           {"dcdw_label", snapshot.dcdw_label ? nlohmann::json(*snapshot.dcdw_label)
                                                : nlohmann::json(nullptr)},
           {"model_version", snapshot.model_version},

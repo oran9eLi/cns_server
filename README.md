@@ -1,6 +1,6 @@
 # CNS Server
 
-CNS（通信、导航、监视）实训箱的服务器端工程，与树莓派端 `cns_rpi` 和 STM32 固件共同组成完整数据链路。
+CNS（通信、导航、监视）设备的服务器端工程，与树莓派端 `cns_rpi`、CNS 主控箱和 PX4 真实飞控共同组成完整数据链路。
 
 本工程负责接收设备注册与遥测消息、维护权威设备数据库、执行命令寻址和路由，并在后续为设备管理前端提供服务端接口。服务器不解析 UART 或 MAVLink 二进制帧；这些工作由树莓派端完成。
 
@@ -73,6 +73,7 @@ React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/Web
 - 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
 - 正式公网 MQTT 统一使用 TLS `8883`：树莓派按 `vendor_id` 使用独立凭据，Mosquitto 强制 ACL；云服务器 frps 只做 TCP 透传，现场 frpc 转发到回环地址的 Mosquitto，不在云端终止 MQTT TLS。
+- 2026-07-29 起接收树莓派统一 schema v2：`device_id` 同时覆盖主控箱 20 位编号与 PX4 UID 派生标识，`device_type` 区分 `cns_box` 和 `flight_controller`；旧主控箱 schema v1 继续兼容。
 
 完整设计见 `route_service/docs/2026-07-18-路由服务V1设计.md`。
 全局实施路线见 `route_service/docs/2026-07-18-路由服务V1实施计划.md`。

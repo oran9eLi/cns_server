@@ -82,6 +82,12 @@ const LABELS: Record<string, string> = {
   sequence: "消息序号",
   severity: "严重程度",
   vendor_id: "设备编号",
+  device_id: "设备 ID",
+  device_type: "设备类型",
+  remote_id: "Remote ID",
+  uid: "PX4 UID",
+  uid2: "PX4 UID2",
+  gateway: "树莓派网关",
   dcdw_label: "设备标签",
   school_name: "所属学校"
 };

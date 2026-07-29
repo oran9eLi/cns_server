@@ -11,8 +11,35 @@ export function createSeedDevices(): DeviceDetail[] {
     createDevice("CNS00000000000000005", "DCDW-101", "华东无人系统学院", "CNS v1.0", "online", now),
     createDevice("CNS00000000000000006", "DCDW-102", "华东无人系统学院", "CNS v1.1", "offline", "2026-07-20T12:45:00.000+08:00"),
     createDevice("CNS00000000000000007", "DCDW-103", "华东无人系统学院", "CNS v1.0", "online", now),
-    createDevice("CNS00000000000000008", null, "华东无人系统学院", "CNS v1.1", "online", "2026-07-20T12:15:00.000+08:00", true)
+    createDevice("CNS00000000000000008", null, "华东无人系统学院", "CNS v1.1", "online", "2026-07-20T12:15:00.000+08:00", true),
+    createPx4Device(now)
   ];
+}
+
+function createPx4Device(now: string): DeviceDetail {
+  const deviceId = "PX4U2-00112233445566778899AABBCCDDEEFF0011";
+  return {
+    device_id: deviceId,
+    device_type: "flight_controller",
+    vendor_id: deviceId,
+    school_name: null,
+    dcdw_label: null,
+    model_version: "PX4",
+    status: "online",
+    last_seen_at: now,
+    telemetry_received_at: now,
+    degraded: false,
+    provisioned_at: now,
+    latest_telemetry: {
+      schema_version: 2,
+      device_id: deviceId,
+      device_type: "flight_controller",
+      identity: {
+        uid2: "00112233445566778899AABBCCDDEEFF0011",
+        remote_id: "1581F3411C32233939383438"
+      }
+    }
+  };
 }
 
 function createDevice(
@@ -28,6 +55,8 @@ function createDevice(
   const online = status === "online";
 
   return {
+    device_id: vendorId,
+    device_type: "cns_box",
     vendor_id: vendorId,
     school_name: schoolName,
     dcdw_label: dcdwLabel,

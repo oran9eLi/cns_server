@@ -33,6 +33,8 @@ describe("route_service protocol adapter", () => {
       event_type: "device_state",
       event_at: "2026-07-21T05:00:00.000Z",
       revision: 12,
+      device_id: "CNS00000000000000001",
+      device_type: "cns_box",
       vendor_id: "CNS00000000000000001",
       school_name: "东创航空实训中心",
       dcdw_label: "DCDW-001",
@@ -61,6 +63,8 @@ describe("route_service protocol adapter", () => {
       revision: 3,
       devices: [
         {
+          device_id: "CNS00000000000000001",
+          device_type: "cns_box",
           vendor_id: "CNS00000000000000001",
           school_name: "东创航空实训中心",
           dcdw_label: "DCDW-001",
@@ -68,10 +72,12 @@ describe("route_service protocol adapter", () => {
           status: "online"
         },
         {
-          vendor_id: "CNS00000000000000002",
-          school_name: "东创航空实训中心",
+          device_id: "PX4U2-00112233445566778899AABBCCDDEEFF0011",
+          device_type: "flight_controller",
+          vendor_id: "PX4U2-00112233445566778899AABBCCDDEEFF0011",
+          school_name: null,
           dcdw_label: null,
-          model_version: "CNS v1.0",
+          model_version: "PX4",
           status: "offline"
         }
       ]

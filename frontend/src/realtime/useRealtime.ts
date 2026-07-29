@@ -65,6 +65,8 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
                 item.vendor_id === event.vendor_id
                   ? {
                       ...item,
+                      device_id: event.device_id,
+                      device_type: event.device_type,
                       school_name: event.school_name,
                       dcdw_label: event.dcdw_label,
                       status: event.status,
@@ -83,6 +85,8 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
               ...current,
               item: {
                 ...current.item,
+                device_id: event.device_id,
+                device_type: event.device_type,
                 school_name: event.school_name,
                 dcdw_label: event.dcdw_label,
                 status: event.status,

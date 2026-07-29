@@ -89,6 +89,34 @@ describe("设备接口", () => {
     expect(() => CommandAcceptedResponseSchema.parse(response.json())).not.toThrow();
     expect(events).toEqual([]);
   });
+
+  it("展示 PX4 设备但拒绝主控箱私有控制命令", async () => {
+    const app = await buildDeviceTestServer();
+    const deviceId = "PX4U2-00112233445566778899AABBCCDDEEFF0011";
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/devices/${deviceId}`
+    });
+    const control = await app.inject({
+      method: "POST",
+      url: `/api/devices/${deviceId}/commands`,
+      payload: {
+        session_id: "session_test",
+        client_request_id: "00000000-0000-4000-8000-000000000003",
+        type: "control",
+        command: "takeoff",
+        parameters: {}
+      }
+    });
+
+    await app.close();
+
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().item.device_type).toBe("flight_controller");
+    expect(control.statusCode).toBe(409);
+    expect(control.json().error.code).toBe("unsupported_device_type");
+  });
 });
 
 async function buildDeviceTestServer(

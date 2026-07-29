@@ -4,13 +4,19 @@
 
 namespace cns::mqtt_topic {
 
-bool IsValidVendorId(std::string_view vendor_id) {
-  return vendor_id.size() == 20 &&
-         std::ranges::all_of(vendor_id, [](unsigned char character) {
+bool IsValidDeviceId(std::string_view device_id) {
+  return !device_id.empty() && device_id.size() <= 64 &&
+         std::ranges::all_of(device_id, [](unsigned char character) {
            return (character >= '0' && character <= '9') ||
                   (character >= 'A' && character <= 'Z') ||
-                  (character >= 'a' && character <= 'z');
+                  (character >= 'a' && character <= 'z') ||
+                  character == '.' || character == '_' ||
+                  character == ':' || character == '-';
          });
+}
+
+bool IsValidVendorId(std::string_view vendor_id) {
+  return IsValidDeviceId(vendor_id);
 }
 
 std::expected<ParsedDeviceTopic, std::string> ParseDeviceTopic(
@@ -24,14 +30,16 @@ std::expected<ParsedDeviceTopic, std::string> ParseDeviceTopic(
       topic.substr(0, first) != topic_namespace) {
     return std::unexpected("设备 topic 格式无效");
   }
-  const auto vendor_id = topic.substr(first + 1, second - first - 1);
-  if (!IsValidVendorId(vendor_id)) return std::unexpected("vendor_id 无效");
+  const auto device_id = topic.substr(first + 1, second - first - 1);
+  if (!IsValidDeviceId(device_id)) return std::unexpected("device_id 无效");
   const auto kind = topic.substr(second + 1);
   if (kind == "registration") {
-    return ParsedDeviceTopic{std::string{vendor_id}, DeviceMessageKind::kRegistration};
+    return ParsedDeviceTopic{std::string{device_id},
+                             DeviceMessageKind::kRegistration};
   }
   if (kind == "telemetry") {
-    return ParsedDeviceTopic{std::string{vendor_id}, DeviceMessageKind::kTelemetry};
+    return ParsedDeviceTopic{std::string{device_id},
+                             DeviceMessageKind::kTelemetry};
   }
   return std::unexpected("设备消息类型无效");
 }

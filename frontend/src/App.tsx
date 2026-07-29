@@ -46,6 +46,7 @@ import type {
   DeviceCommandRequest,
   DeviceSummary,
   EmergencyStopCommandRequest,
+  JsonValue,
   LandCommandRequest,
   SetMotorPwmCommandRequest,
   TakeoffCommandRequest
@@ -152,7 +153,11 @@ function DeviceListPage() {
     queryFn: () => getDevices({ keyword: keyword || undefined, school_name: school, status })
   });
   const allDevices = devices.data?.items ?? [];
-  const schools = Array.from(new Set(allDevices.map((device) => device.school_name)));
+  const schools = Array.from(new Set(
+    allDevices
+      .map((device) => device.school_name)
+      .filter((value): value is string => value !== null)
+  ));
   const stats = {
     total: allDevices.length,
     online: allDevices.filter((device) => device.status === "online").length,
@@ -166,12 +171,30 @@ function DeviceListPage() {
       dataIndex: "vendor_id",
       render: (_, record) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{record.dcdw_label ?? "未分配角色号"}</Typography.Text>
-          <Typography.Text type="secondary" className="mono">{record.vendor_id}</Typography.Text>
+          <Typography.Text strong>
+            {record.device_type === "flight_controller"
+              ? "PX4 真实飞控"
+              : record.dcdw_label ?? "未分配角色号"}
+          </Typography.Text>
+          <Typography.Text type="secondary" className="mono">{record.device_id}</Typography.Text>
         </Space>
       )
     },
-    { title: "学校", dataIndex: "school_name" },
+    {
+      title: "类型",
+      dataIndex: "device_type",
+      width: 130,
+      render: (value: DeviceSummary["device_type"]) => (
+        <Tag color={value === "flight_controller" ? "blue" : "default"}>
+          {deviceTypeLabel(value)}
+        </Tag>
+      )
+    },
+    {
+      title: "学校",
+      dataIndex: "school_name",
+      render: (value: string | null) => value ?? "未绑定"
+    },
     { title: "型号", dataIndex: "model_version", width: 120 },
     {
       title: "状态",
@@ -392,6 +415,8 @@ function DeviceDetailPage({
   }
 
   const telemetry = device.latest_telemetry;
+  const isFlightController = device.device_type === "flight_controller";
+  const remoteId = readIdentityString(telemetry, "remote_id");
   const telemetryView = mapTelemetry(telemetry);
   const dashboardView = mapFlightDashboard(telemetry);
   const liveMotorPwm = telemetryView.motors.pwm;
@@ -405,7 +430,8 @@ function DeviceDetailPage({
     "timeout",
     "delivery_uncertain"
   ].includes(commandStatus);
-  const disabled = !connected || !mqttReady || !sessionId || device.status !== "online" || commandMutation.isPending || commandInFlight;
+  const disabled = isFlightController || !connected || !mqttReady || !sessionId ||
+    device.status !== "online" || commandMutation.isPending || commandInFlight;
 
   type DraftCommandRequest =
     | Omit<ConfigCommandRequest, "session_id" | "client_request_id">
@@ -512,8 +538,10 @@ function DeviceDetailPage({
       <section className="page-heading">
         <div>
           <Typography.Text className="section-eyebrow">设备详情</Typography.Text>
-          <Typography.Title>{device.dcdw_label ?? device.vendor_id}</Typography.Title>
-          <Typography.Text type="secondary" className="mono">{device.vendor_id}</Typography.Text>
+          <Typography.Title>
+            {isFlightController ? "PX4 真实飞控" : device.dcdw_label ?? device.device_id}
+          </Typography.Title>
+          <Typography.Text type="secondary" className="mono">{device.device_id}</Typography.Text>
         </div>
         <Button onClick={() => navigate("/devices")}>返回</Button>
       </section>
@@ -524,7 +552,10 @@ function DeviceDetailPage({
 
       <Card className="identity-strip">
         <div className="device-facts-grid">
-          <DeviceFact label="学校" value={device.school_name} />
+          <DeviceFact label="设备类型" value={deviceTypeLabel(device.device_type)} />
+          <DeviceFact label="设备 ID" value={device.device_id} />
+          <DeviceFact label="Remote ID" value={remoteId ?? "未收到"} />
+          <DeviceFact label="学校" value={device.school_name ?? "未绑定"} />
           <DeviceFact label="型号" value={device.model_version} />
           <DeviceFact label="注册时间" value={formatDateTime(device.provisioned_at)} />
           <DeviceFact label="最后活跃" value={formatDateTime(device.last_seen_at)} />
@@ -533,7 +564,7 @@ function DeviceDetailPage({
         </div>
       </Card>
 
-      <PowerOverview power={dashboardView.power} />
+      {!isFlightController && <PowerOverview power={dashboardView.power} />}
 
       <div className="detail-workspace">
         <section className="detail-main">
@@ -565,7 +596,7 @@ function DeviceDetailPage({
           </div>
 
             <div className="flight-support-grid">
-              <SelfCheckPanel modules={dashboardView.modules} />
+              {!isFlightController && <SelfCheckPanel modules={dashboardView.modules} />}
               <div className="flight-event-stack">
                 <FlightLogPanel logs={dashboardView.logs} />
               </div>
@@ -575,6 +606,14 @@ function DeviceDetailPage({
         </section>
 
         <aside className="detail-side">
+          {isFlightController && (
+            <Alert
+              type="info"
+              showIcon
+              message="真实飞控接入模式"
+              description="当前展示 MAVLink 遥测、PX4 设备 ID 和 Remote ID；主控箱私有飞行控制命令已禁用。"
+            />
+          )}
           <Card className="command-panel runtime-config-panel" title="运行时配置">
             <Form layout="vertical" initialValues={{ interval: 2000, heartbeat: 5000, reconnectDelay: 1, reconnectMax: 30 }}>
               <Form.Item label="遥测上报周期（ms）" name="interval">
@@ -742,6 +781,21 @@ function DeviceFact({ label, value }: { label: string; value: React.ReactNode })
       <strong>{value}</strong>
     </div>
   );
+}
+
+function deviceTypeLabel(type: DeviceSummary["device_type"]): string {
+  return type === "flight_controller" ? "PX4 真实飞控" : "CNS 主控箱";
+}
+
+function readIdentityString(
+  source: JsonValue | null | undefined,
+  key: string
+): string | null {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const identity = source.identity;
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) return null;
+  const value = identity[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function motorPwmPercent(value: number | null): number {

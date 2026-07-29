@@ -18,13 +18,15 @@ TEST_CASE("只解析 namespace vendor kind 准确三段设备主题") {
 TEST_CASE("拒绝错误 namespace 额外层级和非法 vendor") {
   for (const auto topic : {"other/A1b2C3d4E5f6G7h8I9j0/registration",
                            "cns_rpi/A1b2C3d4E5f6G7h8I9j0/registration/extra",
-                           "cns_rpi/A1b2C3d4E5f6G7h8I9j/registration",
-                           "cns_rpi/A1b2C3d4E5f6G7h8I9j-/registration",
+                           "cns_rpi//registration",
+                           "cns_rpi/device id/registration",
                            "cns_rpi/A1b2C3d4E5f6G7h8I9j0/unknown"}) {
     CHECK_FALSE(cns::mqtt_topic::ParseDeviceTopic("cns_rpi", topic).has_value());
   }
   CHECK(cns::mqtt_topic::IsValidVendorId("A1b2C3d4E5f6G7h8I9j0"));
-  CHECK_FALSE(cns::mqtt_topic::IsValidVendorId("A1b2C3d4E5f6G7h8I9j-"));
+  CHECK(cns::mqtt_topic::IsValidDeviceId(
+      "PX4U2-00112233445566778899AABBCCDDEEFF0011"));
+  CHECK_FALSE(cns::mqtt_topic::IsValidDeviceId("device id"));
 }
 
 TEST_CASE("构造订阅过滤器和状态事件主题") {

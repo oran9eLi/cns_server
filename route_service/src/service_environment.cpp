@@ -196,6 +196,8 @@ struct RuntimeExternalBridge {
         .telemetry_received_at = published.record.telemetry_received_at,
         .latest_telemetry = published.record.latest_telemetry,
         .degraded = published.degraded,
+        .device_type =
+            std::string{protocol::ToString(published.record.DeviceType())},
     };
   }
 
@@ -207,6 +209,8 @@ struct RuntimeExternalBridge {
         .dcdw_label = published.record.dcdw_label,
         .model_version = published.record.model_version,
         .online = published.record.status == device::Status::kOnline,
+        .device_type =
+            std::string{protocol::ToString(published.record.DeviceType())},
     };
   }
 

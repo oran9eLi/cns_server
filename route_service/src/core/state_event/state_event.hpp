@@ -33,6 +33,7 @@ struct Snapshot {
   std::optional<std::chrono::system_clock::time_point> telemetry_received_at;
   std::optional<nlohmann::json> latest_telemetry;
   bool degraded;
+  std::string device_type = "cns_box";
 };
 
 struct DirectoryEntry {
@@ -41,6 +42,7 @@ struct DirectoryEntry {
   std::optional<std::string> dcdw_label;
   std::string model_version;
   bool online;
+  std::string device_type = "cns_box";
 
   auto operator<=>(const DirectoryEntry&) const = default;
 };

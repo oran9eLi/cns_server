@@ -57,7 +57,8 @@ app.get("/api/devices", async (request) => {
   if (query.keyword) {
     const keyword = query.keyword.toLowerCase();
     items = items.filter((device) =>
-      [device.vendor_id, device.school_name, device.dcdw_label ?? ""].some((value) =>
+      [device.device_id, device.vendor_id, device.school_name ?? "",
+        device.dcdw_label ?? ""].some((value) =>
         value.toLowerCase().includes(keyword)
       )
     );
@@ -106,6 +107,14 @@ app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
   const parsed = DeviceCommandRequestSchema.safeParse(request.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "invalid_parameter", message: "命令参数不符合协议" } });
+  }
+  if (item.device_type === "flight_controller" && parsed.data.type === "control") {
+    return reply.code(409).send({
+      error: {
+        code: "unsupported_device_type",
+        message: "真实飞控不支持主控箱私有控制命令"
+      }
+    });
   }
 
   const session = sessions.get(parsed.data.session_id);
@@ -196,6 +205,8 @@ function broadcastDevice(device: DeviceDetail) {
   const event = DeviceStateEventSchema.parse({
     type: "device.state",
     schema_version: SCHEMA_VERSION,
+    device_id: device.device_id,
+    device_type: device.device_type,
     vendor_id: device.vendor_id,
     school_name: device.school_name,
     dcdw_label: device.dcdw_label,

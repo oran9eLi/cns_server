@@ -31,6 +31,11 @@ struct DeviceRecord {
   std::optional<nlohmann::json> latest_telemetry;
   std::optional<TimePoint> telemetry_received_at;
   std::uint64_t revision;
+  protocol::DeviceType device_type = protocol::DeviceType::kCnsBox;
+
+  [[nodiscard]] protocol::DeviceType DeviceType() const noexcept {
+    return device_type;
+  }
 };
 
 struct Mutation {

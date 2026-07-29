@@ -23,6 +23,7 @@ TEST_CASE("状态事件稳定输出完整字段和显式 null") {
       snapshot, cns::state_event::ChangeReason::kActivityTimeout, at);
   CHECK(event == nlohmann::json{{"schema_version", 1}, {"event_type", "device_state"},
       {"event_at", "2026-07-20T14:30:25.123Z"}, {"revision", 42},
+      {"device_id", snapshot.vendor_id}, {"device_type", "cns_box"},
       {"vendor_id", snapshot.vendor_id}, {"school_name", "SEU"},
       {"dcdw_label", nullptr},
       {"model_version", "CNS v1.0"}, {"status", "offline"},
@@ -74,7 +75,9 @@ TEST_CASE("全量设备目录稳定排序并输出空数组") {
   CHECK(populated["revision"] == 3);
   REQUIRE(populated["devices"].size() == 2);
   CHECK(populated["devices"][0] ==
-        nlohmann::json{{"vendor_id", "A1b2C3d4E5f6G7h8I9j0"},
+        nlohmann::json{{"device_id", "A1b2C3d4E5f6G7h8I9j0"},
+                       {"device_type", "cns_box"},
+                       {"vendor_id", "A1b2C3d4E5f6G7h8I9j0"},
                        {"school_name", "SEU"},
                        {"dcdw_label", nullptr},
                        {"model_version", "CNS v1.0"},

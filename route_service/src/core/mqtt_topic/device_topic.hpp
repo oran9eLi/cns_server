@@ -21,5 +21,6 @@ std::string DeviceDirectoryTopic(std::string_view topic_namespace);
 std::string StateEventTopic(std::string_view topic_namespace,
                             std::string_view vendor_id);
 bool IsValidVendorId(std::string_view vendor_id);
+bool IsValidDeviceId(std::string_view device_id);
 
 }  // namespace cns::mqtt_topic

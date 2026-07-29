@@ -9,6 +9,8 @@
 - 使用固定来源 `web-console` 向 `route_service` 发布配置和飞控请求。
 - 按 MQTT `request_id` 将 ACK 转发到原浏览器 WebSocket 会话。
 - 不修改 route_service 代码，不写核心数据库表，不直接向设备 `/config/set` 或 `/control/set` topic 发布。
+- REST/WebSocket 同时输出统一 `device_id`、`device_type` 和兼容别名 `vendor_id`；PX4 的学校可以为空。
+- PX4 展示遥测与 Remote ID，但不接受主控箱私有 control 命令。
 
 ## MQTT Topic
 

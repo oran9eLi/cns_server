@@ -38,7 +38,7 @@ TEST_CASE("拒绝 registration JSON 版本和身份错误") {
   for (const auto payload : {
            "not secret valid json",
            R"([])",
-           R"({"schema_version":2,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"offline"})",
+           R"({"schema_version":3,"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"offline"})",
            R"({"schema_version":1,"vendor_id":"Z1b2C3d4E5f6G7h8I9j0","status":"offline"})"}) {
     const auto result = cns::protocol::ParseRegistration(payload, kVendor);
     CHECK_FALSE(result);
@@ -51,7 +51,38 @@ TEST_CASE("registration 缺失 schema_version 时明确拒绝") {
       R"({"vendor_id":"A1b2C3d4E5f6G7h8I9j0","status":"offline"})",
       kVendor);
   REQUIRE_FALSE(result);
-  CHECK(result.error() == "schema_version 必须是整数 1");
+  CHECK(result.error() == "schema_version 必须是整数 1 或 2");
+}
+
+TEST_CASE("解析 PX4 schema v2 registration 与 telemetry") {
+  constexpr auto device_id =
+      "PX4U2-00112233445566778899AABBCCDDEEFF0011";
+  const auto registration = cns::protocol::ParseRegistration(
+      R"({"schema_version":2,"device_id":"PX4U2-00112233445566778899AABBCCDDEEFF0011","device_type":"flight_controller","status":"online","identity":{"uid2":"00112233445566778899AABBCCDDEEFF0011","remote_id":"1581F3411C32233939383438"}})",
+      device_id);
+  REQUIRE(registration);
+  CHECK(registration->vendor_id == device_id);
+  CHECK(registration->device_type ==
+        cns::protocol::DeviceType::kFlightController);
+  CHECK_FALSE(registration->school_name);
+
+  const auto telemetry = cns::protocol::ParseTelemetry(
+      R"({"schema_version":2,"device_id":"PX4U2-00112233445566778899AABBCCDDEEFF0011","device_type":"flight_controller","identity":{"remote_id":"1581F3411C32233939383438"},"telemetry":{"heartbeat":{"system_status":4}}})",
+      device_id);
+  REQUIRE(telemetry);
+  CHECK(telemetry->device_type ==
+        cns::protocol::DeviceType::kFlightController);
+  CHECK(telemetry->payload["identity"]["remote_id"] ==
+        "1581F3411C32233939383438");
+}
+
+TEST_CASE("拒绝 schema v2 消息体与 topic 设备 ID 不一致") {
+  CHECK_FALSE(cns::protocol::ParseRegistration(
+      R"({"schema_version":2,"device_id":"PX4U2-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","device_type":"flight_controller","status":"online"})",
+      "PX4U2-00112233445566778899AABBCCDDEEFF0011"));
+  CHECK_FALSE(cns::protocol::ParseTelemetry(
+      R"({"schema_version":2,"device_id":"PX4U1-0011223344556677","device_type":"flight_controller"})",
+      "PX4U1-8899AABBCCDDEEFF"));
 }
 
 TEST_CASE("registration 缺失 vendor_id 时明确拒绝") {
@@ -83,6 +114,12 @@ TEST_CASE("telemetry 保留完整对象并提取可选角色号") {
   const auto no_identity = cns::protocol::ParseTelemetry(R"({"sensor":42})", kVendor);
   REQUIRE(no_identity);
   CHECK_FALSE(no_identity->dcdw_label);
+
+  const auto schema_v1 = cns::protocol::ParseTelemetry(
+      R"({"schema_version":1,"identity":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"sensor":43})",
+      kVendor);
+  REQUIRE(schema_v1);
+  CHECK_FALSE(schema_v1->device_type);
 }
 
 TEST_CASE("拒绝非法 telemetry identity") {

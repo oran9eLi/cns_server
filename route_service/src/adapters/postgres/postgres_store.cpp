@@ -51,22 +51,28 @@ device::Status DeviceStatus(std::string_view status) {
                             : device::Status::kOffline;
 }
 
+protocol::DeviceType DeviceType(std::string_view value) {
+  return value == "flight_controller"
+             ? protocol::DeviceType::kFlightController
+             : protocol::DeviceType::kCnsBox;
+}
+
 std::expected<device::DeviceRecord, std::string> DeviceFromRow(
     const pqxx::row& row) {
   auto telemetry = ParseDeviceTelemetry(
-      row[7].is_null()
+      row[8].is_null()
           ? std::nullopt
-          : std::optional<std::string>{row[7].as<std::string>()});
+          : std::optional<std::string>{row[8].as<std::string>()});
   if (!telemetry) return std::unexpected(telemetry.error());
   std::optional<device::TimePoint> last_seen;
-  if (!row[6].is_null()) {
-    auto parsed = FromUnixMicroseconds(row[6].as<std::int64_t>());
+  if (!row[7].is_null()) {
+    auto parsed = FromUnixMicroseconds(row[7].as<std::int64_t>());
     if (!parsed) return std::unexpected(parsed.error());
     last_seen = *parsed;
   }
   std::optional<device::TimePoint> telemetry_received;
-  if (!row[8].is_null()) {
-    auto parsed = FromUnixMicroseconds(row[8].as<std::int64_t>());
+  if (!row[9].is_null()) {
+    auto parsed = FromUnixMicroseconds(row[9].as<std::int64_t>());
     if (!parsed) return std::unexpected(parsed.error());
     telemetry_received = *parsed;
   }
@@ -78,11 +84,12 @@ std::expected<device::DeviceRecord, std::string> DeviceFromRow(
                         ? std::nullopt
                         : std::optional{row[3].as<std::string>()},
       .model_version = row[4].as<std::string>(),
-      .status = DeviceStatus(row[5].as<std::string>()),
+      .status = DeviceStatus(row[6].as<std::string>()),
       .last_seen_at = last_seen,
       .latest_telemetry = std::move(*telemetry),
       .telemetry_received_at = telemetry_received,
       .revision = 0,
+      .device_type = DeviceType(row[5].as<std::string>()),
   };
 }
 
@@ -344,13 +351,14 @@ PostgresStore::LoadDevices() {
   try {
     pqxx::read_transaction transaction{*connection_};
     const pqxx::result rows = transaction.exec(R"sql(
-      SELECT d.vendor_id, d.school_id, s.school_name, d.dcdw_label,
-             d.model_version, st.status,
+      SELECT d.vendor_id, COALESCE(d.school_id, 0),
+             COALESCE(s.school_name, ''), d.dcdw_label,
+             d.model_version, d.device_type, st.status,
              (extract(epoch FROM st.last_seen_at)::numeric * 1000000)::bigint,
              st.latest_telemetry::text,
              (extract(epoch FROM st.telemetry_received_at)::numeric * 1000000)::bigint
       FROM devices AS d
-      JOIN schools AS s ON s.school_id = d.school_id
+      LEFT JOIN schools AS s ON s.school_id = d.school_id
       JOIN device_latest_states AS st ON st.vendor_id = d.vendor_id
       ORDER BY d.vendor_id
     )sql");
@@ -370,26 +378,37 @@ PostgresStore::LoadDevices() {
 
 std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
     const ProvisionRequest& request) {
-  if (!request.registration.school_name) {
+  if (request.registration.device_type == protocol::DeviceType::kCnsBox &&
+      !request.registration.school_name) {
     last_failure_kind_ = OperationFailureKind::kPermanent;
     return std::unexpected("建档设备缺少学校");
   }
 
   try {
     pqxx::work transaction{*connection_};
-    const pqxx::row school = transaction.exec(R"sql(
-      INSERT INTO schools (school_name) VALUES ($1)
-      ON CONFLICT (school_name) DO UPDATE
-        SET school_name = EXCLUDED.school_name
-      RETURNING school_id
-    )sql", pqxx::params{*request.registration.school_name}).one_row();
-    const auto school_id = school[0].as<std::int64_t>();
+    std::optional<std::int64_t> school_id;
+    if (request.registration.school_name) {
+      const pqxx::row school = transaction.exec(R"sql(
+        INSERT INTO schools (school_name) VALUES ($1)
+        ON CONFLICT (school_name) DO UPDATE
+          SET school_name = EXCLUDED.school_name
+        RETURNING school_id
+      )sql", pqxx::params{*request.registration.school_name}).one_row();
+      school_id = school[0].as<std::int64_t>();
+    }
     transaction.exec(R"sql(
-      INSERT INTO devices (vendor_id, school_id, dcdw_label)
-      VALUES ($1, $2, $3)
+      INSERT INTO devices
+        (vendor_id, school_id, dcdw_label, model_version, device_type)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (vendor_id) DO NOTHING
     )sql", pqxx::params{request.registration.vendor_id, school_id,
-                        request.registration.dcdw_label});
+                        request.registration.dcdw_label,
+                        request.registration.device_type ==
+                                protocol::DeviceType::kFlightController
+                            ? "PX4"
+                            : "CNS v1.0",
+                        std::string{
+                            protocol::ToString(request.registration.device_type)}});
     const bool online = request.registration.status ==
                         protocol::RegistrationStatus::kOnline;
     const std::optional<std::int64_t> last_seen =
@@ -410,13 +429,14 @@ std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
       ON CONFLICT (source_id) DO NOTHING
     )sql", pqxx::params{request.registration.vendor_id});
     const pqxx::row actual = transaction.exec(R"sql(
-      SELECT d.vendor_id, d.school_id, s.school_name, d.dcdw_label,
-             d.model_version, st.status,
+      SELECT d.vendor_id, COALESCE(d.school_id, 0),
+             COALESCE(s.school_name, ''), d.dcdw_label,
+             d.model_version, d.device_type, st.status,
              (extract(epoch FROM st.last_seen_at)::numeric * 1000000)::bigint,
              st.latest_telemetry::text,
              (extract(epoch FROM st.telemetry_received_at)::numeric * 1000000)::bigint
       FROM devices AS d
-      JOIN schools AS s ON s.school_id = d.school_id
+      LEFT JOIN schools AS s ON s.school_id = d.school_id
       JOIN device_latest_states AS st ON st.vendor_id = d.vendor_id
       WHERE d.vendor_id = $1
     )sql", pqxx::params{request.registration.vendor_id}).one_row();

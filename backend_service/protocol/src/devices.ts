@@ -2,12 +2,14 @@ import { z } from "zod";
 
 import {
   DateTimeStringSchema,
+  DeviceIdSchema,
   JsonObjectSchema,
   SchemaVersionSchema,
   VendorIdSchema
 } from "./common.js";
 
 export const DeviceStatusSchema = z.enum(["online", "offline"]);
+export const DeviceTypeSchema = z.enum(["cns_box", "flight_controller"]);
 
 export const DeviceStateChangeReasonSchema = z.enum([
   "registration_online",
@@ -28,8 +30,10 @@ export const DeviceListQuerySchema = z
 
 export const DeviceSummarySchema = z
   .object({
+    device_id: DeviceIdSchema,
+    device_type: DeviceTypeSchema,
     vendor_id: VendorIdSchema,
-    school_name: z.string().min(1),
+    school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
     status: DeviceStatusSchema,
@@ -62,8 +66,10 @@ export const DeviceStateEventSchema = z
   .object({
     type: z.literal("device.state"),
     schema_version: SchemaVersionSchema,
+    device_id: DeviceIdSchema,
+    device_type: DeviceTypeSchema,
     vendor_id: VendorIdSchema,
-    school_name: z.string().min(1),
+    school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     status: DeviceStatusSchema,
     event_at: DateTimeStringSchema,
@@ -76,6 +82,7 @@ export const DeviceStateEventSchema = z
   .strict();
 
 export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
+export type DeviceType = z.infer<typeof DeviceTypeSchema>;
 export type DeviceStateChangeReason = z.infer<typeof DeviceStateChangeReasonSchema>;
 export type DeviceListQuery = z.infer<typeof DeviceListQuerySchema>;
 export type DeviceSummary = z.infer<typeof DeviceSummarySchema>;

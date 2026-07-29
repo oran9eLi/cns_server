@@ -88,6 +88,9 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
   }
 
   auto& record = iterator->second;
+  if (record.DeviceType() != registration.device_type) {
+    return std::unexpected("device_type 与已建档设备不一致");
+  }
   DeviceRecord new_record = record;
   std::optional<std::string> diagnostic;
   if (registration.school_name &&
@@ -141,6 +144,9 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
   }
 
   auto& record = iterator->second;
+  if (telemetry.device_type && *telemetry.device_type != record.DeviceType()) {
+    return std::unexpected("device_type 与已建档设备不一致");
+  }
   DeviceRecord new_record{
       .vendor_id = record.vendor_id,
       .school_id = record.school_id,
@@ -152,6 +158,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
       .latest_telemetry = std::move(telemetry.payload),
       .telemetry_received_at = received_at,
       .revision = record.revision + 1,
+      .device_type = record.device_type,
   };
   std::optional<std::string> diagnostic;
   std::optional<RoleKey> new_role;

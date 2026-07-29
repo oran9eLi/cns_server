@@ -12,7 +12,7 @@ CNS（通信、导航、监视）实训箱的设备数据库维护与命令路�
 
 V1 阶段核心职责：
 
-1. **设备发现与注册**：订阅 `{namespace}/+/registration` 通配符 topic，接收 RPi 上报的 online/offline 注册消息，以 `vendor_id`（厂商唯一产品识别码，20 字符）为主键维护设备表。
+1. **设备发现与注册**：订阅 `{namespace}/+/registration` 通配符 topic，接收 RPi 上报的 online/offline 注册消息；统一 `device_id` 支持主控箱 20 位编号和 PX4 UID 派生标识，数据库继续以兼容列名 `vendor_id` 作为主键。
 2. **设备状态维护**：online registration 和有效实时 telemetry 更新最后活跃时间；显式 offline 或默认 180 秒无活动超时将设备设为离线，缺失字段不清空旧值。
 3. **最新遥测与身份补全**：只保存每台设备最新 JSONB 快照，不保存逐帧历史；registration 是 `dcdw_label` 主来源，遥测只在当前值为空时兜底补全。
 4. **命令路由**：登记固定命令来源，按学校名与内部编号或 `vendor_id` 寻址，执行来源权限与设备同校限制，向目标设备发布规范化配置或飞控命令。
@@ -26,8 +26,8 @@ V1 阶段核心职责：
 
 | MQTT topic | 方向 | 用途 |
 |---|---|---|
-| `{namespace}/{vendor_id}/registration` | RPi→本服务 | retained online/offline 注册消息，维护设备表 |
-| `{namespace}/{vendor_id}/telemetry` | RPi→本服务 | QoS 0、非 retained；更新最新快照和活跃时间，并在角色号为空时兜底补全 |
+| `{namespace}/{device_id}/registration` | RPi→本服务 | retained online/offline 注册消息；兼容主控箱 schema v1 和统一 schema v2 |
+| `{namespace}/{device_id}/telemetry` | RPi→本服务 | QoS 0、非 retained；保存主控箱或 PX4 的最新完整快照 |
 | `{namespace}/sources/{source_id}/config/request` | 命令来源→本服务 | 提交运行时配置请求 |
 | `{namespace}/sources/{source_id}/control/request` | 命令来源→本服务 | 提交飞控请求，最终由目标 RPi 转为 MAVLink |
 | `{namespace}/{vendor_id}/config/ack` | RPi→本服务 | 返回配置应用结果 |
@@ -53,8 +53,9 @@ V1 阶段核心职责：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `vendor_id` | VARCHAR(20) PK | 厂商唯一产品识别码，直接用设备上报值，不加自增 ID |
-| `school_id` | BIGINT FK→schools | 所属学校 |
+| `vendor_id` | VARCHAR(64) PK | 兼容列名，值等于统一 `device_id` |
+| `device_type` | TEXT | `cns_box` 或 `flight_controller` |
+| `school_id` | BIGINT FK→schools，可空 | 主控箱所属学校；PX4 可暂不绑定 |
 | `dcdw_label` | TEXT | DCDW-XXX 角色号，payload 原样存，初始 NULL（角色号晚于 vendor_id 就绪） |
 | `model_version` | TEXT DEFAULT 'CNS v1.0' | 设备型号版本 |
 | `provisioned_at` | TIMESTAMPTZ DEFAULT NOW() | 首次 online 注册时自动写入 |
@@ -67,7 +68,7 @@ V1 阶段核心职责：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `vendor_id` | VARCHAR(20) PK/FK→devices | 与设备一对一 |
+| `vendor_id` | VARCHAR(64) PK/FK→devices | 与设备一对一，值等于统一 `device_id` |
 | `status` | TEXT CHECK | online / offline |
 | `last_seen_at` | TIMESTAMPTZ | 最后有效活动的服务器接收时间 |
 | `latest_telemetry` | JSONB | 最新完整遥测快照 |

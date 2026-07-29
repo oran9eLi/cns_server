@@ -2,7 +2,9 @@ import { z } from "zod";
 
 import {
   CommandUpdatedEventSchema,
+  DeviceIdSchema,
   DeviceStateEventSchema,
+  DeviceTypeSchema,
   SCHEMA_VERSION,
   type CommandStatus,
   type CommandUpdatedEvent,
@@ -18,8 +20,10 @@ const NullableDateTimeSchema = z.string().datetime({ offset: true }).nullable();
 
 const RouteDeviceDirectoryEntrySchema = z
   .object({
-    vendor_id: z.string().length(20),
-    school_name: z.string().min(1),
+    device_id: DeviceIdSchema,
+    device_type: DeviceTypeSchema,
+    vendor_id: DeviceIdSchema,
+    school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
     status: z.enum(["online", "offline"])
@@ -42,8 +46,10 @@ export const RouteDeviceStateMessageSchema = z
     event_type: z.literal("device_state"),
     event_at: z.string().datetime({ offset: true }),
     revision: z.number().int().nonnegative(),
-    vendor_id: z.string().length(20),
-    school_name: z.string().min(1),
+    device_id: DeviceIdSchema,
+    device_type: DeviceTypeSchema,
+    vendor_id: DeviceIdSchema,
+    school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
     status: z.enum(["online", "offline"]),
@@ -115,6 +121,8 @@ export function toDeviceStateEvent(message: RouteDeviceStateMessage): DeviceStat
   return DeviceStateEventSchema.parse({
     type: "device.state",
     schema_version: message.schema_version,
+    device_id: message.device_id,
+    device_type: message.device_type,
     vendor_id: message.vendor_id,
     school_name: message.school_name,
     dcdw_label: message.dcdw_label,

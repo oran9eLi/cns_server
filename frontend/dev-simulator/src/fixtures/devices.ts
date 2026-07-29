@@ -10,23 +10,37 @@ export const initialDevices: DeviceDetail[] = [
   device("CNS00000000000000005", "华东无人系统学院", "DCDW-101", "online", false, 4),
   device("CNS00000000000000006", "华东无人系统学院", "DCDW-102", "offline", false, 5),
   device("CNS00000000000000007", "华东无人系统学院", "DCDW-103", "online", false, 6),
-  device("CNS00000000000000008", "华东无人系统学院", null, "offline", true, 7)
+  device("CNS00000000000000008", "华东无人系统学院", null, "offline", true, 7),
+  device(
+    "PX4U2-00112233445566778899AABBCCDDEEFF0011",
+    null,
+    null,
+    "online",
+    false,
+    8,
+    "flight_controller"
+  )
 ];
 
 function device(
   vendor_id: string,
-  school_name: string,
+  school_name: string | null,
   dcdw_label: string | null,
   status: "online" | "offline",
   degraded: boolean,
-  index: number
+  index: number,
+  device_type: "cns_box" | "flight_controller" = "cns_box"
 ): DeviceDetail {
   const online = status === "online";
   return {
+    device_id: vendor_id,
+    device_type,
     vendor_id,
     school_name,
     dcdw_label,
-    model_version: index % 2 === 0 ? "CNS v1.0" : "CNS v1.1",
+    model_version: device_type === "flight_controller"
+      ? "PX4"
+      : index % 2 === 0 ? "CNS v1.0" : "CNS v1.1",
     status,
     last_seen_at: online ? now : new Date(Date.parse(now) - (index + 2) * 900000).toISOString(),
     telemetry_received_at: online ? now : null,
@@ -37,7 +51,13 @@ function device(
           identity: {
             vendor_id,
             dcdw_label,
-            school_name
+            school_name,
+            ...(device_type === "flight_controller"
+              ? {
+                  uid2: "00112233445566778899AABBCCDDEEFF0011",
+                  remote_id: "1581F3411C32233939383438"
+                }
+              : {})
           },
           attitude: {
             roll_deg: round((index - 3) * 1.7),

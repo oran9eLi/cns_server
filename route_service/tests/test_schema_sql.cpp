@@ -384,6 +384,22 @@ TEST_CASE("迁移不包含破坏性或级联删除语句") {
   }
 }
 
+TEST_CASE("005 扩展通用设备标识、设备类型并允许 PX4 暂不绑定学校") {
+  const auto sql = Normalize(
+      ScanSupportedSql(ReadMigration("005_增加通用设备类型与扩展标识.sql")).code);
+  CHECK(sql.find("alter table devices alter column vendor_id type varchar(64)") !=
+        std::string::npos);
+  CHECK(sql.find("add column device_type text not null default 'cns_box'") !=
+        std::string::npos);
+  CHECK(sql.find("device_type in ('cns_box', 'flight_controller')") !=
+        std::string::npos);
+  CHECK(sql.find("alter table devices alter column school_id drop not null") !=
+        std::string::npos);
+  CHECK(sql.find("^[a-za-z0-9._:-]+$") != std::string::npos);
+  CHECK(sql.find("drop table") == std::string::npos);
+  CHECK(sql.find("truncate") == std::string::npos);
+}
+
 TEST_CASE("字符串中的建表文本不作为 DDL") {
   CHECK(ParseTables("SELECT 'create table fake (fake_id integer)';").empty());
 }
