@@ -29,6 +29,13 @@ export async function buildServer(config: AppConfig = AppConfigSchema.parse({}))
     onDeviceState(message) {
       realtime.broadcast(toDeviceStateEvent(message));
     },
+    onPx4Realtime(message) {
+      realtime.broadcastPx4(message.device_id, {
+        type: "px4.realtime",
+        ...message,
+        server_received_at: new Date().toISOString()
+      });
+    },
     onCommandAck(message) {
       if (!message.request_id) return;
       const tracked = commands.get(message.request_id);

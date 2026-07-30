@@ -100,6 +100,9 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
           return;
         }
 
+        // PX4 高频帧只由 PX4 专属页面的按设备连接消费，不能写入全局查询缓存。
+        if (event.type === "px4.realtime") return;
+
         setLastEventAt(event.updated_at);
         setCommandEvents((events) => [event, ...events].slice(0, 16));
       });

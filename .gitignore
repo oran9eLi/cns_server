@@ -2,6 +2,7 @@
 .superpowers/
 route_service/build*/
 node_modules/
+.npm-cache/
 dist/
 backend_service/node_modules/
 backend_service/dist/

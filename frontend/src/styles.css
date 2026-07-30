@@ -1974,6 +1974,47 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.px4-console-page {
+  --px4-accent: #16a3ff;
+}
+
+.px4-link-strip {
+  border-left: 4px solid var(--px4-accent) !important;
+}
+
+.px4-link-strip .ant-card-body {
+  padding: 14px 18px;
+}
+
+.px4-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.px4-dashboard-main,
+.px4-dashboard-side {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.px4-dashboard-side .telemetry-frame-card {
+  min-width: 0;
+}
+
+.px4-diagnostics {
+  display: grid;
+  gap: 14px;
+}
+
+@media (max-width: 1180px) {
+  .px4-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .flight-console-page .self-check-list {
   grid-template-columns: 1fr;
 }

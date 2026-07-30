@@ -44,6 +44,7 @@ import type {
   CommandUpdatedEvent,
   ConfigCommandRequest,
   DeviceCommandRequest,
+  DeviceDetail,
   DeviceSummary,
   EmergencyStopCommandRequest,
   JsonValue,
@@ -62,6 +63,7 @@ import {
 import { FlightMap } from "./components/FlightMap.js";
 import { TelemetryFramePanel } from "./components/TelemetryFramePanel.js";
 import { useRealtime } from "./realtime/useRealtime.js";
+import { usePx4Realtime } from "./realtime/usePx4Realtime.js";
 import { mapFlightDashboard, type FlightDashboardView } from "./utils/flightDashboard.js";
 import {
   formatDateTime,
@@ -414,8 +416,11 @@ function DeviceDetailPage({
     return <Empty description="未找到设备" />;
   }
 
+  if (device.device_type === "flight_controller") {
+    return <Px4Console device={device} onBack={() => navigate("/devices")} />;
+  }
+
   const telemetry = device.latest_telemetry;
-  const isFlightController = device.device_type === "flight_controller";
   const remoteId = readIdentityString(telemetry, "remote_id");
   const telemetryView = mapTelemetry(telemetry);
   const dashboardView = mapFlightDashboard(telemetry);
@@ -430,7 +435,7 @@ function DeviceDetailPage({
     "timeout",
     "delivery_uncertain"
   ].includes(commandStatus);
-  const disabled = isFlightController || !connected || !mqttReady || !sessionId ||
+  const disabled = !connected || !mqttReady || !sessionId ||
     device.status !== "online" || commandMutation.isPending || commandInFlight;
 
   type DraftCommandRequest =
@@ -539,7 +544,7 @@ function DeviceDetailPage({
         <div>
           <Typography.Text className="section-eyebrow">设备详情</Typography.Text>
           <Typography.Title>
-            {isFlightController ? "PX4 真实飞控" : device.dcdw_label ?? device.device_id}
+            {device.dcdw_label ?? device.device_id}
           </Typography.Title>
           <Typography.Text type="secondary" className="mono">{device.device_id}</Typography.Text>
         </div>
@@ -564,7 +569,7 @@ function DeviceDetailPage({
         </div>
       </Card>
 
-      {!isFlightController && <PowerOverview power={dashboardView.power} />}
+      <PowerOverview power={dashboardView.power} />
 
       <div className="detail-workspace">
         <section className="detail-main">
@@ -596,7 +601,7 @@ function DeviceDetailPage({
           </div>
 
             <div className="flight-support-grid">
-              {!isFlightController && <SelfCheckPanel modules={dashboardView.modules} />}
+              <SelfCheckPanel modules={dashboardView.modules} />
               <div className="flight-event-stack">
                 <FlightLogPanel logs={dashboardView.logs} />
               </div>
@@ -606,14 +611,6 @@ function DeviceDetailPage({
         </section>
 
         <aside className="detail-side">
-          {isFlightController && (
-            <Alert
-              type="info"
-              showIcon
-              message="真实飞控接入模式"
-              description="当前展示 MAVLink 遥测、PX4 设备 ID 和 Remote ID；主控箱私有飞行控制命令已禁用。"
-            />
-          )}
           <Card className="command-panel runtime-config-panel" title="运行时配置">
             <Form layout="vertical" initialValues={{ interval: 2000, heartbeat: 5000, reconnectDelay: 1, reconnectMax: 30 }}>
               <Form.Item label="遥测上报周期（ms）" name="interval">
@@ -732,6 +729,130 @@ function DeviceDetailPage({
   );
 }
 
+function Px4Console({
+  device,
+  onBack
+}: {
+  device: DeviceDetail;
+  onBack: () => void;
+}) {
+  const realtime = usePx4Realtime(device.device_id, device.latest_telemetry);
+  const telemetryView = mapTelemetry(realtime.telemetry ?? undefined);
+  const dashboardView = mapFlightDashboard(realtime.telemetry);
+  const remoteId = readIdentityString(realtime.telemetry, "remote_id");
+  const latencyTone = realtime.stats.endToEndLatencyMs === null
+    ? "default"
+    : realtime.stats.endToEndLatencyMs <= 80
+      ? "success"
+      : realtime.stats.endToEndLatencyMs <= 150 ? "warning" : "error";
+
+  return (
+    <div className="page-stack px4-console-page flight-console-page">
+      <section className="page-heading">
+        <div>
+          <Typography.Text className="section-eyebrow">PX4 实时飞行控制台</Typography.Text>
+          <Typography.Title>PX4 真实飞控</Typography.Title>
+          <Typography.Text type="secondary" className="mono">{device.device_id}</Typography.Text>
+        </div>
+        <Button onClick={onBack}>返回设备列表</Button>
+      </section>
+
+      <Card className="px4-link-strip">
+        <Space size={[8, 8]} wrap>
+          <Tag color={realtime.connected ? "success" : "error"} icon={<Wifi size={14} />}>
+            WebSocket {realtime.connected ? "已连接" : "重连中"}
+          </Tag>
+          <Tag color={realtime.usingFastPath ? "processing" : "warning"} icon={<Radio size={14} />}>
+            {realtime.usingFastPath ? "PX4 高频链路" : "1 秒遥测回退"}
+          </Tag>
+          <Tag color={latencyTone}>
+            端到端 {formatRealtimeMetric(realtime.stats.endToEndLatencyMs, " ms")}
+          </Tag>
+          <Tag>上行 {formatRealtimeMetric(realtime.stats.uplinkLatencyMs, " ms")}</Tag>
+          <Tag>Web 推送 {formatRealtimeMetric(realtime.stats.browserLatencyMs, " ms")}</Tag>
+          <Tag>{realtime.stats.framesPerSecond.toFixed(1)} Hz</Tag>
+          <Tag>丢弃 {realtime.stats.droppedFrames} 帧</Tag>
+        </Space>
+      </Card>
+
+      {!realtime.usingFastPath && (
+        <Alert
+          type="warning"
+          showIcon
+          message="PX4 高频链路尚未收到数据"
+          description="页面正在使用原有数据库遥测，不影响查看；树莓派和服务器升级后会自动切换到高频实时链路。"
+        />
+      )}
+
+      <Card className="identity-strip">
+        <div className="device-facts-grid">
+          <DeviceFact label="设备类型" value="PX4 真实飞控" />
+          <DeviceFact label="设备 ID" value={device.device_id} />
+          <DeviceFact label="Remote ID" value={remoteId ?? "未收到"} />
+          <DeviceFact label="学校" value={device.school_name ?? "未绑定"} />
+          <DeviceFact label="当前状态" value={<DeviceStatusTag status={device.status} degraded={device.degraded} />} />
+          <DeviceFact label="最后慢照" value={formatDateTime(device.telemetry_received_at)} />
+        </div>
+      </Card>
+
+      <div className="px4-dashboard-grid">
+        <section className="px4-dashboard-main">
+          <FlightSnapshot telemetry={telemetryView} position={dashboardView.position} />
+          <div className="telemetry-grid">
+            <TelemetryCard title="飞行姿态" icon={<Gauge />} items={[
+              ["Roll", formatNumber(telemetryView.attitude.roll, "°")],
+              ["Pitch", formatNumber(telemetryView.attitude.pitch, "°")],
+              ["Yaw", formatNumber(telemetryView.attitude.yaw, "°")]
+            ]} />
+            <TelemetryCard title="位置" icon={<MapPin />} items={[
+              ["经度", formatCoordinate(dashboardView.position.longitudeWgs84)],
+              ["纬度", formatCoordinate(dashboardView.position.latitudeWgs84)],
+              ["高度", formatNumber(telemetryView.environment.altitude, " m")],
+              ["卫星", formatNumber(dashboardView.position.satellites, " 颗", 0)]
+            ]} />
+            <TelemetryCard title="飞控电源" icon={<Cpu />} items={[
+              ["电压", formatNumber(telemetryView.battery.voltage, " V", 2)],
+              ["余量", formatNumber(telemetryView.battery.remaining, "%", 0)],
+              ["气压", formatNumber(telemetryView.environment.pressure, " hPa")],
+              ["温度", formatNumber(telemetryView.environment.temperature, " ℃")]
+            ]} />
+            <TelemetryCard title="5G 实时链路" icon={<Wifi />} items={[
+              ["端到端", formatRealtimeMetric(realtime.stats.endToEndLatencyMs, " ms")],
+              ["树莓派→服务", formatRealtimeMetric(realtime.stats.uplinkLatencyMs, " ms")],
+              ["服务→浏览器", formatRealtimeMetric(realtime.stats.browserLatencyMs, " ms")],
+              ["刷新率", `${realtime.stats.framesPerSecond.toFixed(1)} Hz`]
+            ]} />
+          </div>
+        </section>
+
+        <aside className="px4-dashboard-side">
+          <Card title="实时链路诊断">
+            <div className="px4-diagnostics">
+              <DeviceFact label="已接收" value={`${realtime.stats.receivedFrames} 帧`} />
+              <DeviceFact label="序列缺口" value={`${realtime.stats.droppedFrames} 帧`} />
+              <DeviceFact label="最后实时帧" value={formatDateTime(realtime.stats.lastFrameAt)} />
+              <Typography.Text type="secondary">
+                延迟依赖树莓派、服务器和本机时钟同步。链路采用 QoS 0 和“只显示最新帧”，
+                弱网时会丢帧但不会堆积成越来越大的延迟。
+              </Typography.Text>
+            </div>
+          </Card>
+          <Alert
+            type="info"
+            showIcon
+            message="飞行控制保持安全隔离"
+            description="本次先上线低延迟遥测控制台。航线和飞行命令仍未复用主控箱私有命令，避免误发给 PX4。"
+          />
+          <TelemetryFramePanel
+            source={realtime.telemetry}
+            receivedAt={realtime.stats.lastFrameAt ?? device.telemetry_received_at}
+          />
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 function FlightSnapshot({
   telemetry,
   position
@@ -772,6 +893,10 @@ function FlightSnapshot({
       <FlightMap position={position} />
     </Card>
   );
+}
+
+function formatRealtimeMetric(value: number | null, suffix: string): string {
+  return value === null ? "--" : `${value}${suffix}`;
 }
 
 function DeviceFact({ label, value }: { label: string; value: React.ReactNode }) {

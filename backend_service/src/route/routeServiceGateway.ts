@@ -2,8 +2,10 @@ import { connect, type IClientOptions, type MqttClient } from "mqtt";
 
 import type {
   DependencyStatus,
-  DeviceCommandRequest
+  DeviceCommandRequest,
+  Px4RealtimeFrame
 } from "@cns/backend-protocol";
+import { Px4RealtimeFrameSchema } from "@cns/backend-protocol";
 
 import type { AppConfig } from "../config/appConfig.js";
 import type { Logger } from "../logging/logger.js";
@@ -27,6 +29,7 @@ export interface RouteServiceGateway {
 export type RouteServiceHandlers = {
   onDeviceState(message: RouteDeviceStateMessage): void;
   onCommandAck(message: RouteCommandAck): void;
+  onPx4Realtime(message: Px4RealtimeFrame): void;
 };
 
 export class RouteServiceUnavailableError extends Error {}
@@ -139,6 +142,8 @@ function buildTopics(config: MqttConfig) {
   return {
     stateFilter: `${config.topic_namespace}/events/devices/+/state`,
     statePrefix: `${config.topic_namespace}/events/devices/`,
+    px4RealtimeFilter: `${config.topic_namespace}/+/px4/realtime/v1`,
+    px4RealtimePrefix: `${config.topic_namespace}/`,
     configRequest: `${sourcePrefix}/config/request`,
     configAck: `${sourcePrefix}/config/ack`,
     controlRequest: `${sourcePrefix}/control/request`,
@@ -164,6 +169,7 @@ async function waitUntilSubscribed(
       client.subscribe(
         {
           [topics.stateFilter]: { qos: 0 },
+          [topics.px4RealtimeFilter]: { qos: 0 },
           [topics.configAck]: { qos: 2 },
           [topics.controlAck]: { qos: 2 }
         },
@@ -239,6 +245,26 @@ function handleMessage(
       return;
     }
     handlers.onCommandAck(parsed.data);
+    return;
+  }
+
+  const px4TopicSuffix = "/px4/realtime/v1";
+  if (topic.startsWith(topics.px4RealtimePrefix) &&
+      topic.endsWith(px4TopicSuffix)) {
+    const parsed = Px4RealtimeFrameSchema.safeParse(parsedJson);
+    if (!parsed.success) {
+      logger.warn("Discarded invalid PX4 realtime frame", { topic });
+      return;
+    }
+    const topicDeviceId = topic.slice(
+      topics.px4RealtimePrefix.length,
+      -px4TopicSuffix.length
+    );
+    if (topicDeviceId !== parsed.data.device_id) {
+      logger.warn("Discarded PX4 realtime frame with mismatched device_id", { topic });
+      return;
+    }
+    handlers.onPx4Realtime(parsed.data);
     return;
   }
 
