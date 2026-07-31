@@ -740,11 +740,11 @@ function Px4Console({
   const telemetryView = mapTelemetry(realtime.telemetry ?? undefined);
   const dashboardView = mapFlightDashboard(realtime.telemetry);
   const remoteId = readIdentityString(realtime.telemetry, "remote_id");
-  const latencyTone = realtime.stats.endToEndLatencyMs === null
+  const latencyTone = realtime.stats.roundTripLatencyMs === null
     ? "default"
-    : realtime.stats.endToEndLatencyMs <= 80
+    : realtime.stats.roundTripLatencyMs <= 80
       ? "success"
-      : realtime.stats.endToEndLatencyMs <= 150 ? "warning" : "error";
+      : realtime.stats.roundTripLatencyMs <= 150 ? "warning" : "error";
 
   return (
     <div className="page-stack px4-console-page flight-console-page">
@@ -766,10 +766,9 @@ function Px4Console({
             {realtime.usingFastPath ? "PX4 高频链路" : "1 秒遥测回退"}
           </Tag>
           <Tag color={latencyTone}>
-            端到端 {formatRealtimeMetric(realtime.stats.endToEndLatencyMs, " ms")}
+            Web↔树莓派真实 RTT {formatRealtimeMetric(realtime.stats.roundTripLatencyMs, " ms")}
           </Tag>
-          <Tag>上行 {formatRealtimeMetric(realtime.stats.uplinkLatencyMs, " ms")}</Tag>
-          <Tag>Web 推送 {formatRealtimeMetric(realtime.stats.browserLatencyMs, " ms")}</Tag>
+          <Tag>P95 {formatRealtimeMetric(realtime.stats.roundTripP95Ms, " ms")}</Tag>
           <Tag>{realtime.stats.framesPerSecond.toFixed(1)} Hz</Tag>
           <Tag>丢弃 {realtime.stats.droppedFrames} 帧</Tag>
         </Space>
@@ -795,60 +794,73 @@ function Px4Console({
         </div>
       </Card>
 
-      <div className="px4-dashboard-grid">
-        <section className="px4-dashboard-main">
-          <FlightSnapshot telemetry={telemetryView} position={dashboardView.position} />
-          <div className="telemetry-grid">
-            <TelemetryCard title="飞行姿态" icon={<Gauge />} items={[
-              ["Roll", formatNumber(telemetryView.attitude.roll, "°")],
-              ["Pitch", formatNumber(telemetryView.attitude.pitch, "°")],
-              ["Yaw", formatNumber(telemetryView.attitude.yaw, "°")]
-            ]} />
-            <TelemetryCard title="位置" icon={<MapPin />} items={[
-              ["经度", formatCoordinate(dashboardView.position.longitudeWgs84)],
-              ["纬度", formatCoordinate(dashboardView.position.latitudeWgs84)],
-              ["高度", formatNumber(telemetryView.environment.altitude, " m")],
-              ["卫星", formatNumber(dashboardView.position.satellites, " 颗", 0)]
-            ]} />
-            <TelemetryCard title="飞控电源" icon={<Cpu />} items={[
-              ["电压", formatNumber(telemetryView.battery.voltage, " V", 2)],
-              ["余量", formatNumber(telemetryView.battery.remaining, "%", 0)],
-              ["气压", formatNumber(telemetryView.environment.pressure, " hPa")],
-              ["温度", formatNumber(telemetryView.environment.temperature, " ℃")]
-            ]} />
-            <TelemetryCard title="5G 实时链路" icon={<Wifi />} items={[
-              ["端到端", formatRealtimeMetric(realtime.stats.endToEndLatencyMs, " ms")],
-              ["树莓派→服务", formatRealtimeMetric(realtime.stats.uplinkLatencyMs, " ms")],
-              ["服务→浏览器", formatRealtimeMetric(realtime.stats.browserLatencyMs, " ms")],
-              ["刷新率", `${realtime.stats.framesPerSecond.toFixed(1)} Hz`]
-            ]} />
-          </div>
-        </section>
+      <section className="px4-flight-stage">
+        <FlightSnapshot telemetry={telemetryView} position={dashboardView.position} />
+      </section>
 
-        <aside className="px4-dashboard-side">
-          <Card title="实时链路诊断">
-            <div className="px4-diagnostics">
-              <DeviceFact label="已接收" value={`${realtime.stats.receivedFrames} 帧`} />
-              <DeviceFact label="序列缺口" value={`${realtime.stats.droppedFrames} 帧`} />
-              <DeviceFact label="最后实时帧" value={formatDateTime(realtime.stats.lastFrameAt)} />
-              <Typography.Text type="secondary">
-                延迟依赖树莓派、服务器和本机时钟同步。链路采用 QoS 0 和“只显示最新帧”，
-                弱网时会丢帧但不会堆积成越来越大的延迟。
-              </Typography.Text>
-            </div>
-          </Card>
+      <div className="telemetry-grid px4-metric-grid">
+        <TelemetryCard title="飞行姿态" icon={<Gauge />} items={[
+          ["Roll", formatNumber(telemetryView.attitude.roll, "°")],
+          ["Pitch", formatNumber(telemetryView.attitude.pitch, "°")],
+          ["Yaw", formatNumber(telemetryView.attitude.yaw, "°")]
+        ]} />
+        <TelemetryCard title="位置" icon={<MapPin />} items={[
+          ["经度", formatCoordinate(dashboardView.position.longitudeWgs84)],
+          ["纬度", formatCoordinate(dashboardView.position.latitudeWgs84)],
+          ["高度", formatNumber(telemetryView.environment.altitude, " m")],
+          ["卫星", formatNumber(dashboardView.position.satellites, " 颗", 0)]
+        ]} />
+        <TelemetryCard title="飞控电源" icon={<Cpu />} items={[
+          ["电压", formatNumber(telemetryView.battery.voltage, " V", 2)],
+          ["余量", formatNumber(telemetryView.battery.remaining, "%", 0)],
+          ["气压", formatNumber(telemetryView.environment.pressure, " hPa")],
+          ["温度", formatNumber(telemetryView.environment.temperature, " ℃")]
+        ]} />
+        <TelemetryCard title="5G 真实链路 RTT" icon={<Wifi />} items={[
+          ["当前", formatRealtimeMetric(realtime.stats.roundTripLatencyMs, " ms")],
+          ["P50", formatRealtimeMetric(realtime.stats.roundTripP50Ms, " ms")],
+          ["P95", formatRealtimeMetric(realtime.stats.roundTripP95Ms, " ms")],
+          ["抖动", formatRealtimeMetric(realtime.stats.latencyJitterMs, " ms")]
+        ]} />
+      </div>
+
+      <div className="px4-status-grid">
+        <Card title="实时链路诊断">
+          <div className="px4-diagnostics">
+            <DeviceFact label="已接收" value={`${realtime.stats.receivedFrames} 帧`} />
+            <DeviceFact label="序列缺口" value={`${realtime.stats.droppedFrames} 帧`} />
+            <DeviceFact label="RTT 样本" value={`${realtime.stats.latencySamples} 个`} />
+            <DeviceFact label="探测超时" value={`${realtime.stats.latencyTimeouts} 次`} />
+            <DeviceFact label="最后实时帧" value={formatDateTime(realtime.stats.lastFrameAt)} />
+            <Typography.Text type="secondary">
+              真实 RTT 使用浏览器单调时钟计时，路径为浏览器→服务器→MQTT/5G→树莓派→服务器→浏览器，
+              不依赖三端系统时间同步。它不包含 PX4 到树莓派的 USB 采集时间。
+            </Typography.Text>
+          </div>
+        </Card>
+        <div className="px4-status-notes">
           <Alert
             type="info"
             showIcon
             message="飞行控制保持安全隔离"
             description="本次先上线低延迟遥测控制台。航线和飞行命令仍未复用主控箱私有命令，避免误发给 PX4。"
           />
-          <TelemetryFramePanel
-            source={realtime.telemetry}
-            receivedAt={realtime.stats.lastFrameAt ?? device.telemetry_received_at}
+          <Alert
+            type={realtime.stats.roundTripP95Ms !== null && realtime.stats.roundTripP95Ms > 150 ? "warning" : "success"}
+            showIcon
+            message="链路质量按 P95 判断"
+            description="当前值反映瞬时往返，P95 更能反映 5G 波动；连续观察 30 个样本后再判断链路是否稳定。"
           />
-        </aside>
+        </div>
       </div>
+
+      <details className="px4-raw-details">
+        <summary>查看原始遥测帧</summary>
+        <TelemetryFramePanel
+          source={realtime.telemetry}
+          receivedAt={realtime.stats.lastFrameAt ?? device.telemetry_received_at}
+        />
+      </details>
     </div>
   );
 }

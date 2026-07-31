@@ -36,6 +36,12 @@ export async function buildServer(config: AppConfig = AppConfigSchema.parse({}))
         server_received_at: new Date().toISOString()
       });
     },
+    onPx4LatencyAck(message) {
+      realtime.sendToSession(message.session_id, {
+        type: "px4.latency_ack",
+        ...message
+      });
+    },
     onCommandAck(message) {
       if (!message.request_id) return;
       const tracked = commands.get(message.request_id);

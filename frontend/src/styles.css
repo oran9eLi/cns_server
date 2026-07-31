@@ -1986,31 +1986,73 @@ select {
   padding: 14px 18px;
 }
 
-.px4-dashboard-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 16px;
-  align-items: start;
-}
-
-.px4-dashboard-main,
-.px4-dashboard-side {
-  display: grid;
-  gap: 16px;
+.px4-flight-stage {
   min-width: 0;
 }
 
-.px4-dashboard-side .telemetry-frame-card {
+.px4-console-page .px4-metric-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.px4-status-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.px4-status-grid > .ant-card,
+.px4-status-notes {
   min-width: 0;
+}
+
+.px4-status-notes {
+  display: grid;
+  gap: 12px;
+  align-content: start;
 }
 
 .px4-diagnostics {
   display: grid;
-  gap: 14px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.px4-diagnostics > .ant-typography {
+  grid-column: 1 / -1;
+  line-height: 1.7;
+}
+
+.px4-raw-details {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.px4-raw-details > summary {
+  padding: 14px 18px;
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.px4-raw-details[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.px4-raw-details .telemetry-frame-card {
+  margin: 12px;
+  min-width: 0;
 }
 
 @media (max-width: 1180px) {
-  .px4-dashboard-grid {
+  .px4-console-page .px4-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .px4-status-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2037,12 +2079,17 @@ select {
 }
 
 @media (max-width: 900px) {
-  .flight-console-page .telemetry-grid {
+  .flight-console-page .telemetry-grid,
+  .px4-console-page .px4-metric-grid {
     grid-template-columns: 1fr;
   }
 
   .flight-console-page .instrument-panel {
     width: 186px;
+  }
+
+  .px4-diagnostics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

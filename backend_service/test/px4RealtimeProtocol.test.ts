@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   FrontendWebSocketMessageSchema,
+  Px4LatencyAckEventSchema,
+  Px4LatencyProbeMessageSchema,
   Px4RealtimeEventSchema,
   Px4RealtimeFrameSchema
 } from "@cns/backend-protocol";
@@ -35,5 +37,19 @@ describe("PX4 realtime protocol", () => {
       ...frame,
       retained: true
     }).success).toBe(false);
+  });
+
+  it("accepts correlated latency probes and ACK events", () => {
+    const probe = {
+      schema_version: 1,
+      device_id: "PX4U2-ABC123",
+      session_id: "session_test",
+      probe_id: "00000000-0000-4000-8000-000000000001"
+    };
+    expect(Px4LatencyProbeMessageSchema.parse(probe)).toEqual(probe);
+    expect(Px4LatencyAckEventSchema.parse({
+      type: "px4.latency_ack",
+      ...probe
+    }).probe_id).toBe(probe.probe_id);
   });
 });

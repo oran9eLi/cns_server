@@ -10,6 +10,10 @@ import {
   DeviceListQuerySchema,
   DeviceListResponseSchema
 } from "./devices.js";
+import {
+  Px4LatencyProbeAcceptedResponseSchema,
+  Px4LatencyProbeRequestSchema
+} from "./px4Realtime.js";
 
 export const HealthStatusSchema = z.enum(["ok", "degraded"]);
 
@@ -38,7 +42,8 @@ export const REST_ENDPOINTS = {
   health: "/api/health",
   devices: "/api/devices",
   deviceDetail: "/api/devices/:vendor_id",
-  deviceCommands: "/api/devices/:vendor_id/commands"
+  deviceCommands: "/api/devices/:vendor_id/commands",
+  px4LatencyProbes: "/api/devices/:vendor_id/px4-latency-probes"
 } as const;
 
 export const RestSchemas = {
@@ -55,6 +60,10 @@ export const RestSchemas = {
   postDeviceCommand: {
     body: DeviceCommandRequestSchema,
     response: CommandAcceptedResponseSchema
+  },
+  postPx4LatencyProbe: {
+    body: Px4LatencyProbeRequestSchema,
+    response: Px4LatencyProbeAcceptedResponseSchema
   }
 } as const;
 

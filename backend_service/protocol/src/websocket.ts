@@ -6,7 +6,10 @@ import {
 } from "./common.js";
 import { CommandUpdatedEventSchema } from "./commands.js";
 import { DeviceStateEventSchema } from "./devices.js";
-import { Px4RealtimeEventSchema } from "./px4Realtime.js";
+import {
+  Px4LatencyAckEventSchema,
+  Px4RealtimeEventSchema
+} from "./px4Realtime.js";
 
 export const WEBSOCKET_PATH = "/ws" as const;
 
@@ -23,7 +26,8 @@ export const BackendWebSocketEventSchema = z.discriminatedUnion("type", [
   SessionReadyEventSchema,
   DeviceStateEventSchema,
   CommandUpdatedEventSchema,
-  Px4RealtimeEventSchema
+  Px4RealtimeEventSchema,
+  Px4LatencyAckEventSchema
 ]);
 
 export type SessionReadyEvent = z.infer<typeof SessionReadyEventSchema>;

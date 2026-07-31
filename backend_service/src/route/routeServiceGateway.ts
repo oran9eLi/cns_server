@@ -3,9 +3,14 @@ import { connect, type IClientOptions, type MqttClient } from "mqtt";
 import type {
   DependencyStatus,
   DeviceCommandRequest,
+  Px4LatencyAckMessage,
   Px4RealtimeFrame
 } from "@cns/backend-protocol";
-import { Px4RealtimeFrameSchema } from "@cns/backend-protocol";
+import {
+  Px4LatencyAckMessageSchema,
+  Px4RealtimeFrameSchema,
+  SCHEMA_VERSION
+} from "@cns/backend-protocol";
 
 import type { AppConfig } from "../config/appConfig.js";
 import type { Logger } from "../logging/logger.js";
@@ -22,6 +27,11 @@ type MqttConfig = NonNullable<AppConfig["mqtt"]>;
 export interface RouteServiceGateway {
   start(): Promise<void>;
   publishCommand(vendorId: string, request: DeviceCommandRequest): Promise<void>;
+  publishPx4LatencyProbe(
+    deviceId: string,
+    sessionId: string,
+    probeId: string
+  ): Promise<void>;
   dependencyStatus(): Promise<DependencyStatus>;
   close(): Promise<void>;
 }
@@ -30,6 +40,7 @@ export type RouteServiceHandlers = {
   onDeviceState(message: RouteDeviceStateMessage): void;
   onCommandAck(message: RouteCommandAck): void;
   onPx4Realtime(message: Px4RealtimeFrame): void;
+  onPx4LatencyAck(message: Px4LatencyAckMessage): void;
 };
 
 export class RouteServiceUnavailableError extends Error {}
@@ -49,6 +60,9 @@ function createUnconfiguredGateway(): RouteServiceGateway {
       return undefined;
     },
     async publishCommand() {
+      throw new RouteServiceUnavailableError("MQTT is not configured");
+    },
+    async publishPx4LatencyProbe() {
       throw new RouteServiceUnavailableError("MQTT is not configured");
     },
     async dependencyStatus() {
@@ -107,6 +121,22 @@ function createMqttGateway(
       const payload = JSON.stringify(buildRouteCommandRequest(vendorId, request));
       await publishWithTimeout(client, topic, payload, config.publish_timeout_ms);
     },
+    async publishPx4LatencyProbe(deviceId, sessionId, probeId) {
+      if (!client || status !== "ready") {
+        throw new RouteServiceUnavailableError("MQTT is unavailable");
+      }
+      await publishQos0WithTimeout(
+        client,
+        `${config.topic_namespace}/${deviceId}/px4/latency/probe/v1`,
+        JSON.stringify({
+          schema_version: SCHEMA_VERSION,
+          device_id: deviceId,
+          session_id: sessionId,
+          probe_id: probeId
+        }),
+        config.publish_timeout_ms
+      );
+    },
     async dependencyStatus() {
       return status;
     },
@@ -144,6 +174,7 @@ function buildTopics(config: MqttConfig) {
     statePrefix: `${config.topic_namespace}/events/devices/`,
     px4RealtimeFilter: `${config.topic_namespace}/+/px4/realtime/v1`,
     px4RealtimePrefix: `${config.topic_namespace}/`,
+    px4LatencyAckFilter: `${config.topic_namespace}/+/px4/latency/ack/v1`,
     configRequest: `${sourcePrefix}/config/request`,
     configAck: `${sourcePrefix}/config/ack`,
     controlRequest: `${sourcePrefix}/control/request`,
@@ -170,6 +201,7 @@ async function waitUntilSubscribed(
         {
           [topics.stateFilter]: { qos: 0 },
           [topics.px4RealtimeFilter]: { qos: 0 },
+          [topics.px4LatencyAckFilter]: { qos: 0 },
           [topics.configAck]: { qos: 2 },
           [topics.controlAck]: { qos: 2 }
         },
@@ -209,6 +241,30 @@ async function publishWithTimeout(
     }, timeoutMs);
 
     client.publish(topic, payload, { qos: 2, retain: false }, (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function publishQos0WithTimeout(
+  client: MqttClient,
+  topic: string,
+  payload: string,
+  timeoutMs: number
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new RouteServiceUnavailableError("MQTT latency probe timed out"));
+    }, timeoutMs);
+
+    client.publish(topic, payload, { qos: 0, retain: false }, (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
@@ -265,6 +321,26 @@ function handleMessage(
       return;
     }
     handlers.onPx4Realtime(parsed.data);
+    return;
+  }
+
+  const px4LatencyAckSuffix = "/px4/latency/ack/v1";
+  if (topic.startsWith(topics.px4RealtimePrefix) &&
+      topic.endsWith(px4LatencyAckSuffix)) {
+    const parsed = Px4LatencyAckMessageSchema.safeParse(parsedJson);
+    if (!parsed.success) {
+      logger.warn("Discarded invalid PX4 latency ACK", { topic });
+      return;
+    }
+    const topicDeviceId = topic.slice(
+      topics.px4RealtimePrefix.length,
+      -px4LatencyAckSuffix.length
+    );
+    if (topicDeviceId !== parsed.data.device_id) {
+      logger.warn("Discarded PX4 latency ACK with mismatched device_id", { topic });
+      return;
+    }
+    handlers.onPx4LatencyAck(parsed.data);
     return;
   }
 

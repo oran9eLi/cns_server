@@ -4,12 +4,14 @@ import {
   DeviceListResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
+  Px4LatencyProbeAcceptedResponseSchema,
   type CommandAcceptedResponse,
   type DeviceCommandRequest,
   type DeviceDetailResponse,
   type DeviceListQuery,
   type DeviceListResponse,
-  type HealthResponse
+  type HealthResponse,
+  type Px4LatencyProbeAcceptedResponse
 } from "@cns/backend-protocol";
 
 export async function getHealth(): Promise<HealthResponse> {
@@ -37,6 +39,27 @@ export async function postCommand(vendorId: string, body: DeviceCommandRequest):
     },
     body: JSON.stringify(body)
   });
+}
+
+export async function postPx4LatencyProbe(
+  deviceId: string,
+  sessionId: string,
+  probeId: string
+): Promise<Px4LatencyProbeAcceptedResponse> {
+  return parseJson(
+    `/api/devices/${encodeURIComponent(deviceId)}/px4-latency-probes`,
+    Px4LatencyProbeAcceptedResponseSchema.parse,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        probe_id: probeId
+      })
+    }
+  );
 }
 
 async function parseJson<T>(url: string, parse: (value: unknown) => T, init?: RequestInit): Promise<T> {
