@@ -16,10 +16,10 @@ constexpr auto kVendorA = "A1b2C3d4E5f6G7h8I9j0";
 constexpr auto kVendorB = "Z9y8X7w6V5u4T3s2R1q0";
 constexpr auto kVendorC = "M1n2B3v4C5x6Z7l8K9j0";
 
-DeviceRecord Record(std::string vendor, std::int64_t school_id,
+DeviceRecord Record(std::string device_id, std::int64_t school_id,
                     std::string school_name, std::string label,
                     Status status = Status::kOnline) {
-  return {.vendor_id = std::move(vendor),
+  return {.device_id = std::move(device_id),
           .school_id = school_id,
           .school_name = std::move(school_name),
           .dcdw_label = std::move(label),
@@ -37,16 +37,16 @@ cns::command::ConfigParameters Parameters() {
   return parameters;
 }
 
-cns::command::SourceConfigRequest DeviceRequest(std::string label) {
+cns::command::SourceConfigRequest DeviceLabelRequest(std::string label) {
   return {.request_id = "req-1",
           .target = cns::command::DeviceLabelTarget{std::move(label)},
           .parameters = Parameters(),
           .comparison_payload = nlohmann::json::object()};
 }
 
-cns::command::SourceConfigRequest VendorRequest(std::string vendor) {
+cns::command::SourceConfigRequest DeviceIdRequest(std::string device_id) {
   return {.request_id = "req-1",
-          .target = cns::command::VendorTarget{std::move(vendor)},
+          .target = cns::command::DeviceTarget{std::move(device_id)},
           .parameters = Parameters(),
           .comparison_payload = nlohmann::json::object()};
 }
@@ -87,21 +87,21 @@ TEST_CASE("设备来源只能按自身学校角色寻址且不把离线作为路
                         Record(kVendorC, 2, "Other", "DCDW-003")}));
   const CommandSource source{kVendorA, SourceKind::kDevice, kVendorA, true};
 
-  auto self = cns::command::ResolveConfigTarget(source, DeviceRequest("DCDW-001"), devices);
+  auto self = cns::command::ResolveConfigTarget(source, DeviceLabelRequest("DCDW-001"), devices);
   REQUIRE(self);
-  CHECK(self->vendor_id == kVendorA);
+  CHECK(self->device_id == kVendorA);
 
   auto same_school = cns::command::ResolveConfigTarget(
-      source, DeviceRequest("DCDW-002"), devices);
+      source, DeviceLabelRequest("DCDW-002"), devices);
   REQUIRE(same_school);
-  CHECK(same_school->vendor_id == kVendorB);
+  CHECK(same_school->device_id == kVendorB);
 
   auto other_school = cns::command::ResolveConfigTarget(
-      source, DeviceRequest("DCDW-003"), devices);
+      source, DeviceLabelRequest("DCDW-003"), devices);
   REQUIRE_FALSE(other_school);
   CHECK(other_school.error().code == "target_not_found");
 
-  auto wrong_form = cns::command::ResolveConfigTarget(source, VendorRequest(kVendorB), devices);
+  auto wrong_form = cns::command::ResolveConfigTarget(source, DeviceIdRequest(kVendorB), devices);
   REQUIRE_FALSE(wrong_form);
   CHECK(wrong_form.error().code == "invalid_target");
 }
@@ -113,9 +113,9 @@ TEST_CASE("上位机和管控中心支持两种寻址并稳定区分不存在与
                         Record(kVendorC, 3, "Other", "DCDW-003")}));
   const CommandSource source{"web-console", SourceKind::kHostApp, std::nullopt, true};
 
-  auto vendor = cns::command::ResolveConfigTarget(source, VendorRequest(kVendorC), devices);
-  REQUIRE(vendor);
-  CHECK(vendor->school_name == "Other");
+  auto device_id = cns::command::ResolveConfigTarget(source, DeviceIdRequest(kVendorC), devices);
+  REQUIRE(device_id);
+  CHECK(device_id->school_name == "Other");
 
   auto ambiguous = cns::command::ResolveConfigTarget(
       source, LabelRequest("SEU", "DCDW-001"), devices);
@@ -132,7 +132,8 @@ TEST_CASE("设备来源关联设备不存在时拒绝权限决策") {
   DeviceRegistry devices;
   REQUIRE(devices.Load({Record(kVendorB, 1, "SEU", "DCDW-002")}));
   const CommandSource source{kVendorA, SourceKind::kDevice, kVendorA, true};
-  auto result = cns::command::ResolveConfigTarget(source, DeviceRequest("DCDW-002"), devices);
+  auto result = cns::command::ResolveConfigTarget(
+      source, DeviceLabelRequest("DCDW-002"), devices);
   REQUIRE_FALSE(result);
   CHECK(result.error().code == "permission_denied");
 }
@@ -142,13 +143,14 @@ TEST_CASE("离线设备来源不能发起命令") {
   REQUIRE(devices.Load({Record(kVendorA, 1, "SEU", "DCDW-001", Status::kOffline),
                         Record(kVendorB, 1, "SEU", "DCDW-002")}));
   const CommandSource source{kVendorA, SourceKind::kDevice, kVendorA, true};
-  auto result = cns::command::ResolveConfigTarget(source, DeviceRequest("DCDW-002"), devices);
+  auto result = cns::command::ResolveConfigTarget(
+      source, DeviceLabelRequest("DCDW-002"), devices);
   REQUIRE_FALSE(result);
   CHECK(result.error().code == "source_device_offline");
 }
 
 TEST_CASE("真实 PX4 允许配置但拒绝主控箱私有控制命令") {
-  auto px4 = Record("PX4U2-00112233445566778899AABBCCDDEEFF0011",
+  auto px4 = Record("PX4RID123456789ABCDE",
                     0, "", "");
   px4.model_version = "PX4";
   px4.device_type = cns::protocol::DeviceType::kFlightController;
@@ -159,12 +161,12 @@ TEST_CASE("真实 PX4 允许配置但拒绝主控箱私有控制命令") {
       "web-console", SourceKind::kHostApp, std::nullopt, true};
 
   auto config = cns::command::ResolveConfigTarget(
-      source, VendorRequest(px4.vendor_id), devices);
+      source, DeviceIdRequest(px4.device_id), devices);
   REQUIRE(config);
 
   const cns::command::SourceControlRequest control{
       .request_id = "req-px4",
-      .target = cns::command::VendorTarget{px4.vendor_id},
+      .target = cns::command::DeviceTarget{px4.device_id},
       .command = cns::command::ControlCommand::kTakeoff,
       .parameters = {},
       .comparison_payload = nlohmann::json::object(),

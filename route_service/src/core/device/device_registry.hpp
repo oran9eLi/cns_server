@@ -21,7 +21,7 @@ using TimePoint = std::chrono::system_clock::time_point;
 enum class Status { kOnline, kOffline };
 
 struct DeviceRecord {
-  std::string vendor_id;
+  std::string device_id;
   std::int64_t school_id;
   std::string school_name;
   std::optional<std::string> dcdw_label;
@@ -32,6 +32,9 @@ struct DeviceRecord {
   std::optional<TimePoint> telemetry_received_at;
   std::uint64_t revision;
   protocol::DeviceType device_type = protocol::DeviceType::kCnsBox;
+  std::optional<std::vector<std::string>> capabilities = std::nullopt;
+  std::optional<nlohmann::json> product = std::nullopt;
+  std::optional<nlohmann::json> version = std::nullopt;
 
   [[nodiscard]] protocol::DeviceType DeviceType() const noexcept {
     return device_type;
@@ -51,17 +54,17 @@ class DeviceRegistry {
   std::expected<Mutation, std::string> ApplyRegistration(
       const protocol::Registration& registration, TimePoint received_at);
   std::expected<Mutation, std::string> ApplyTelemetry(
-      std::string_view vendor_id, protocol::Telemetry telemetry,
+      std::string_view device_id, protocol::Telemetry telemetry,
       TimePoint received_at);
   std::vector<Mutation> ExpireInactive(TimePoint now,
                                        std::chrono::seconds timeout);
   std::expected<void, std::string> AddProvisioned(DeviceRecord record);
-  /** 返回按 vendor_id 排序的在线设备副本，仅由设备业务线程调用。 */
+  /** 返回按 device_id 排序的在线设备副本，仅由设备业务线程调用。 */
   std::vector<DeviceRecord> ListOnlineDevices() const;
-  /** 返回按 vendor_id 排序的全部设备副本，仅由设备业务线程调用。 */
+  /** 返回按 device_id 排序的全部设备副本，仅由设备业务线程调用。 */
   std::vector<DeviceRecord> ListDevices() const;
   // 返回的指针只保证在本目录下一次修改操作前有效。
-  const DeviceRecord* Find(std::string_view vendor_id) const;
+  const DeviceRecord* Find(std::string_view device_id) const;
   const DeviceRecord* FindBySchoolAndLabel(std::int64_t school_id,
                                            std::string_view label) const;
   const DeviceRecord* FindBySchoolNameAndLabel(

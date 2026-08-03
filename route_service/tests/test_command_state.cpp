@@ -23,7 +23,7 @@ CommandRecord Record(CommandStatus status) {
           .command_type = CommandType::kConfig,
           .source_id = "web-console",
           .request_id = "req-001",
-          .target_vendor_id = "A1b2C3d4E5f6G7h8I9j0",
+          .target_device_id = "A1b2C3d4E5f6G7h8I9j0",
           .request_payload = {{"schema_version", 1}, {"value", 2}},
           .status = status,
           .error_code = std::nullopt,
@@ -113,9 +113,9 @@ TEST_CASE("UUID格式函数固定版本变体大小写和分隔符") {
 TEST_CASE("幂等比较忽略对象键顺序但拒绝任何内容变化") {
   auto record = Record(CommandStatus::kPending);
   record.request_payload = nlohmann::json::parse(
-      R"({"target":{"vendor_id":"A"},"parameters":{"a":1,"b":2}})");
+      R"({"target":{"device_id":"A"},"parameters":{"a":1,"b":2}})");
   const auto reordered = nlohmann::json::parse(
-      R"({"parameters":{"b":2,"a":1},"target":{"vendor_id":"A"}})");
+      R"({"parameters":{"b":2,"a":1},"target":{"device_id":"A"}})");
   CHECK(cns::command::CompareRequest(record, reordered) ==
         cns::command::IdempotencyResult::kSame);
   auto changed = reordered;
@@ -162,7 +162,7 @@ TEST_CASE("来源ACK覆盖进行中设备成功拒绝路由失败和超时") {
   CHECK(ack["device"]["error_code"] == "invalid_parameter");
 
   auto route_failed = Record(CommandStatus::kFailed);
-  route_failed.target_vendor_id = std::nullopt;
+  route_failed.target_device_id = std::nullopt;
   route_failed.error_code = "target_not_found";
   route_failed.error_message = "目标设备不存在";
   ack = cns::command::BuildSourceAck(route_failed, std::nullopt, kAt);

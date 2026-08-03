@@ -9,7 +9,7 @@ import {
   Px4LatencyProbeAcceptedResponseSchema,
   Px4LatencyProbeRequestSchema,
   SCHEMA_VERSION,
-  VendorIdSchema,
+  DeviceIdSchema,
   type CommandAcceptedResponse,
   type ErrorCode,
   type ErrorResponse
@@ -25,7 +25,7 @@ import type { DeviceStore } from "./deviceStore.js";
 import { enrichTelemetryCoordinates } from "../telemetry/coordinateTransform.js";
 
 const DeviceParamsSchema = z.object({
-  vendor_id: VendorIdSchema
+  device_id: DeviceIdSchema
 });
 
 export async function registerDeviceRoutes(
@@ -55,14 +55,14 @@ export async function registerDeviceRoutes(
     }
   });
 
-  app.get("/api/devices/:vendor_id", async (request, reply) => {
+  app.get("/api/devices/:device_id", async (request, reply) => {
     const params = DeviceParamsSchema.safeParse(request.params);
     if (!params.success) {
       return sendError(reply, 400, "invalid_parameter", "设备编号不符合协议");
     }
 
     try {
-      const item = await devices.get(params.data.vendor_id);
+      const item = await devices.get(params.data.device_id);
       if (!item) {
         return sendError(reply, 404, "not_found", "未找到设备");
       }
@@ -79,7 +79,7 @@ export async function registerDeviceRoutes(
     }
   });
 
-  app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
+  app.post("/api/devices/:device_id/commands", async (request, reply) => {
     const params = DeviceParamsSchema.safeParse(request.params);
     if (!params.success) {
       return sendError(reply, 400, "invalid_parameter", "设备编号不符合协议");
@@ -92,7 +92,7 @@ export async function registerDeviceRoutes(
 
     let item;
     try {
-      item = await devices.get(params.data.vendor_id);
+      item = await devices.get(params.data.device_id);
     } catch {
       return sendError(reply, 503, "database_unavailable", "设备数据库暂不可用");
     }
@@ -121,13 +121,13 @@ export async function registerDeviceRoutes(
     const acceptedAt = new Date().toISOString();
     commands.register(command.data.client_request_id, {
       sessionId: command.data.session_id,
-      vendorId: params.data.vendor_id,
+      deviceId: params.data.device_id,
       commandType: command.data.type,
       command: command.data.type === "control" ? command.data.command : null
     });
 
     try {
-      await routeService.publishCommand(params.data.vendor_id, command.data);
+      await routeService.publishCommand(params.data.device_id, command.data);
     } catch (error) {
       commands.forget(command.data.client_request_id);
       const message = error instanceof RouteServiceUnavailableError
@@ -139,13 +139,13 @@ export async function registerDeviceRoutes(
     return reply.code(202).send({
       schema_version: SCHEMA_VERSION,
       accepted: true,
-      vendor_id: params.data.vendor_id,
+      device_id: params.data.device_id,
       client_request_id: command.data.client_request_id,
       server_time: acceptedAt
     } satisfies CommandAcceptedResponse);
   });
 
-  app.post("/api/devices/:vendor_id/px4-latency-probes", async (request, reply) => {
+  app.post("/api/devices/:device_id/px4-latency-probes", async (request, reply) => {
     const params = DeviceParamsSchema.safeParse(request.params);
     const probe = Px4LatencyProbeRequestSchema.safeParse(request.body);
     if (!params.success || !probe.success) {
@@ -160,7 +160,7 @@ export async function registerDeviceRoutes(
 
     try {
       await routeService.publishPx4LatencyProbe(
-        params.data.vendor_id,
+        params.data.device_id,
         probe.data.session_id,
         probe.data.probe_id
       );
@@ -174,7 +174,7 @@ export async function registerDeviceRoutes(
     return reply.code(202).send(Px4LatencyProbeAcceptedResponseSchema.parse({
       schema_version: SCHEMA_VERSION,
       accepted: true,
-      device_id: params.data.vendor_id,
+      device_id: params.data.device_id,
       probe_id: probe.data.probe_id
     }));
   });

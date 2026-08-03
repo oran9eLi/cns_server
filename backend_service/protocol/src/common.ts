@@ -9,11 +9,8 @@ export const DateTimeStringSchema = z.string().datetime({ offset: true });
 export const DeviceIdSchema = z
   .string()
   .min(1)
-  .max(64)
+  .max(20)
   .regex(/^[A-Za-z0-9._:-]+$/);
-
-/** 兼容旧 API 名称；现在同时接受主控箱编号和 PX4 设备 ID。 */
-export const VendorIdSchema = DeviceIdSchema;
 
 export type JsonValue =
   | null

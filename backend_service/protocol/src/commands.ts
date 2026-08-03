@@ -4,7 +4,7 @@ import {
   DateTimeStringSchema,
   ErrorPayloadSchema,
   SchemaVersionSchema,
-  VendorIdSchema
+  DeviceIdSchema
 } from "./common.js";
 
 export const SessionIdSchema = z.string().min(8).max(128);
@@ -114,7 +114,7 @@ export const CommandAcceptedResponseSchema = z
   .object({
     schema_version: SchemaVersionSchema,
     accepted: z.literal(true),
-    vendor_id: VendorIdSchema,
+    device_id: DeviceIdSchema,
     client_request_id: ClientRequestIdSchema,
     server_time: DateTimeStringSchema
   })
@@ -126,7 +126,7 @@ export const CommandUpdatedEventSchema = z
     schema_version: SchemaVersionSchema,
     client_request_id: ClientRequestIdSchema,
     command_id: z.string().uuid().nullable(),
-    vendor_id: VendorIdSchema,
+    device_id: DeviceIdSchema,
     command_type: CommandTypeSchema,
     command: ControlCommandNameSchema.nullable(),
     status: CommandStatusSchema,

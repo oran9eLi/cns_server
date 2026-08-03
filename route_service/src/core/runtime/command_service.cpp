@@ -26,9 +26,9 @@ std::string SourceAckTopic(std::string_view topic_namespace,
 }
 
 std::string DeviceSetTopic(std::string_view topic_namespace,
-                           std::string_view vendor_id,
+                           std::string_view device_id,
                            command::CommandType type) {
-  return std::string{topic_namespace} + "/" + std::string{vendor_id} +
+  return std::string{topic_namespace} + "/" + std::string{device_id} +
          (type == command::CommandType::kControl ? "/control/set" : "/config/set");
 }
 
@@ -61,7 +61,7 @@ std::string DescribeTarget(const command::ResolvedTarget& target) {
   const auto label = target.dcdw_label && !target.dcdw_label->empty()
                          ? *target.dcdw_label
                          : "未登记编号";
-  return school + " / " + label + "（" + target.vendor_id + "）";
+  return school + " / " + label + "（" + target.device_id + "）";
 }
 
 void AppendConfigField(std::ostringstream& output, bool& first,
@@ -268,10 +268,10 @@ void CommandService::LoadActive(std::vector<command::CommandRecord> commands) {
   }
 }
 
-void CommandService::OnTargetOnline(std::string_view vendor_id,
+void CommandService::OnTargetOnline(std::string_view device_id,
                                     command::TimePoint now) {
   for (auto& [command_id, context] : active_commands_) {
-    if (context.record && context.record->target_vendor_id == vendor_id) {
+    if (context.record && context.record->target_device_id == device_id) {
       recovery_started_.erase(command_id);
     }
   }
@@ -297,14 +297,14 @@ void CommandService::SetDiagnosticSinkForTesting(DiagnosticSink diagnostic) {
 
 void CommandService::Handle(mqtt::InboundMessage message,
                             command::TimePoint now) {
-  if (const auto vendor =
+  if (const auto device_id =
           command::ParseDeviceConfigAckTopic(topic_namespace_, message.topic)) {
-    HandleDeviceAck(*vendor, message.payload, command::CommandType::kConfig, now);
+    HandleDeviceAck(*device_id, message.payload, command::CommandType::kConfig, now);
     return;
   }
-  if (const auto vendor =
+  if (const auto device_id =
           command::ParseDeviceControlAckTopic(topic_namespace_, message.topic)) {
-    HandleDeviceAck(*vendor, message.payload, command::CommandType::kControl, now);
+    HandleDeviceAck(*device_id, message.payload, command::CommandType::kControl, now);
     return;
   }
   auto command_type = command::CommandType::kConfig;
@@ -328,7 +328,7 @@ void CommandService::Handle(mqtt::InboundMessage message,
   }
   if (source->kind == command::SourceKind::kDevice) {
     const auto* source_device =
-        source->device_vendor_id ? devices_.Find(*source->device_vendor_id) : nullptr;
+        source->device_id ? devices_.Find(*source->device_id) : nullptr;
     if (source_device == nullptr ||
         source_device->status != device::Status::kOnline) {
       Reject(*source_id, std::nullopt,
@@ -456,7 +456,7 @@ void CommandService::Handle(CommandDatabaseResult result,
         .command_type = operation.context.command_type,
         .source_id = operation.context.source_id,
         .request_id = *RequestId(operation.context.parsed),
-        .target_vendor_id = std::nullopt,
+        .target_device_id = std::nullopt,
         .request_payload = *comparison,
         .status = command::CommandStatus::kPending,
         .error_code = std::nullopt,
@@ -492,8 +492,8 @@ void CommandService::Handle(CommandDatabaseResult result,
         record.completed_at = operation.context.received_at;
       } else {
         operation.context.target = *target;
-        record.target_vendor_id = target->vendor_id;
-        const auto* target_device = devices_.Find(target->vendor_id);
+        record.target_device_id = target->device_id;
+        const auto* target_device = devices_.Find(target->device_id);
         if (target_device == nullptr ||
             target_device->status != device::Status::kOnline) {
           record.status = command::CommandStatus::kFailed;
@@ -597,7 +597,7 @@ void CommandService::Handle(CommandDatabaseResult result,
         if (early != early_device_acks_.end()) {
           auto pending_ack = std::move(early->second);
           early_device_acks_.erase(early);
-          HandleDeviceAck(pending_ack.vendor_id, pending_ack.payload,
+          HandleDeviceAck(pending_ack.device_id, pending_ack.payload,
                           operation.context.command_type,
                           pending_ack.received_at);
         }
@@ -611,7 +611,7 @@ void CommandService::Handle(CommandDatabaseResult result,
 
 void CommandService::PublishRecord(RequestContext context,
                                    command::TimePoint now) {
-  if (!context.record || !context.record->target_vendor_id || !mqtt_available_) return;
+  if (!context.record || !context.record->target_device_id || !mqtt_available_) return;
   nlohmann::json payload;
   if (const auto* request =
           std::get_if<command::SourceConfigRequest>(&context.parsed)) {
@@ -630,7 +630,7 @@ void CommandService::PublishRecord(RequestContext context,
   const auto token = next_publish_token_++;
   publications_.emplace(token, PublishedCommand{context});
   const auto published = device_publisher_(
-      token, DeviceSetTopic(topic_namespace_, *context.record->target_vendor_id,
+      token, DeviceSetTopic(topic_namespace_, *context.record->target_device_id,
                             context.command_type), payload.dump());
   if (!published) {
     publications_.erase(token);
@@ -657,7 +657,7 @@ void CommandService::PublishRecord(RequestContext context,
   }
 }
 
-void CommandService::HandleDeviceAck(std::string_view vendor_id,
+void CommandService::HandleDeviceAck(std::string_view device_id,
                                      std::string_view payload,
                                      command::CommandType command_type,
                                      command::TimePoint now) {
@@ -681,19 +681,19 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
   }
   const auto found = active_commands_.find(command_id);
   if (found == active_commands_.end() || !found->second.record ||
-      found->second.record->target_vendor_id != vendor_id ||
+      found->second.record->target_device_id != device_id ||
       found->second.command_type != command_type) {
-    if (TryHandleLateDeviceAck(vendor_id, command_type, command_id,
+    if (TryHandleLateDeviceAck(device_id, command_type, command_id,
                                business_status, now)) {
       return;
     }
-    if (const auto* target = devices_.Find(vendor_id)) {
+    if (const auto* target = devices_.Find(device_id)) {
       Inform("收到来自设备 " +
-             DescribeTarget({target->vendor_id, target->school_name,
+             DescribeTarget({target->device_id, target->school_name,
                              target->dcdw_label}) +
              "的迟到或无法关联应答 " + business_status + "，未反转结果");
     } else {
-      Inform("收到来自未知设备 " + std::string{vendor_id} +
+      Inform("收到来自未知设备 " + std::string{device_id} +
              "的迟到或无法关联应答 " + business_status + "，未反转结果");
     }
     return;
@@ -712,7 +712,7 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
     if (early == early_device_acks_.end()) {
       early_device_acks_.emplace(
           command_id,
-          EarlyDeviceAck{std::string{vendor_id}, std::string{payload}, now});
+          EarlyDeviceAck{std::string{device_id}, std::string{payload}, now});
     } else if (early->second.payload != payload) {
       const auto old_control = command_type == command::CommandType::kControl
           ? command::ParseDeviceControlAck(early->second.payload) : std::unexpected(
@@ -722,7 +722,7 @@ void CommandService::HandleDeviceAck(std::string_view vendor_id,
           old_control->business_status != "in_progress";
       if (!old_terminal || !incoming_terminal) {
         if (incoming_terminal || !old_terminal) {
-          early->second = EarlyDeviceAck{std::string{vendor_id},
+          early->second = EarlyDeviceAck{std::string{device_id},
                                          std::string{payload}, now};
         }
       } else {
@@ -816,8 +816,8 @@ void CommandService::ProcessTimeoutsAndRecovery(command::TimePoint now) {
     }
     if (context.command_type == command::CommandType::kControl ||
         !mqtt_available_ || recovery_started_.contains(id) ||
-        !record.target_vendor_id) continue;
-    const auto* target = devices_.Find(*record.target_vendor_id);
+        !record.target_device_id) continue;
+    const auto* target = devices_.Find(*record.target_device_id);
     if (target == nullptr || target->status != device::Status::kOnline) continue;
     recovery_started_.insert(id);
     PublishRecord(std::move(context), now);
@@ -923,13 +923,13 @@ void CommandService::RememberCompletedCommand(RequestContext context,
 }
 
 bool CommandService::TryHandleLateDeviceAck(
-    std::string_view vendor_id, command::CommandType command_type,
+    std::string_view device_id, command::CommandType command_type,
     std::string_view command_id, std::string_view business_status,
     command::TimePoint now) {
   static_cast<void>(now);
   const auto found = completed_commands_.find(std::string{command_id});
   if (found == completed_commands_.end() || !found->second.context.record ||
-      found->second.context.record->target_vendor_id != vendor_id ||
+      found->second.context.record->target_device_id != device_id ||
       found->second.context.command_type != command_type ||
       !found->second.context.target) {
     return false;
@@ -1051,10 +1051,10 @@ void CommandService::Inform(std::string message) noexcept {
 
 std::optional<command::ResolvedTarget> CommandService::TargetFor(
     const command::CommandRecord& record) const {
-  if (!record.target_vendor_id) return std::nullopt;
-  const auto* target = devices_.Find(*record.target_vendor_id);
+  if (!record.target_device_id) return std::nullopt;
+  const auto* target = devices_.Find(*record.target_device_id);
   if (target == nullptr) return std::nullopt;
-  return command::ResolvedTarget{target->vendor_id, target->school_name,
+  return command::ResolvedTarget{target->device_id, target->school_name,
                                  target->dcdw_label};
 }
 

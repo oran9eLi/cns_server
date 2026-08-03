@@ -113,10 +113,10 @@ std::expected<RequestTarget, ProtocolError> ParseTarget(const Json& value,
     }
     return DeviceLabelTarget{value.at("dcdw_label").get<std::string>()};
   }
-  if (value.size() == 1 && value.contains("vendor_id") &&
-      value.at("vendor_id").is_string() &&
-      mqtt_topic::IsValidVendorId(value.at("vendor_id").get_ref<const std::string&>())) {
-    return VendorTarget{value.at("vendor_id").get<std::string>()};
+  if (value.size() == 1 && value.contains("device_id") &&
+      value.at("device_id").is_string() &&
+      mqtt_topic::IsValidDeviceId(value.at("device_id").get_ref<const std::string&>())) {
+    return DeviceTarget{value.at("device_id").get<std::string>()};
   }
   if (value.size() == 2 && IsNonEmptyStringWithin(value, "school_name", 128) &&
       IsNonEmptyStringWithin(value, "dcdw_label", 64)) {
@@ -158,12 +158,12 @@ std::expected<std::string, ProtocolError> ParseDeviceAckTopic(
     return std::unexpected(
         Error("invalid_topic", std::string{description} + " topic格式无效"));
   }
-  const auto vendor_id =
+  const auto device_id =
       topic.substr(prefix.size(), topic.size() - prefix.size() - suffix.size());
-  if (!mqtt_topic::IsValidVendorId(vendor_id)) {
-    return std::unexpected(Error("invalid_topic", "vendor_id无效"));
+  if (!mqtt_topic::IsValidDeviceId(device_id)) {
+    return std::unexpected(Error("invalid_topic", "device_id无效"));
   }
-  return std::string{vendor_id};
+  return std::string{device_id};
 }
 
 std::expected<ControlCommand, ProtocolError> ParseControlCommand(

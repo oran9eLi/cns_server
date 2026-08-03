@@ -22,7 +22,7 @@ enum class ChangeReason {
 };
 
 struct Snapshot {
-  std::string vendor_id;
+  std::string device_id;
   std::uint64_t revision;
   std::int64_t school_id;
   std::string school_name;
@@ -34,15 +34,21 @@ struct Snapshot {
   std::optional<nlohmann::json> latest_telemetry;
   bool degraded;
   std::string device_type = "cns_box";
+  std::optional<std::vector<std::string>> capabilities = std::nullopt;
+  std::optional<nlohmann::json> product = std::nullopt;
+  std::optional<nlohmann::json> version = std::nullopt;
 };
 
 struct DirectoryEntry {
-  std::string vendor_id;
+  std::string device_id;
   std::string school_name;
   std::optional<std::string> dcdw_label;
   std::string model_version;
   bool online;
   std::string device_type = "cns_box";
+  std::optional<std::vector<std::string>> capabilities = std::nullopt;
+  std::optional<nlohmann::json> product = std::nullopt;
+  std::optional<nlohmann::json> version = std::nullopt;
 
   auto operator<=>(const DirectoryEntry&) const = default;
 };

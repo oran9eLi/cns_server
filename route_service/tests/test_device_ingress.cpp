@@ -46,6 +46,6 @@ TEST_CASE("诊断桥失效后队列拒绝不再调用外部端口") {
       [](cns::mqtt::InboundMessage) { return false; },
       [&](std::string) { ++calls; });
   ingress.Disable();
-  ingress.Handle({"cns/vendor/telemetry", "payload", {}});
+  ingress.Handle({"cns/device_id/telemetry", "payload", {}});
   CHECK(calls == 0);
 }

@@ -56,12 +56,12 @@ struct SchoolLabelTarget {
   std::string dcdw_label;
 };
 
-struct VendorTarget {
-  std::string vendor_id;
+struct DeviceTarget {
+  std::string device_id;
 };
 
 using RequestTarget =
-    std::variant<DeviceLabelTarget, SchoolLabelTarget, VendorTarget>;
+    std::variant<DeviceLabelTarget, SchoolLabelTarget, DeviceTarget>;
 
 struct ConfigParameters {
   std::optional<std::uint32_t> telemetry_publish_interval_ms;

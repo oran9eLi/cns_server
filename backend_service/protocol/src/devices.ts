@@ -4,8 +4,7 @@ import {
   DateTimeStringSchema,
   DeviceIdSchema,
   JsonObjectSchema,
-  SchemaVersionSchema,
-  VendorIdSchema
+  SchemaVersionSchema
 } from "./common.js";
 
 export const DeviceStatusSchema = z.enum(["online", "offline"]);
@@ -32,10 +31,12 @@ export const DeviceSummarySchema = z
   .object({
     device_id: DeviceIdSchema,
     device_type: DeviceTypeSchema,
-    vendor_id: VendorIdSchema,
     school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
+    capabilities: z.array(z.string().min(1)).nullable(),
+    product: JsonObjectSchema.nullable(),
+    version: JsonObjectSchema.nullable(),
     status: DeviceStatusSchema,
     last_seen_at: DateTimeStringSchema.nullable(),
     telemetry_received_at: DateTimeStringSchema.nullable(),
@@ -68,9 +69,11 @@ export const DeviceStateEventSchema = z
     schema_version: SchemaVersionSchema,
     device_id: DeviceIdSchema,
     device_type: DeviceTypeSchema,
-    vendor_id: VendorIdSchema,
     school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
+    capabilities: z.array(z.string().min(1)).nullable(),
+    product: JsonObjectSchema.nullable(),
+    version: JsonObjectSchema.nullable(),
     status: DeviceStatusSchema,
     event_at: DateTimeStringSchema,
     last_seen_at: DateTimeStringSchema.nullable(),

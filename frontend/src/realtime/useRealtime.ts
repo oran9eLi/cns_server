@@ -4,7 +4,8 @@ import {
   BackendWebSocketEventSchema,
   type CommandUpdatedEvent,
   type DeviceDetailResponse,
-  type DeviceListResponse
+  type DeviceListResponse,
+  type DeviceStateEvent
 } from "@cns/backend-protocol";
 
 export type RealtimeState = {
@@ -13,6 +14,57 @@ export type RealtimeState = {
   lastEventAt: string | null;
   commandEvents: CommandUpdatedEvent[];
 };
+
+export function mergeDeviceListState(
+  current: DeviceListResponse,
+  event: DeviceStateEvent
+): DeviceListResponse {
+  return {
+    ...current,
+    items: current.items.map((item) =>
+      item.device_id === event.device_id
+        ? {
+            ...item,
+            device_id: event.device_id,
+            device_type: event.device_type,
+            school_name: event.school_name,
+            dcdw_label: event.dcdw_label,
+            capabilities: event.capabilities,
+            product: event.product,
+            version: event.version,
+            status: event.status,
+            last_seen_at: event.last_seen_at,
+            telemetry_received_at: event.telemetry_received_at,
+            degraded: event.degraded
+          }
+        : item
+    )
+  };
+}
+
+export function mergeDeviceDetailState(
+  current: DeviceDetailResponse,
+  event: DeviceStateEvent
+): DeviceDetailResponse {
+  return {
+    ...current,
+    item: {
+      ...current.item,
+      device_id: event.device_id,
+      device_type: event.device_type,
+      school_name: event.school_name,
+      dcdw_label: event.dcdw_label,
+      capabilities: event.capabilities,
+      product: event.product,
+      version: event.version,
+      status: event.status,
+      last_seen_at: event.last_seen_at,
+      telemetry_received_at: event.telemetry_received_at,
+      degraded: event.degraded,
+      latest_telemetry: event.latest_telemetry
+    }
+  };
+}
 
 export function useRealtime(queryClient: QueryClient): RealtimeState {
   const [connected, setConnected] = useState(false);
@@ -52,50 +104,19 @@ export function useRealtime(queryClient: QueryClient): RealtimeState {
         }
 
         if (event.type === "device.state") {
-          const previousEventAt = latestDeviceEventAt.current.get(event.vendor_id);
+          const previousEventAt = latestDeviceEventAt.current.get(event.device_id);
           if (previousEventAt && previousEventAt >= event.event_at) return;
-          latestDeviceEventAt.current.set(event.vendor_id, event.event_at);
+          latestDeviceEventAt.current.set(event.device_id, event.event_at);
           setLastEventAt(event.event_at);
 
           queryClient.setQueriesData<DeviceListResponse>({ queryKey: ["devices"] }, (current) => {
             if (!current) return current;
-            return {
-              ...current,
-              items: current.items.map((item) =>
-                item.vendor_id === event.vendor_id
-                  ? {
-                      ...item,
-                      device_id: event.device_id,
-                      device_type: event.device_type,
-                      school_name: event.school_name,
-                      dcdw_label: event.dcdw_label,
-                      status: event.status,
-                      last_seen_at: event.last_seen_at,
-                      telemetry_received_at: event.telemetry_received_at,
-                      degraded: event.degraded
-                    }
-                  : item
-              )
-            };
+            return mergeDeviceListState(current, event);
           });
 
-          queryClient.setQueryData<DeviceDetailResponse>(["device", event.vendor_id], (current) => {
+          queryClient.setQueryData<DeviceDetailResponse>(["device", event.device_id], (current) => {
             if (!current) return current;
-            return {
-              ...current,
-              item: {
-                ...current.item,
-                device_id: event.device_id,
-                device_type: event.device_type,
-                school_name: event.school_name,
-                dcdw_label: event.dcdw_label,
-                status: event.status,
-                last_seen_at: event.last_seen_at,
-                telemetry_received_at: event.telemetry_received_at,
-                degraded: event.degraded,
-                latest_telemetry: event.latest_telemetry
-              }
-            };
+            return mergeDeviceDetailState(current, event);
           });
           return;
         }

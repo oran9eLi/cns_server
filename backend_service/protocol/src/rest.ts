@@ -41,9 +41,9 @@ export const HealthResponseSchema = z
 export const REST_ENDPOINTS = {
   health: "/api/health",
   devices: "/api/devices",
-  deviceDetail: "/api/devices/:vendor_id",
-  deviceCommands: "/api/devices/:vendor_id/commands",
-  px4LatencyProbes: "/api/devices/:vendor_id/px4-latency-probes"
+  deviceDetail: "/api/devices/:device_id",
+  deviceCommands: "/api/devices/:device_id/commands",
+  px4LatencyProbes: "/api/devices/:device_id/px4-latency-probes"
 } as const;
 
 export const RestSchemas = {

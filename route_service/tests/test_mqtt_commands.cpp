@@ -130,7 +130,7 @@ TEST_CASE("配置下发与来源ACK均使用QoS2且不保留") {
   injection.connect_callback(nullptr, injection.context, 0);
   REQUIRE(client->ConfigureCommandPublishing([](auto) {}, 2).has_value());
 
-  REQUIRE(client->PublishCommandSet(1, "cns/vendor/control/set", "{}").has_value());
+  REQUIRE(client->PublishCommandSet(1, "cns/device_id/control/set", "{}").has_value());
   REQUIRE(client->PublishSourceCommandAck("cns/sources/source/control/ack", "{}")
               .has_value());
 
@@ -227,10 +227,10 @@ TEST_CASE("MID完成只回调一次并释放token容量") {
                     1)
               .has_value());
 
-  REQUIRE(client->PublishCommandSet(7, "cns/vendor/config/set", "{}").has_value());
-  CHECK_FALSE(client->PublishCommandSet(8, "cns/vendor/config/set", "{}")
+  REQUIRE(client->PublishCommandSet(7, "cns/device_id/config/set", "{}").has_value());
+  CHECK_FALSE(client->PublishCommandSet(8, "cns/device_id/config/set", "{}")
                   .has_value());
-  CHECK_FALSE(client->PublishCommandSet(7, "cns/vendor/config/set", "{}")
+  CHECK_FALSE(client->PublishCommandSet(7, "cns/device_id/config/set", "{}")
                   .has_value());
 
   REQUIRE(injection.publish_callback != nullptr);
@@ -240,7 +240,7 @@ TEST_CASE("MID完成只回调一次并释放token容量") {
   CHECK(completions[0].token == 7);
   CHECK(completions[0].result.has_value());
 
-  CHECK(client->PublishCommandSet(8, "cns/vendor/config/set", "{}").has_value());
+  CHECK(client->PublishCommandSet(8, "cns/device_id/config/set", "{}").has_value());
 }
 
 TEST_CASE("断线把全部在途发布转换为失败完成") {

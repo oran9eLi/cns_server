@@ -57,6 +57,53 @@ protocol::DeviceType DeviceType(std::string_view value) {
              : protocol::DeviceType::kCnsBox;
 }
 
+std::expected<std::optional<nlohmann::json>, std::string> OptionalJson(
+    const pqxx::field& field, std::string_view name,
+    bool require_object = true) {
+  if (field.is_null()) return std::optional<nlohmann::json>{};
+  try {
+    auto value = nlohmann::json::parse(field.as<std::string>());
+    if (require_object && !value.is_object()) {
+      return std::unexpected("读取 PostgreSQL 设备失败：" +
+                             std::string{name} + " 必须为对象");
+    }
+    return std::optional<nlohmann::json>{std::move(value)};
+  } catch (const nlohmann::json::exception&) {
+    return std::unexpected("读取 PostgreSQL 设备失败：" +
+                           std::string{name} + " JSON 无效");
+  }
+}
+
+std::expected<std::optional<std::vector<std::string>>, std::string>
+CapabilitiesFromField(const pqxx::field& field) {
+  auto parsed = OptionalJson(field, "capabilities", false);
+  if (!parsed) return std::unexpected(parsed.error());
+  if (!*parsed) return std::optional<std::vector<std::string>>{};
+  if (!(**parsed).is_array()) {
+    return std::unexpected(
+        "读取 PostgreSQL 设备失败：capabilities 必须为字符串数组");
+  }
+  std::vector<std::string> capabilities;
+  for (const auto& value : **parsed) {
+    if (!value.is_string() || value.get_ref<const std::string&>().empty()) {
+      return std::unexpected(
+          "读取 PostgreSQL 设备失败：capabilities 必须为字符串数组");
+    }
+    capabilities.push_back(value.get<std::string>());
+  }
+  return std::optional<std::vector<std::string>>{std::move(capabilities)};
+}
+
+std::optional<std::string> JsonText(
+    const std::optional<nlohmann::json>& value) {
+  return value ? std::optional{value->dump()} : std::nullopt;
+}
+
+std::optional<std::string> CapabilitiesText(
+    const std::optional<std::vector<std::string>>& value) {
+  return value ? std::optional{nlohmann::json(*value).dump()} : std::nullopt;
+}
+
 std::expected<device::DeviceRecord, std::string> DeviceFromRow(
     const pqxx::row& row) {
   auto telemetry = ParseDeviceTelemetry(
@@ -64,6 +111,12 @@ std::expected<device::DeviceRecord, std::string> DeviceFromRow(
           ? std::nullopt
           : std::optional<std::string>{row[8].as<std::string>()});
   if (!telemetry) return std::unexpected(telemetry.error());
+  auto capabilities = CapabilitiesFromField(row[10]);
+  auto product = OptionalJson(row[11], "product");
+  auto version = OptionalJson(row[12], "version");
+  if (!capabilities) return std::unexpected(capabilities.error());
+  if (!product) return std::unexpected(product.error());
+  if (!version) return std::unexpected(version.error());
   std::optional<device::TimePoint> last_seen;
   if (!row[7].is_null()) {
     auto parsed = FromUnixMicroseconds(row[7].as<std::int64_t>());
@@ -77,7 +130,7 @@ std::expected<device::DeviceRecord, std::string> DeviceFromRow(
     telemetry_received = *parsed;
   }
   return device::DeviceRecord{
-      .vendor_id = row[0].as<std::string>(),
+      .device_id = row[0].as<std::string>(),
       .school_id = row[1].as<std::int64_t>(),
       .school_name = row[2].as<std::string>(),
       .dcdw_label = row[3].is_null()
@@ -90,6 +143,9 @@ std::expected<device::DeviceRecord, std::string> DeviceFromRow(
       .telemetry_received_at = telemetry_received,
       .revision = 0,
       .device_type = DeviceType(row[5].as<std::string>()),
+      .capabilities = std::move(*capabilities),
+      .product = std::move(*product),
+      .version = std::move(*version),
   };
 }
 
@@ -181,7 +237,7 @@ std::expected<command::CommandRecord, std::string> CommandFromRow(
 }
 
 constexpr std::string_view kCommandColumns = R"sql(
-  command_id::text, command_type, source_id, request_id, target_vendor_id,
+  command_id::text, command_type, source_id, request_id, target_device_id,
   request_payload::text, status, error_code, error_message, device_ack::text,
   (extract(epoch FROM created_at)::numeric * 1000000)::bigint,
   (extract(epoch FROM dispatched_at)::numeric * 1000000)::bigint,
@@ -351,16 +407,17 @@ PostgresStore::LoadDevices() {
   try {
     pqxx::read_transaction transaction{*connection_};
     const pqxx::result rows = transaction.exec(R"sql(
-      SELECT d.vendor_id, COALESCE(d.school_id, 0),
+      SELECT d.device_id, COALESCE(d.school_id, 0),
              COALESCE(s.school_name, ''), d.dcdw_label,
              d.model_version, d.device_type, st.status,
              (extract(epoch FROM st.last_seen_at)::numeric * 1000000)::bigint,
              st.latest_telemetry::text,
              (extract(epoch FROM st.telemetry_received_at)::numeric * 1000000)::bigint
+             , d.capabilities::text, d.product::text, d.version::text
       FROM devices AS d
       LEFT JOIN schools AS s ON s.school_id = d.school_id
-      JOIN device_latest_states AS st ON st.vendor_id = d.vendor_id
-      ORDER BY d.vendor_id
+      JOIN device_latest_states AS st ON st.device_id = d.device_id
+      ORDER BY d.device_id
     )sql");
 
     std::vector<device::DeviceRecord> records;
@@ -398,48 +455,53 @@ std::expected<device::DeviceRecord, std::string> PostgresStore::ProvisionDevice(
     }
     transaction.exec(R"sql(
       INSERT INTO devices
-        (vendor_id, school_id, dcdw_label, model_version, device_type)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (vendor_id) DO NOTHING
-    )sql", pqxx::params{request.registration.vendor_id, school_id,
+        (device_id, school_id, dcdw_label, model_version, device_type,
+         capabilities, product, version)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb)
+      ON CONFLICT (device_id) DO NOTHING
+    )sql", pqxx::params{request.registration.device_id, school_id,
                         request.registration.dcdw_label,
                         request.registration.device_type ==
                                 protocol::DeviceType::kFlightController
                             ? "PX4"
                             : "CNS v1.0",
                         std::string{
-                            protocol::ToString(request.registration.device_type)}});
+                            protocol::ToString(request.registration.device_type)},
+                        CapabilitiesText(request.registration.capabilities),
+                        JsonText(request.registration.product),
+                        JsonText(request.registration.version)});
     const bool online = request.registration.status ==
                         protocol::RegistrationStatus::kOnline;
     const std::optional<std::int64_t> last_seen =
         online ? std::optional{ToUnixMicroseconds(request.received_at)}
                : std::nullopt;
     transaction.exec(R"sql(
-      INSERT INTO device_latest_states (vendor_id, status, last_seen_at)
+      INSERT INTO device_latest_states (device_id, status, last_seen_at)
       VALUES ($1, $2,
               TIMESTAMPTZ 'epoch'
                 + $3::bigint / 1000000 * INTERVAL '1 second'
                 + $3::bigint % 1000000 * INTERVAL '1 microsecond')
-      ON CONFLICT (vendor_id) DO NOTHING
-    )sql", pqxx::params{request.registration.vendor_id,
+      ON CONFLICT (device_id) DO NOTHING
+    )sql", pqxx::params{request.registration.device_id,
                         online ? "online" : "offline", last_seen});
     transaction.exec(R"sql(
-      INSERT INTO command_sources (source_id, source_kind, device_vendor_id)
+      INSERT INTO command_sources (source_id, source_kind, device_id)
       VALUES ($1, 'device', $1)
       ON CONFLICT (source_id) DO NOTHING
-    )sql", pqxx::params{request.registration.vendor_id});
+    )sql", pqxx::params{request.registration.device_id});
     const pqxx::row actual = transaction.exec(R"sql(
-      SELECT d.vendor_id, COALESCE(d.school_id, 0),
+      SELECT d.device_id, COALESCE(d.school_id, 0),
              COALESCE(s.school_name, ''), d.dcdw_label,
              d.model_version, d.device_type, st.status,
              (extract(epoch FROM st.last_seen_at)::numeric * 1000000)::bigint,
              st.latest_telemetry::text,
              (extract(epoch FROM st.telemetry_received_at)::numeric * 1000000)::bigint
+             , d.capabilities::text, d.product::text, d.version::text
       FROM devices AS d
       LEFT JOIN schools AS s ON s.school_id = d.school_id
-      JOIN device_latest_states AS st ON st.vendor_id = d.vendor_id
-      WHERE d.vendor_id = $1
-    )sql", pqxx::params{request.registration.vendor_id}).one_row();
+      JOIN device_latest_states AS st ON st.device_id = d.device_id
+      WHERE d.device_id = $1
+    )sql", pqxx::params{request.registration.device_id}).one_row();
     auto record = DeviceFromRow(actual);
     if (!record) return std::unexpected(record.error());
     transaction.commit();
@@ -467,8 +529,15 @@ std::expected<void, std::string> PostgresStore::WriteDeviceState(
     pqxx::work transaction{*connection_};
     if (plan.update_metadata) {
       transaction.exec(R"sql(
-        UPDATE devices SET dcdw_label = $2 WHERE vendor_id = $1
-      )sql", pqxx::params{write.record.vendor_id, write.record.dcdw_label});
+        UPDATE devices SET dcdw_label = $2,
+          capabilities = $3::jsonb,
+          product = $4::jsonb,
+          version = $5::jsonb
+        WHERE device_id = $1
+      )sql", pqxx::params{write.record.device_id, write.record.dcdw_label,
+                           CapabilitiesText(write.record.capabilities),
+                           JsonText(write.record.product),
+                           JsonText(write.record.version)});
     }
     if (plan.update_latest_state) {
       const std::optional<std::int64_t> last_seen =
@@ -500,8 +569,8 @@ std::expected<void, std::string> PostgresStore::WriteDeviceState(
               + $7::bigint % 1000000 * INTERVAL '1 microsecond'
             ELSE telemetry_received_at END,
           updated_at = CURRENT_TIMESTAMP
-        WHERE vendor_id = $1
-      )sql", pqxx::params{write.record.vendor_id, write.write_status,
+        WHERE device_id = $1
+      )sql", pqxx::params{write.record.device_id, write.write_status,
                           DatabaseStatus(write.record.status), last_seen,
                           write.write_telemetry, telemetry,
                           telemetry_received});
@@ -523,7 +592,7 @@ PostgresStore::SyncAndLoadCommandSources(
   try {
     pqxx::work transaction{*connection_};
     const auto existing = transaction.exec(
-        "SELECT source_id, source_kind, device_vendor_id, enabled "
+        "SELECT source_id, source_kind, device_id, enabled "
         "FROM command_sources");
     std::unordered_map<std::string, std::string> kinds;
     for (const auto& row : existing) {
@@ -565,7 +634,7 @@ PostgresStore::SyncAndLoadCommandSources(
       )sql", pqxx::params{source.source_id, kind});
     }
     const auto rows = transaction.exec(
-        "SELECT source_id, source_kind, device_vendor_id, enabled "
+        "SELECT source_id, source_kind, device_id, enabled "
         "FROM command_sources ORDER BY source_id");
     std::vector<command::CommandSource> sources;
     sources.reserve(rows.size());
@@ -746,7 +815,7 @@ PostgresStore::InsertCommand(const command::CommandRecord& command) {
     pqxx::work transaction{*connection_};
     const auto row = transaction.exec(
         "INSERT INTO commands (command_id, source_id, request_id, "
-        "command_type, target_vendor_id, request_payload, status, error_code, "
+        "command_type, target_device_id, request_payload, status, error_code, "
         "error_message, device_ack, created_at, dispatched_at, updated_at, "
         "completed_at) VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, "
         "$7, $8, $9, $10::jsonb, "
@@ -760,7 +829,7 @@ PostgresStore::InsertCommand(const command::CommandRecord& command) {
         pqxx::params{
             command.command_id, command.source_id, command.request_id,
             std::string{ToString(command.command_type)},
-            command.target_vendor_id, command.request_payload.dump(),
+            command.target_device_id, command.request_payload.dump(),
             CommandStatusText(command.status), command.error_code,
             command.error_message,
             command.device_ack

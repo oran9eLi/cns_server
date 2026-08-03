@@ -109,7 +109,7 @@ class PostgresWorker {
                  CommandResultSink command_results = {},
                  std::size_t max_inflight_commands = 256);
 
-  // 接纳尚未在途的 vendor；关闭、数据库不可用或同 vendor 已在途时返回 false。
+  // 接纳尚未在途的 device_id；关闭、数据库不可用或同 device_id 已在途时返回 false。
   // latest registration 只由 DeviceService 的 pending 状态合并和持有。
   bool SubmitProvision(protocol::Registration registration, TimePoint at);
   bool SubmitWrite(persistence::DesiredDeviceWrite write);

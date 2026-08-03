@@ -29,9 +29,9 @@ bool PostgresWorker::SubmitProvision(protocol::Registration registration,
                                      TimePoint at) {
   std::lock_guard lock(mutex_);
   if (!accepting_ || unavailable_) return false;
-  const auto vendor = registration.vendor_id;
-  if (provisioning_.contains(vendor)) return false;
-  provisions_.insert_or_assign(vendor,
+  const auto device_id = registration.device_id;
+  if (provisioning_.contains(device_id)) return false;
+  provisions_.insert_or_assign(device_id,
                                ProvisionTask{std::move(registration), at});
   changed_.notify_one();
   return true;
@@ -223,12 +223,12 @@ void PostgresWorker::Run(std::stop_token stop) {
         }
         {
           std::lock_guard lock(mutex_);
-          provisioning_.erase(provision->registration.vendor_id);
-          provisions_.erase(provision->registration.vendor_id);
+          provisioning_.erase(provision->registration.device_id);
+          provisions_.erase(provision->registration.device_id);
         }
         if (result) {
           Emit({DatabaseResult::Kind::kProvisioned,
-                provision->registration.vendor_id, result->revision,
+                provision->registration.device_id, result->revision,
                 std::move(*result), {}});
         } else {
           if (result.error().kind == DatabaseError::Kind::kUnavailable) {
@@ -243,7 +243,7 @@ void PostgresWorker::Run(std::stop_token stop) {
               : DatabaseResult::Kind::kPermanentFailure;
           const auto context = result.error().kind == DatabaseError::Kind::kUnavailable
               ? kProvisionUnavailable : kProvisionPermanent;
-          Emit({kind, provision->registration.vendor_id, 0, std::nullopt,
+          Emit({kind, provision->registration.device_id, 0, std::nullopt,
                 context});
           Diagnose(context);
         }
@@ -261,7 +261,7 @@ void PostgresWorker::Run(std::stop_token stop) {
             DatabaseError::Kind::kPermanent, "数据库写入发生未知异常"});
       }
       if (result) {
-        Emit({DatabaseResult::Kind::kWriteCompleted, write->record.vendor_id,
+        Emit({DatabaseResult::Kind::kWriteCompleted, write->record.device_id,
               write->revision, std::nullopt, {}});
       } else {
         if (result.error().kind == DatabaseError::Kind::kUnavailable) {
@@ -277,7 +277,7 @@ void PostgresWorker::Run(std::stop_token stop) {
             : DatabaseResult::Kind::kPermanentFailure;
         const auto context = result.error().kind == DatabaseError::Kind::kUnavailable
             ? kWriteUnavailable : kWritePermanent;
-        Emit({kind, write->record.vendor_id, write->revision, std::nullopt,
+        Emit({kind, write->record.device_id, write->revision, std::nullopt,
               context});
         Diagnose(context);
       }
@@ -308,17 +308,17 @@ bool PostgresWorker::FlushAndStop(std::chrono::milliseconds timeout) {
 
 std::size_t PostgresWorker::PendingDeviceCount() const {
   std::lock_guard lock(mutex_);
-  std::unordered_set<std::string> vendors;
-  for (const auto& [vendor, task] : provisions_) {
+  std::unordered_set<std::string> device_ids;
+  for (const auto& [device_id, task] : provisions_) {
     static_cast<void>(task);
-    vendors.insert(vendor);
+    device_ids.insert(device_id);
   }
-  for (const auto& [vendor, write] : writes_) {
+  for (const auto& [device_id, write] : writes_) {
     static_cast<void>(write);
-    vendors.insert(vendor);
+    device_ids.insert(device_id);
   }
-  vendors.insert(provisioning_.begin(), provisioning_.end());
-  return vendors.size();
+  device_ids.insert(provisioning_.begin(), provisioning_.end());
+  return device_ids.size();
 }
 
 bool PostgresWorker::IsDatabaseAvailable() const {
@@ -360,10 +360,10 @@ void PostgresWorker::Finish() noexcept {
 }
 
 void PostgresWorker::MergeWrite(persistence::DesiredDeviceWrite write) {
-  const auto vendor = write.record.vendor_id;
-  const auto it = writes_.find(vendor);
+  const auto device_id = write.record.device_id;
+  const auto it = writes_.find(device_id);
   if (it == writes_.end()) {
-    writes_.emplace(vendor, std::move(write));
+    writes_.emplace(device_id, std::move(write));
     return;
   }
   auto& current = it->second;

@@ -5,7 +5,7 @@
 namespace cns::mqtt_topic {
 
 bool IsValidDeviceId(std::string_view device_id) {
-  return !device_id.empty() && device_id.size() <= 64 &&
+  return !device_id.empty() && device_id.size() <= 20 &&
          std::ranges::all_of(device_id, [](unsigned char character) {
            return (character >= '0' && character <= '9') ||
                   (character >= 'A' && character <= 'Z') ||
@@ -13,10 +13,6 @@ bool IsValidDeviceId(std::string_view device_id) {
                   character == '.' || character == '_' ||
                   character == ':' || character == '-';
          });
-}
-
-bool IsValidVendorId(std::string_view vendor_id) {
-  return IsValidDeviceId(vendor_id);
 }
 
 std::expected<ParsedDeviceTopic, std::string> ParseDeviceTopic(
@@ -57,9 +53,9 @@ std::string DeviceDirectoryTopic(std::string_view topic_namespace) {
 }
 
 std::string StateEventTopic(std::string_view topic_namespace,
-                            std::string_view vendor_id) {
+                            std::string_view device_id) {
   return std::string{topic_namespace} + "/events/devices/" +
-         std::string{vendor_id} + "/state";
+         std::string{device_id} + "/state";
 }
 
 }  // namespace cns::mqtt_topic

@@ -2,7 +2,7 @@ import type { DeviceCommandRequest } from "@cns/backend-protocol";
 
 export type TrackedCommand = {
   sessionId: string;
-  vendorId: string;
+  deviceId: string;
   commandType: DeviceCommandRequest["type"];
   command: string | null;
 };

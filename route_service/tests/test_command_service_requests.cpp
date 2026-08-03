@@ -21,7 +21,7 @@ const auto kNow = std::chrono::system_clock::time_point{1721471400123ms};
 
 cns::device::DeviceRecord Device(
     cns::device::Status status = cns::device::Status::kOnline) {
-  return {.vendor_id = kVendor,
+  return {.device_id = kVendor,
           .school_id = 1,
           .school_name = "SEU",
           .dcdw_label = "DCDW-001",
@@ -37,7 +37,7 @@ std::string Request(std::string request_id = "req-1",
                     std::uint32_t interval = 2000) {
   return nlohmann::json{{"schema_version", 1},
                         {"request_id", std::move(request_id)},
-                        {"target", {{"vendor_id", kVendor}}},
+                        {"target", {{"device_id", kVendor}}},
                         {"parameters",
                          {{"telemetry_publish_interval_ms", interval}}}}
       .dump();
@@ -47,7 +47,7 @@ std::string ControlRequest(std::string request_id = "control-1",
                            std::string command = "takeoff") {
   return nlohmann::json{{"schema_version", 1},
                         {"request_id", std::move(request_id)},
-                        {"target", {{"vendor_id", kVendor}}},
+                        {"target", {{"device_id", kVendor}}},
                         {"command", std::move(command)},
                         {"parameters", nlohmann::json::object()}}
       .dump();
@@ -174,7 +174,7 @@ TEST_CASE("可幂等的参数和目标拒绝先查询再保存failed") {
   Harness harness;
   const auto invalid = nlohmann::json{{"schema_version", 1},
                                       {"request_id", "bad-1"},
-                                      {"target", {{"vendor_id", kVendor}}},
+                                      {"target", {{"device_id", kVendor}}},
                                       {"parameters", nlohmann::json::object()}}
                            .dump();
   harness.Push(invalid);
@@ -255,7 +255,7 @@ TEST_CASE("相同请求重放当前ACK而内容冲突不再次发布") {
       .command_id = "550e8400-e29b-41d4-a716-446655440000",
       .source_id = "web-console",
       .request_id = "req-1",
-      .target_vendor_id = kVendor,
+      .target_device_id = kVendor,
       .request_payload = nlohmann::json::parse(Request()),
       .status = cns::command::CommandStatus::kDispatched,
       .error_code = std::nullopt,
@@ -302,7 +302,7 @@ TEST_CASE("跨配置和飞控类型复用请求号属于幂等冲突") {
   auto existing = cns::command::CommandRecord{
       .command_id = "550e8400-e29b-41d4-a716-446655440000",
       .source_id = "web-console", .request_id = "req-1",
-      .target_vendor_id = kVendor,
+      .target_device_id = kVendor,
       .request_payload = nlohmann::json::parse(Request("req-1")),
       .status = cns::command::CommandStatus::kDispatched,
       .error_code = std::nullopt, .error_message = std::nullopt,

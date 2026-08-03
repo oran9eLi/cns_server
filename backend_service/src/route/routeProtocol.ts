@@ -22,10 +22,12 @@ const RouteDeviceDirectoryEntrySchema = z
   .object({
     device_id: DeviceIdSchema,
     device_type: DeviceTypeSchema,
-    vendor_id: DeviceIdSchema,
     school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
+    capabilities: z.array(z.string().min(1)).nullable(),
+    product: z.record(z.unknown()).nullable(),
+    version: z.record(z.unknown()).nullable(),
     status: z.enum(["online", "offline"])
   })
   .strict();
@@ -48,10 +50,12 @@ export const RouteDeviceStateMessageSchema = z
     revision: z.number().int().nonnegative(),
     device_id: DeviceIdSchema,
     device_type: DeviceTypeSchema,
-    vendor_id: DeviceIdSchema,
     school_name: z.string().min(1).nullable(),
     dcdw_label: z.string().min(1).nullable(),
     model_version: z.string().min(1),
+    capabilities: z.array(z.string().min(1)).nullable(),
+    product: z.record(z.unknown()).nullable(),
+    version: z.record(z.unknown()).nullable(),
     status: z.enum(["online", "offline"]),
     last_seen_at: NullableDateTimeSchema,
     telemetry_received_at: NullableDateTimeSchema,
@@ -101,11 +105,11 @@ export type RouteDeviceDirectorySnapshot = z.infer<
 >;
 export type RouteCommandAck = z.infer<typeof RouteCommandAckSchema>;
 
-export function buildRouteCommandRequest(vendorId: string, request: DeviceCommandRequest) {
+export function buildRouteCommandRequest(deviceId: string, request: DeviceCommandRequest) {
   const base = {
     schema_version: SCHEMA_VERSION,
     request_id: request.client_request_id,
-    target: { vendor_id: vendorId },
+    target: { device_id: deviceId },
     parameters: request.parameters
   };
 
@@ -123,9 +127,11 @@ export function toDeviceStateEvent(message: RouteDeviceStateMessage): DeviceStat
     schema_version: message.schema_version,
     device_id: message.device_id,
     device_type: message.device_type,
-    vendor_id: message.vendor_id,
     school_name: message.school_name,
     dcdw_label: message.dcdw_label,
+    capabilities: message.capabilities,
+    product: message.product,
+    version: message.version,
     status: message.status,
     event_at: message.event_at,
     last_seen_at: message.last_seen_at,
@@ -145,7 +151,7 @@ export function toCommandUpdatedEvent(
     schema_version: ack.schema_version,
     client_request_id: ack.request_id,
     command_id: ack.command_id,
-    vendor_id: tracked.vendorId,
+    device_id: tracked.deviceId,
     command_type: tracked.commandType,
     command: tracked.command,
     status: mapRouteCommandStatus(ack.status),

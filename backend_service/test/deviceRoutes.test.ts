@@ -38,7 +38,8 @@ describe("设备接口", () => {
 
     expect(detailResponse.statusCode).toBe(200);
     expect(() => DeviceDetailResponseSchema.parse(detailResponse.json())).not.toThrow();
-    expect(detailResponse.json().item.vendor_id).toBe("CNS00000000000000001");
+    expect(detailResponse.json().item.device_id).toBe("CNS00000000000000001");
+    expect(detailResponse.json().item).not.toHaveProperty("vendor_id");
   });
 
   it("拒绝离线设备命令", async () => {
@@ -92,7 +93,7 @@ describe("设备接口", () => {
 
   it("展示 PX4 设备但拒绝主控箱私有控制命令", async () => {
     const app = await buildDeviceTestServer();
-    const deviceId = "PX4U2-00112233445566778899AABBCCDDEEFF0011";
+    const deviceId = "PX4RID123456789ABCDE";
 
     const detail = await app.inject({
       method: "GET",
@@ -128,7 +129,7 @@ describe("设备接口", () => {
         }
       }
     );
-    const deviceId = "PX4U2-00112233445566778899AABBCCDDEEFF0011";
+    const deviceId = "PX4RID123456789ABCDE";
     const probeId = "00000000-0000-4000-8000-000000000004";
 
     const response = await app.inject({

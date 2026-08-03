@@ -81,7 +81,7 @@ nlohmann::json BuildSourceAck(const CommandRecord& command,
   auto ack = BaseAck(command.request_id, command.command_id,
                      command.command_type, command.status, occurred_at);
   if (target) {
-    ack["target"] = {{"vendor_id", target->vendor_id},
+    ack["target"] = {{"device_id", target->device_id},
                      {"school_name", target->school_name},
                      {"dcdw_label", target->dcdw_label
                                           ? nlohmann::json(*target->dcdw_label)

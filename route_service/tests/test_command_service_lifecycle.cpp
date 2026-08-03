@@ -23,9 +23,9 @@ cns::command::CommandRecord Active(cns::command::CommandStatus status,
   return {.command_id = kCommand,
           .source_id = "web-console",
           .request_id = "req-1",
-          .target_vendor_id = kVendor,
+          .target_device_id = kVendor,
           .request_payload = {{"schema_version", 1}, {"request_id", "req-1"},
-              {"target", {{"vendor_id", kVendor}}},
+              {"target", {{"device_id", kVendor}}},
               {"parameters", {{"telemetry_publish_interval_ms", 2000}}}},
           .status = status,
           .error_code = std::nullopt,
@@ -45,7 +45,7 @@ cns::command::CommandRecord ActiveControl(
   auto record = Active(status, created);
   record.command_type = cns::command::CommandType::kControl;
   record.request_payload = {{"schema_version", 1}, {"request_id", "req-1"},
-      {"target", {{"vendor_id", kVendor}}}, {"command", "takeoff"},
+      {"target", {{"device_id", kVendor}}}, {"command", "takeoff"},
       {"parameters", nlohmann::json::object()}};
   return record;
 }
@@ -141,7 +141,7 @@ TEST_CASE("配置命令只在发布完成且dispatched落库后记录路由日�
   Harness h;
   auto pending = h.InsertRequest(
       "cns/sources/web-console/config/request",
-      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000,"telemetry_publish_interval_ms":2000}})");
+      R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000,"telemetry_publish_interval_ms":2000}})");
   h.PublishAndConfirm(std::move(pending));
   REQUIRE(h.information.size() == 1);
   CHECK(h.information.front() ==
@@ -155,7 +155,7 @@ TEST_CASE("飞控路由日志展示具体命令和电机PWM") {
     Harness h;
     auto pending = h.InsertRequest(
         "cns/sources/web-console/control/request",
-        R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"takeoff","parameters":{}})");
+        R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"takeoff","parameters":{}})");
     h.PublishAndConfirm(std::move(pending));
     REQUIRE(h.information.size() == 1);
     CHECK(h.information.front() ==
@@ -166,7 +166,7 @@ TEST_CASE("飞控路由日志展示具体命令和电机PWM") {
     Harness h;
     auto pending = h.InsertRequest(
         "cns/sources/web-console/control/request",
-        R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1000,1100,1200,1300]}})");
+        R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1000,1100,1200,1300]}})");
     h.PublishAndConfirm(std::move(pending));
     REQUIRE(h.information.size() == 1);
     CHECK(h.information.front() ==
@@ -226,7 +226,7 @@ TEST_CASE("成功业务日志不泄露协议标识和topic") {
   Harness h;
   auto pending = h.InsertRequest(
       "cns/sources/web-console/config/request",
-      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000}})");
+      R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000}})");
   h.PublishAndConfirm(std::move(pending));
   REQUIRE(h.information.size() == 1);
   CHECK(h.information.front().find("req-1") == std::string::npos);
@@ -241,7 +241,7 @@ TEST_CASE("设备显示对学校和内部编号缺失使用降级文本") {
   Harness h{"", std::nullopt};
   auto pending = h.InsertRequest(
       "cns/sources/web-console/config/request",
-      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000}})");
+      R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"heartbeat_interval_ms":5000}})");
   h.PublishAndConfirm(std::move(pending));
   REQUIRE(h.information.size() == 1);
   CHECK(h.information.front().find(
@@ -263,7 +263,7 @@ TEST_CASE("非法和无法关联ACK及幂等回放不产生成功日志") {
   h.information.clear();
 
   REQUIRE(h.service.TryPush({"cns/sources/web-console/config/request",
-      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})", kNow}));
+      R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})", kNow}));
   h.service.ProcessReady(kNow);
   REQUIRE(h.db.size() == 1);
   const auto find_id = h.db.front().first;
@@ -280,7 +280,7 @@ TEST_CASE("MQTT发布失败不产生已路由日志") {
   Harness h;
   auto pending = h.InsertRequest(
       "cns/sources/web-console/config/request",
-      R"({"schema_version":1,"request_id":"req-1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})");
+      R"({"schema_version":1,"request_id":"req-1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"parameters":{"telemetry_publish_interval_ms":2000}})");
   h.Reply(pending);
   REQUIRE(h.publishes.size() == 1);
   h.service.PushPublishCompletion(

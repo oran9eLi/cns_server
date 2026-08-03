@@ -10,7 +10,7 @@ ProtocolError Error(std::string code, std::string message) {
 }
 
 ResolvedTarget Resolve(const device::DeviceRecord& record) {
-  return {record.vendor_id, record.school_name, record.dcdw_label};
+  return {record.device_id, record.school_name, record.dcdw_label};
 }
 
 }  // namespace
@@ -24,13 +24,13 @@ std::expected<void, std::string> SourceCatalog::Load(
       return std::unexpected("命令来源标识不能为空");
     }
     if (source.kind == SourceKind::kDevice) {
-      if (!source.device_vendor_id) {
+      if (!source.device_id) {
         return std::unexpected("设备来源缺少关联设备");
       }
-      if (*source.device_vendor_id != source.source_id) {
+      if (*source.device_id != source.source_id) {
         return std::unexpected("设备来源标识必须等于关联设备标识");
       }
-    } else if (source.device_vendor_id) {
+    } else if (source.device_id) {
       return std::unexpected("非设备来源不得关联设备");
     }
     const auto source_id = source.source_id;
@@ -53,11 +53,11 @@ std::expected<ResolvedTarget, ProtocolError> ResolveConfigTarget(
   const device::DeviceRecord* target = nullptr;
   if (source.kind == SourceKind::kDevice) {
     const auto* label = std::get_if<DeviceLabelTarget>(&request.target);
-    if (label == nullptr || !source.device_vendor_id) {
+    if (label == nullptr || !source.device_id) {
       return std::unexpected(
           Error("invalid_target", "设备来源只能使用同校角色号寻址"));
     }
-    const auto* source_device = devices.Find(*source.device_vendor_id);
+    const auto* source_device = devices.Find(*source.device_id);
     if (source_device == nullptr) {
       return std::unexpected(
           Error("permission_denied", "来源设备不在设备目录中"));
@@ -68,8 +68,8 @@ std::expected<ResolvedTarget, ProtocolError> ResolveConfigTarget(
     }
     target = devices.FindBySchoolAndLabel(source_device->school_id,
                                           label->dcdw_label);
-  } else if (const auto* vendor = std::get_if<VendorTarget>(&request.target)) {
-    target = devices.Find(vendor->vendor_id);
+  } else if (const auto* device_id = std::get_if<DeviceTarget>(&request.target)) {
+    target = devices.Find(device_id->device_id);
   } else if (const auto* label =
                  std::get_if<SchoolLabelTarget>(&request.target)) {
     if (devices.IsSchoolNameAndLabelAmbiguous(label->school_name,
@@ -98,7 +98,7 @@ std::expected<ResolvedTarget, ProtocolError> ResolveControlTarget(
                           request.comparison_payload},
       devices);
   if (!resolved) return resolved;
-  const auto* target = devices.Find(resolved->vendor_id);
+  const auto* target = devices.Find(resolved->device_id);
   if (target != nullptr &&
       target->DeviceType() == protocol::DeviceType::kFlightController) {
     return std::unexpected(Error(

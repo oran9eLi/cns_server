@@ -38,7 +38,7 @@ std::size_t DeviceRegistry::NamedRoleKeyHash::operator()(
 void DeviceRegistry::AddNamedRole(const DeviceRecord& record) {
   if (!record.dcdw_label) return;
   named_roles_[NamedRoleKey{record.school_name, *record.dcdw_label}]
-      .push_back(record.vendor_id);
+      .push_back(record.device_id);
 }
 
 void DeviceRegistry::RemoveNamedRole(const DeviceRecord& record) {
@@ -46,9 +46,9 @@ void DeviceRegistry::RemoveNamedRole(const DeviceRecord& record) {
   const NamedRoleKey key{record.school_name, *record.dcdw_label};
   const auto iterator = named_roles_.find(key);
   if (iterator == named_roles_.end()) return;
-  auto& vendors = iterator->second;
-  std::erase(vendors, record.vendor_id);
-  if (vendors.empty()) named_roles_.erase(iterator);
+  auto& device_ids = iterator->second;
+  std::erase(device_ids, record.device_id);
+  if (device_ids.empty()) named_roles_.erase(iterator);
 }
 
 std::expected<void, std::string> DeviceRegistry::Load(
@@ -58,9 +58,9 @@ std::expected<void, std::string> DeviceRegistry::Load(
   std::unordered_map<NamedRoleKey, std::vector<std::string>, NamedRoleKeyHash>
       new_named_roles;
   for (auto& record : records) {
-    const auto vendor_id = record.vendor_id;
-    if (new_records.contains(vendor_id)) {
-      return std::unexpected("加载设备目录发现重复 vendor_id: " + vendor_id);
+    const auto device_id = record.device_id;
+    if (new_records.contains(device_id)) {
+      return std::unexpected("加载设备目录发现重复 device_id: " + device_id);
     }
     if (record.dcdw_label) {
       RoleKey key{record.school_id, *record.dcdw_label};
@@ -68,11 +68,11 @@ std::expected<void, std::string> DeviceRegistry::Load(
         return std::unexpected("加载设备目录发现同校角色号冲突: " +
                                *record.dcdw_label);
       }
-      new_roles.emplace(std::move(key), vendor_id);
+      new_roles.emplace(std::move(key), device_id);
       new_named_roles[NamedRoleKey{record.school_name, *record.dcdw_label}]
-          .push_back(vendor_id);
+          .push_back(device_id);
     }
-    new_records.emplace(vendor_id, std::move(record));
+    new_records.emplace(device_id, std::move(record));
   }
   records_.swap(new_records);
   roles_.swap(new_roles);
@@ -82,9 +82,9 @@ std::expected<void, std::string> DeviceRegistry::Load(
 
 std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
     const protocol::Registration& registration, TimePoint received_at) {
-  const auto iterator = records_.find(registration.vendor_id);
+  const auto iterator = records_.find(registration.device_id);
   if (iterator == records_.end()) {
-    return std::unexpected("未知设备: " + registration.vendor_id);
+    return std::unexpected("未知设备: " + registration.device_id);
   }
 
   auto& record = iterator->second;
@@ -103,7 +103,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
       registration.dcdw_label != record.dcdw_label) {
     const RoleKey candidate{record.school_id, *registration.dcdw_label};
     const auto owner = roles_.find(candidate);
-    if (owner != roles_.end() && owner->second != record.vendor_id) {
+    if (owner != roles_.end() && owner->second != record.device_id) {
       diagnostic = AppendDiagnostic(std::move(diagnostic),
                                     "拒绝同校冲突角色号");
     } else {
@@ -114,6 +114,11 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
       if (owner == roles_.end()) new_role.emplace(candidate);
     }
   }
+  if (registration.capabilities) {
+    new_record.capabilities = registration.capabilities;
+  }
+  if (registration.product) new_record.product = registration.product;
+  if (registration.version) new_record.version = registration.version;
 
   const bool online =
       registration.status == protocol::RegistrationStatus::kOnline;
@@ -127,7 +132,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
       record.status != new_record.status,
       std::move(diagnostic)};
   if (old_role) RemoveNamedRole(record);
-  if (new_role) roles_.emplace(*new_role, record.vendor_id);
+  if (new_role) roles_.emplace(*new_role, record.device_id);
   using std::swap;
   swap(record, new_record);
   if (new_role) AddNamedRole(record);
@@ -136,11 +141,11 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyRegistration(
 }
 
 std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
-    std::string_view vendor_id, protocol::Telemetry telemetry,
+    std::string_view device_id, protocol::Telemetry telemetry,
     TimePoint received_at) {
-  const auto iterator = records_.find(std::string{vendor_id});
+  const auto iterator = records_.find(std::string{device_id});
   if (iterator == records_.end()) {
-    return std::unexpected("未知设备: " + std::string{vendor_id});
+    return std::unexpected("未知设备: " + std::string{device_id});
   }
 
   auto& record = iterator->second;
@@ -148,7 +153,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
     return std::unexpected("device_type 与已建档设备不一致");
   }
   DeviceRecord new_record{
-      .vendor_id = record.vendor_id,
+      .device_id = record.device_id,
       .school_id = record.school_id,
       .school_name = record.school_name,
       .dcdw_label = record.dcdw_label,
@@ -159,13 +164,16 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
       .telemetry_received_at = received_at,
       .revision = record.revision + 1,
       .device_type = record.device_type,
+      .capabilities = record.capabilities,
+      .product = record.product,
+      .version = record.version,
   };
   std::optional<std::string> diagnostic;
   std::optional<RoleKey> new_role;
   if (!record.dcdw_label && telemetry.dcdw_label) {
     const RoleKey candidate{record.school_id, *telemetry.dcdw_label};
     const auto owner = roles_.find(candidate);
-    if (owner != roles_.end() && owner->second != record.vendor_id) {
+    if (owner != roles_.end() && owner->second != record.device_id) {
       diagnostic = "拒绝同校冲突角色号";
     } else {
       new_record.dcdw_label = telemetry.dcdw_label;
@@ -175,7 +183,7 @@ std::expected<Mutation, std::string> DeviceRegistry::ApplyTelemetry(
   Mutation mutation{new_record, state_event::ChangeReason::kTelemetry,
                     record.status != new_record.status,
                     std::move(diagnostic)};
-  if (new_role) roles_.emplace(*new_role, record.vendor_id);
+  if (new_role) roles_.emplace(*new_role, record.device_id);
   using std::swap;
   swap(record, new_record);
   if (new_role) AddNamedRole(record);
@@ -186,8 +194,8 @@ std::vector<Mutation> DeviceRegistry::ExpireInactive(
     TimePoint now, std::chrono::seconds timeout) {
   std::vector<Mutation> mutations;
   std::vector<DeviceRecord*> expired;
-  for (auto& [vendor_id, record] : records_) {
-    static_cast<void>(vendor_id);
+  for (auto& [device_id, record] : records_) {
+    static_cast<void>(device_id);
     if (record.status != Status::kOnline || !record.last_seen_at ||
         now - *record.last_seen_at < timeout) {
       continue;
@@ -215,8 +223,8 @@ std::vector<Mutation> DeviceRegistry::ExpireInactive(
 
 std::expected<void, std::string> DeviceRegistry::AddProvisioned(
     DeviceRecord record) {
-  if (records_.contains(record.vendor_id)) {
-    return std::unexpected("重复 vendor_id: " + record.vendor_id);
+  if (records_.contains(record.device_id)) {
+    return std::unexpected("重复 device_id: " + record.device_id);
   }
   std::optional<decltype(roles_)::iterator> inserted_role;
   if (record.dcdw_label) {
@@ -224,15 +232,15 @@ std::expected<void, std::string> DeviceRegistry::AddProvisioned(
     if (roles_.contains(key)) {
       return std::unexpected("同校角色号冲突: " + *record.dcdw_label);
     }
-    inserted_role = roles_.emplace(std::move(key), record.vendor_id).first;
+    inserted_role = roles_.emplace(std::move(key), record.device_id).first;
   }
   try {
     const auto [iterator, inserted] =
-        records_.emplace(record.vendor_id, std::move(record));
+        records_.emplace(record.device_id, std::move(record));
     static_cast<void>(iterator);
     if (!inserted) {
       if (inserted_role) roles_.erase(*inserted_role);
-      return std::unexpected("重复 vendor_id");
+      return std::unexpected("重复 device_id");
     }
     AddNamedRole(iterator->second);
   } catch (...) {
@@ -245,27 +253,27 @@ std::expected<void, std::string> DeviceRegistry::AddProvisioned(
 std::vector<DeviceRecord> DeviceRegistry::ListOnlineDevices() const {
   std::vector<DeviceRecord> online;
   online.reserve(records_.size());
-  for (const auto& [vendor_id, record] : records_) {
-    static_cast<void>(vendor_id);
+  for (const auto& [device_id, record] : records_) {
+    static_cast<void>(device_id);
     if (record.status == Status::kOnline) online.push_back(record);
   }
-  std::ranges::sort(online, {}, &DeviceRecord::vendor_id);
+  std::ranges::sort(online, {}, &DeviceRecord::device_id);
   return online;
 }
 
 std::vector<DeviceRecord> DeviceRegistry::ListDevices() const {
   std::vector<DeviceRecord> devices;
   devices.reserve(records_.size());
-  for (const auto& [vendor_id, record] : records_) {
-    static_cast<void>(vendor_id);
+  for (const auto& [device_id, record] : records_) {
+    static_cast<void>(device_id);
     devices.push_back(record);
   }
-  std::ranges::sort(devices, {}, &DeviceRecord::vendor_id);
+  std::ranges::sort(devices, {}, &DeviceRecord::device_id);
   return devices;
 }
 
-const DeviceRecord* DeviceRegistry::Find(std::string_view vendor_id) const {
-  const auto iterator = records_.find(std::string{vendor_id});
+const DeviceRecord* DeviceRegistry::Find(std::string_view device_id) const {
+  const auto iterator = records_.find(std::string{device_id});
   return iterator == records_.end() ? nullptr : &iterator->second;
 }
 

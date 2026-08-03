@@ -8,12 +8,16 @@ import {
 
 describe("telemetryFrame", () => {
   const frame = {
-    identity: { vendor_id: "CNS0001" },
+    schema_version: 3,
+    device_id: "CNS0001",
+    device_type: "cns_box",
+    sent_at: "2026-08-03T10:00:00Z",
     telemetry: {
       attitude: { roll: 1.2, pitch: -2.3, healthy: true },
       motor: { pwm_us: [1100, 1200, 1300, 1400] },
       custom_module: { unknown_value: 42, note: null }
-    }
+    },
+    drone_id: { basic_id: { id_type: 1, ua_type: 2 } }
   };
 
   it("flattens every known and unknown leaf in a complete frame", () => {
@@ -21,7 +25,10 @@ describe("telemetryFrame", () => {
     const paths = groups.flatMap((group) => group.entries.map((entry) => entry.path));
 
     expect(paths).toEqual([
-      "identity.vendor_id",
+      "schema_version",
+      "device_id",
+      "device_type",
+      "sent_at",
       "telemetry.attitude.roll",
       "telemetry.attitude.pitch",
       "telemetry.attitude.healthy",
@@ -30,8 +37,11 @@ describe("telemetryFrame", () => {
       "telemetry.motor.pwm_us[2]",
       "telemetry.motor.pwm_us[3]",
       "telemetry.custom_module.unknown_value",
-      "telemetry.custom_module.note"
+      "telemetry.custom_module.note",
+      "drone_id.basic_id.id_type",
+      "drone_id.basic_id.ua_type"
     ]);
+    expect(paths.some((path) => path.includes("vendor_id"))).toBe(false);
   });
 
   it("preserves empty arrays and objects so the frame remains complete", () => {
@@ -50,7 +60,7 @@ describe("telemetryFrame", () => {
     const pwmEntry = groups.flatMap((group) => group.entries)
       .find((entry) => entry.path === "telemetry.motor.pwm_us[0]");
 
-    expect(summary).toMatchObject({ fieldCount: 10, populatedCount: 9, groupCount: 4 });
+    expect(summary).toMatchObject({ fieldCount: 15, populatedCount: 14, groupCount: 8 });
     expect(summary.byteCount).toBeGreaterThan(0);
     expect(pwmEntry?.unit).toBe("μs");
     expect(pwmEntry && matchesTelemetryEntry(pwmEntry, "PWM")).toBe(true);

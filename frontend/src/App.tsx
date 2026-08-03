@@ -128,7 +128,7 @@ function ConsoleShell() {
             <Route path="/" element={<Navigate to="/devices" replace />} />
             <Route path="/devices" element={<DeviceListPage />} />
             <Route
-              path="/devices/:vendorId"
+              path="/devices/:deviceId"
               element={
                 <DeviceDetailPage
                   sessionId={realtime.sessionId}
@@ -170,7 +170,7 @@ function DeviceListPage() {
   const columns: TableColumnsType<DeviceSummary> = [
     {
       title: "设备",
-      dataIndex: "vendor_id",
+      dataIndex: "device_id",
       render: (_, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>
@@ -216,7 +216,7 @@ function DeviceListPage() {
       render: (_, record) => (
         <Button size="small" icon={<Send size={14} />} onClick={(event) => {
           event.stopPropagation();
-          navigate(`/devices/${record.vendor_id}`);
+          navigate(`/devices/${record.device_id}`);
         }}>
           详情
         </Button>
@@ -247,7 +247,7 @@ function DeviceListPage() {
         <Space wrap className="filter-row">
           <Input.Search
             allowClear
-            placeholder="搜索 vendor_id、角色号、学校"
+            placeholder="搜索设备 ID、角色号、学校"
             value={keyword}
             onChange={(event: React.ChangeEvent<HTMLInputElement>) => setKeyword(event.target.value)}
             onSearch={setKeyword}
@@ -274,12 +274,12 @@ function DeviceListPage() {
           />
         </Space>
         <Table
-          rowKey="vendor_id"
+          rowKey="device_id"
           columns={columns}
           dataSource={allDevices}
           loading={devices.isLoading}
           pagination={false}
-          onRow={(record) => ({ onClick: () => navigate(`/devices/${record.vendor_id}`) })}
+          onRow={(record) => ({ onClick: () => navigate(`/devices/${record.device_id}`) })}
           locale={{ emptyText: <Empty description="没有匹配设备" /> }}
         />
       </Card>
@@ -298,7 +298,7 @@ function DeviceDetailPage({
   mqttReady: boolean;
   commandEvents: CommandUpdatedEvent[];
 }) {
-  const { vendorId = "" } = useParams();
+  const { deviceId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [api, contextHolder] = notification.useNotification();
@@ -310,14 +310,14 @@ function DeviceDetailPage({
   const motorEditCountdownRef = useRef<number | null>(null);
   const notifiedCommandEvents = useRef(new Set<string>());
   const deviceQuery = useQuery({
-    queryKey: ["device", vendorId],
-    queryFn: () => getDevice(vendorId),
-    enabled: Boolean(vendorId)
+    queryKey: ["device", deviceId],
+    queryFn: () => getDevice(deviceId),
+    enabled: Boolean(deviceId)
   });
   const device = deviceQuery.data?.item;
 
   const commandMutation = useMutation({
-    mutationFn: (request: DeviceCommandRequest) => postCommand(vendorId, request),
+    mutationFn: (request: DeviceCommandRequest) => postCommand(deviceId, request),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["devices"] });
     },
@@ -333,8 +333,8 @@ function DeviceDetailPage({
   });
 
   const deviceCommandEvents = useMemo(
-    () => commandEvents.filter((event) => event.vendor_id === vendorId),
-    [commandEvents, vendorId]
+    () => commandEvents.filter((event) => event.device_id === deviceId),
+    [commandEvents, deviceId]
   );
   const latestCommandEvent = deviceCommandEvents[0];
 

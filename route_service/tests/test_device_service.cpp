@@ -27,16 +27,29 @@ constexpr auto kKnown = "A1b2C3d4E5f6G7h8I9j0";
 constexpr auto kNew = "Z9y8X7w6V5u4T3s2R1q0";
 constexpr auto kOther = "M1n2B3v4C5x6Z7a8S9d0";
 
-std::string RegistrationJson(std::string_view vendor,
+std::string RegistrationJson(std::string_view device_id,
                              std::string_view school = "SEU",
                              std::string_view label = "DCDW-001") {
-  return nlohmann::json{{"schema_version", 1}, {"vendor_id", vendor},
+  return nlohmann::json{{"schema_version", 3}, {"device_id", device_id},
+                        {"device_type", "cns_box"},
                         {"status", "online"}, {"school_name", school},
                         {"dcdw_label", label}}.dump();
 }
 
-DeviceRecord Record(std::string vendor, std::uint64_t revision = 1) {
-  return {.vendor_id = std::move(vendor), .school_id = 7,
+std::string TelemetryJson(std::string_view device_id,
+                          nlohmann::json telemetry) {
+  return nlohmann::json{
+      {"schema_version", 3},
+      {"device_id", device_id},
+      {"device_type", "cns_box"},
+      {"sent_at", "2026-08-03T10:00:00Z"},
+      {"telemetry", std::move(telemetry)},
+      {"drone_id", {{"basic_id", {{"id_type", 1}, {"ua_type", 2}}}}},
+  }.dump();
+}
+
+DeviceRecord Record(std::string device_id, std::uint64_t revision = 1) {
+  return {.device_id = std::move(device_id), .school_id = 7,
           .school_name = "SEU", .dcdw_label = "DCDW-001",
           .model_version = "v1", .status = Status::kOffline,
           .last_seen_at = std::nullopt, .latest_telemetry = std::nullopt,
@@ -172,7 +185,8 @@ TEST_CASE("关闭时强制写入不足批次间隔的最后 telemetry 并等待�
       [](cns::runtime::PublishedState) {},
       [] { return std::chrono::steady_clock::time_point{}; });
   REQUIRE(service.TryPush(Message(
-      std::string{"cns/"} + kKnown + "/telemetry", R"({"sequence":99})")));
+      std::string{"cns/"} + kKnown + "/telemetry",
+      TelemetryJson(kKnown, {{"sequence", 99}}))));
   service.Close();
   auto run = std::async(std::launch::async,
                         [&] { service.Run(std::stop_token{}); });
@@ -185,7 +199,8 @@ TEST_CASE("关闭时强制写入不足批次间隔的最后 telemetry 并等待�
     std::lock_guard lock(writes_mutex);
     REQUIRE(writes.size() == 1);
     CHECK(writes.front().write_telemetry);
-    CHECK(writes.front().record.latest_telemetry->at("sequence") == 99);
+    CHECK(writes.front().record.latest_telemetry->at("telemetry").at("sequence") ==
+          99);
   }
   CHECK(run.wait_for(20ms) == std::future_status::timeout);
   service.PushDatabaseResult({DatabaseResult::Kind::kWriteCompleted, kKnown, 2,
@@ -206,7 +221,8 @@ TEST_CASE("停机强制写入提交失败后不无限重复且保持非空闲") 
       [](cns::runtime::PublishedState) {},
       [] { return std::chrono::steady_clock::time_point{}; });
   REQUIRE(service.TryPush(Message(
-      std::string{"cns/"} + kKnown + "/telemetry", R"({"sequence":7})")));
+      std::string{"cns/"} + kKnown + "/telemetry",
+      TelemetryJson(kKnown, {{"sequence", 7}}))));
   service.Close();
   auto run = std::async(std::launch::async,
                         [&] { service.Run(std::stop_token{}); });
@@ -350,7 +366,7 @@ TEST_CASE("existing device updates immediately and telemetry waits five seconds"
   REQUIRE(h.registry.Load({online}));
   auto service = h.Make();
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
-                          R"({"temperature":20})"));
+                          TelemetryJson(kKnown, {{"temperature", 20}})));
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);
   CHECK(h.writes.empty());
   CHECK_FALSE(h.events.empty());
@@ -382,10 +398,10 @@ TEST_CASE("外部快照请求只在业务线程发布排序后的全部设备") 
 
   REQUIRE(h.snapshots.size() == 1);
   REQUIRE(h.snapshots.front().size() == 3);
-  CHECK(h.snapshots.front()[0].record.vendor_id == kKnown);
-  CHECK(h.snapshots.front()[1].record.vendor_id == kOther);
+  CHECK(h.snapshots.front()[0].record.device_id == kKnown);
+  CHECK(h.snapshots.front()[1].record.device_id == kOther);
   CHECK(h.snapshots.front()[1].record.status == Status::kOffline);
-  CHECK(h.snapshots.front()[2].record.vendor_id == kNew);
+  CHECK(h.snapshots.front()[2].record.device_id == kNew);
   CHECK(h.snapshots.front()[2].record.latest_telemetry ==
         online_b.latest_telemetry);
   for (const auto& state : h.snapshots.front()) {
@@ -411,7 +427,7 @@ TEST_CASE("外部全量快照保留单设备降级状态") {
 
   REQUIRE(h.snapshots.size() == 1);
   REQUIRE(h.snapshots.front().size() == 1);
-  CHECK(h.snapshots.front().front().record.vendor_id == kKnown);
+  CHECK(h.snapshots.front().front().record.device_id == kKnown);
   CHECK(h.snapshots.front().front().degraded);
 }
 
@@ -422,8 +438,9 @@ TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
   online.last_seen_at = cns::runtime::TimePoint{} + 10s;
   REQUIRE(h.registry.Load({online}));
   auto service = h.Make();
-  const auto offline = nlohmann::json{{"schema_version", 1},
-                                      {"vendor_id", kKnown},
+  const auto offline = nlohmann::json{{"schema_version", 3},
+                                      {"device_id", kKnown},
+                                      {"device_type", "cns_box"},
                                       {"status", "offline"}}.dump();
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/registration",
                           offline));
@@ -438,7 +455,7 @@ TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);
 
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
-                          R"({"temperature":20})"));
+                          TelemetryJson(kKnown, {{"temperature", 20}})));
   service.ProcessReady(cns::runtime::TimePoint{} + 2s);
   h.steady += 5s;
   service.ProcessReady(cns::runtime::TimePoint{} + 3s);
@@ -477,7 +494,7 @@ TEST_CASE("设备上线和离线状态持久化完成后输出信息日志") {
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);
   REQUIRE(h.information.size() == 1);
   CHECK(h.information.back() ==
-        std::string{"设备上线：SEU/DCDW-001 vendor_id="} + kKnown);
+        std::string{"设备上线：SEU/DCDW-001 device_id="} + kKnown);
 
   h.steady += 1s;
   service.ProcessReady(cns::runtime::TimePoint{} + 62s);
@@ -488,7 +505,7 @@ TEST_CASE("设备上线和离线状态持久化完成后输出信息日志") {
   service.ProcessReady(cns::runtime::TimePoint{} + 62s);
   REQUIRE(h.information.size() == 2);
   CHECK(h.information.back() ==
-        std::string{"设备离线：SEU/DCDW-001 vendor_id="} + kKnown);
+        std::string{"设备离线：SEU/DCDW-001 device_id="} + kKnown);
 }
 
 TEST_CASE("database failure degrades events and recovery uses revisions") {
@@ -499,7 +516,7 @@ TEST_CASE("database failure degrades events and recovery uses revisions") {
                               std::nullopt, "down"});
   service.ProcessReady();
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
-                          R"({"temperature":21})"));
+                          TelemetryJson(kKnown, {{"temperature", 21}})));
   service.ProcessReady();
   REQUIRE(h.events.back().degraded);
   const auto revision = h.registry.Find(kKnown)->revision;
@@ -524,7 +541,7 @@ TEST_CASE("first unavailable write immediately publishes degraded snapshot") {
   REQUIRE(h.registry.Load({Record(kKnown)}));
   auto service = h.Make();
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
-                          R"({"temperature":22})"));
+                          TelemetryJson(kKnown, {{"temperature", 22}})));
   service.ProcessReady(cns::runtime::TimePoint{});
   h.steady += 5s;
   service.ProcessReady(cns::runtime::TimePoint{});
@@ -548,7 +565,7 @@ TEST_CASE("mutation after recovered raises degraded revision") {
                               std::nullopt, {}});
   service.ProcessReady();
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
-                          R"({"temperature":23})"));
+                          TelemetryJson(kKnown, {{"temperature", 23}})));
   service.ProcessReady();
   const auto newer = h.registry.Find(kKnown)->revision;
   REQUIRE(h.events.back().degraded);
@@ -591,7 +608,7 @@ TEST_CASE("closed write submitter retains state and publishes degraded snapshot"
   [&] { return now; },
   [&](std::string error) { diagnostics.push_back(std::move(error)); });
   service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
-                          R"({"temperature":24})"));
+                          TelemetryJson(kKnown, {{"temperature", 24}})));
   service.ProcessReady(cns::runtime::TimePoint{});
   now += 5s;
   service.ProcessReady(cns::runtime::TimePoint{});
@@ -640,7 +657,7 @@ struct FakeStore : PostgresWorker::StorePort {
     Called("provision");
     if (!connected) return std::unexpected(cns::runtime::DatabaseError{
         cns::runtime::DatabaseError::Kind::kUnavailable, "数据库暂不可用"});
-    return Record(registration.vendor_id);
+    return Record(registration.device_id);
   }
   std::expected<void, cns::runtime::DatabaseError> Write(const DesiredDeviceWrite&) override {
     Called("write");
@@ -814,7 +831,7 @@ TEST_CASE("throwing store and callbacks do not terminate worker") {
   CHECK(worker.FlushAndStop(500ms));
 }
 
-TEST_CASE("worker permits only one provision in flight per vendor") {
+TEST_CASE("worker permits only one provision in flight per device_id") {
   struct BlockingProvisionStore final : FakeStore {
     std::atomic_bool entered{false};
     std::atomic_bool release{false};
@@ -823,7 +840,7 @@ TEST_CASE("worker permits only one provision in flight per vendor") {
       Called("provision");
       entered = true;
       while (!release) std::this_thread::yield();
-      return Record(registration.vendor_id);
+      return Record(registration.device_id);
     }
   } store;
   PostgresWorker worker(store, [](DatabaseResult) {}, [] {},
@@ -896,7 +913,7 @@ TEST_CASE("DeviceService alone merges latest registration while worker provision
       Called("provision");
       entered = true;
       while (!release) std::this_thread::yield();
-      return Record(registration.vendor_id);
+      return Record(registration.device_id);
     }
   } store;
   cns::device::DeviceRegistry registry;
@@ -942,7 +959,7 @@ TEST_CASE("shutdown handshake persists latest registration after inflight provis
       Called("provision");
       entered = true;
       while (!release) std::this_thread::yield();
-      return Record(registration.vendor_id);
+      return Record(registration.device_id);
     }
   } store;
   cns::device::DeviceRegistry registry;
@@ -1095,13 +1112,13 @@ TEST_CASE("write unavailable clears all accepted provisions before recovery") {
   CHECK(worker.FlushAndStop(500ms));
 }
 
-TEST_CASE("provision unavailable clears other vendors and merged latest candidate") {
+TEST_CASE("provision unavailable clears other device_ids and merged latest candidate") {
   struct BlockingUnavailableProvision final : FakeStore {
     std::atomic_bool entered{false};
     std::atomic_bool release{false};
     std::expected<DeviceRecord, cns::runtime::DatabaseError> Provision(
         const Registration& registration, cns::runtime::TimePoint) override {
-      Called("provision:" + registration.vendor_id);
+      Called("provision:" + registration.device_id);
       entered = true;
       while (!release) std::this_thread::yield();
       return std::unexpected(cns::runtime::DatabaseError{

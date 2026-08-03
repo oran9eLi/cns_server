@@ -51,9 +51,9 @@ TEST_CASE("命令topic必须准确匹配约定层级和标识") {
     CHECK_FALSE(cns::command::ParseSourceRequestTopic("cns_rpi", topic).has_value());
   }
   const auto px4_device = cns::command::ParseDeviceConfigAckTopic(
-      "cns_rpi", "cns_rpi/PX4U2-00112233445566778899AABBCCDDEEFF/config/ack");
+      "cns_rpi", "cns_rpi/PX4RID123456789ABCDE/config/ack");
   REQUIRE(px4_device.has_value());
-  CHECK(*px4_device == "PX4U2-00112233445566778899AABBCCDDEEFF");
+  CHECK(*px4_device == "PX4RID123456789ABCDE");
 
   CHECK_FALSE(cns::command::ParseDeviceConfigAckTopic(
                   "cns_rpi", "cns_rpi/bad+id/config/ack")
@@ -83,7 +83,7 @@ TEST_CASE("设备来源只接受同校角色号目标") {
 
   const auto rejected = ParseRejected(
       std::string{"{\"schema_version\":1,\"request_id\":\"req-002\","
-                  "\"target\":{\"vendor_id\":\""} + kVendor +
+                  "\"target\":{\"device_id\":\""} + kVendor +
           "\"},\"parameters\":{\"heartbeat_interval_ms\":2000}}",
       SourceKind::kDevice);
   CHECK(rejected.request_id == "req-002");
@@ -92,12 +92,12 @@ TEST_CASE("设备来源只接受同校角色号目标") {
 }
 
 TEST_CASE("非设备来源接受且只接受一种目标形式") {
-  const auto by_vendor = ParseValid(
+  const auto by_device = ParseValid(
       std::string{"{\"schema_version\":1,\"request_id\":\"req-v\","
-                  "\"target\":{\"vendor_id\":\""} + kVendor +
+                  "\"target\":{\"device_id\":\""} + kVendor +
           "\"},\"parameters\":{\"mqtt_reconnect_delay_max_s\":60}}",
       SourceKind::kHostApp);
-  CHECK(std::holds_alternative<cns::command::VendorTarget>(by_vendor.target));
+  CHECK(std::holds_alternative<cns::command::DeviceTarget>(by_device.target));
 
   const auto by_label = ParseValid(
       R"({"schema_version":1,"request_id":"req-l","target":{"school_name":"SEU","dcdw_label":"DCDW-002"},"parameters":{"telemetry_publish_interval_ms":100}})",
@@ -106,7 +106,7 @@ TEST_CASE("非设备来源接受且只接受一种目标形式") {
 
   const auto mixed = ParseRejected(
       std::string{"{\"schema_version\":1,\"request_id\":\"req-m\","
-                  "\"target\":{\"vendor_id\":\""} + kVendor +
+                  "\"target\":{\"device_id\":\""} + kVendor +
           "\",\"school_name\":\"SEU\",\"dcdw_label\":\"DCDW-002\"},"
           "\"parameters\":{\"heartbeat_interval_ms\":2000}}",
       SourceKind::kHostApp);

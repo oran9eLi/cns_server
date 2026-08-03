@@ -12,30 +12,56 @@ TEST_CASE("UTC 时间固定输出 RFC3339 毫秒") {
 
 TEST_CASE("状态事件稳定输出完整字段和显式 null") {
   cns::state_event::Snapshot snapshot{
-      .vendor_id = "A1b2C3d4E5f6G7h8I9j0", .revision = 42,
+      .device_id = "A1b2C3d4E5f6G7h8I9j0", .revision = 42,
       .school_id = 7, .school_name = "SEU",
       .dcdw_label = std::nullopt, .model_version = "CNS v1.0",
       .online = false, .last_seen_at = std::nullopt,
       .telemetry_received_at = std::nullopt, .latest_telemetry = std::nullopt,
-      .degraded = true};
+      .degraded = true, .device_type = "cns_box",
+      .capabilities = std::vector<std::string>{"telemetry", "runtime_config"},
+      .product = nlohmann::json{{"manufacturer_code", "DCDW"},
+                                {"model_code", "CNS1"}},
+      .version = nlohmann::json{{"firmware", "3.0.0"}}};
   const auto at = std::chrono::sys_days{std::chrono::year{2026}/7/20} + 14h + 30min + 25s + 123ms;
   const auto event = cns::state_event::BuildStateEvent(
       snapshot, cns::state_event::ChangeReason::kActivityTimeout, at);
   CHECK(event == nlohmann::json{{"schema_version", 1}, {"event_type", "device_state"},
       {"event_at", "2026-07-20T14:30:25.123Z"}, {"revision", 42},
-      {"device_id", snapshot.vendor_id}, {"device_type", "cns_box"},
-      {"vendor_id", snapshot.vendor_id}, {"school_name", "SEU"},
+      {"device_id", snapshot.device_id}, {"device_type", "cns_box"},
+      {"device_id", snapshot.device_id}, {"school_name", "SEU"},
       {"dcdw_label", nullptr},
       {"model_version", "CNS v1.0"}, {"status", "offline"},
+      {"capabilities", nlohmann::json::array({"telemetry", "runtime_config"})},
+      {"product", nlohmann::json{{"manufacturer_code", "DCDW"},
+                                  {"model_code", "CNS1"}}},
+      {"version", nlohmann::json{{"firmware", "3.0.0"}}},
       {"last_seen_at", nullptr}, {"telemetry_received_at", nullptr},
       {"latest_telemetry", nullptr}, {"change_reason", "activity_timeout"},
       {"degraded", true}});
 }
 
+TEST_CASE("设备目录输出 v3 注册元数据且空值为 null") {
+  cns::state_event::DirectoryEntry entry{
+      "PX4RID123456789ABCDE", "", std::nullopt, "PX4", true,
+      "flight_controller"};
+  entry.capabilities = std::vector<std::string>{"telemetry", "remote_id"};
+  entry.product = nlohmann::json{{"manufacturer_code", "26"},
+                                 {"model_code", "7"}};
+
+  const auto event = cns::state_event::BuildDeviceDirectorySnapshot(
+      {entry}, 1, std::chrono::system_clock::time_point{});
+  const auto& device = event["devices"][0];
+  CHECK(device["capabilities"] ==
+        nlohmann::json::array({"telemetry", "remote_id"}));
+  CHECK(device["product"] == *entry.product);
+  CHECK(device["version"] == nullptr);
+  CHECK_FALSE(device.contains("vendor_id"));
+}
+
 TEST_CASE("状态事件输出六种原因完整 telemetry 与 degraded 原值") {
   const auto at = std::chrono::sys_days{std::chrono::year{2026}/7/20};
   cns::state_event::Snapshot snapshot{
-      .vendor_id = "A1b2C3d4E5f6G7h8I9j0", .revision = 9,
+      .device_id = "A1b2C3d4E5f6G7h8I9j0", .revision = 9,
       .school_id = 7, .school_name = "SEU",
       .dcdw_label = "DCDW-001", .model_version = "CNS v1.0",
       .online = true, .last_seen_at = at,
@@ -77,12 +103,14 @@ TEST_CASE("全量设备目录稳定排序并输出空数组") {
   CHECK(populated["devices"][0] ==
         nlohmann::json{{"device_id", "A1b2C3d4E5f6G7h8I9j0"},
                        {"device_type", "cns_box"},
-                       {"vendor_id", "A1b2C3d4E5f6G7h8I9j0"},
                        {"school_name", "SEU"},
                        {"dcdw_label", nullptr},
                        {"model_version", "CNS v1.0"},
+                       {"capabilities", nullptr},
+                       {"product", nullptr},
+                       {"version", nullptr},
                        {"status", "online"}});
-  CHECK(populated["devices"][1]["vendor_id"] == "Z9y8X7w6V5u4T3s2R1q0");
+  CHECK(populated["devices"][1]["device_id"] == "Z9y8X7w6V5u4T3s2R1q0");
   CHECK(populated["devices"][1]["status"] == "offline");
   CHECK_FALSE(populated["devices"][0].contains("school_id"));
 

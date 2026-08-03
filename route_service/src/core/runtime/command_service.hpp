@@ -54,7 +54,7 @@ class CommandService {
   void SetDatabaseAvailable(bool available);
   void SetMqttAvailable(bool available);
   void LoadActive(std::vector<command::CommandRecord> commands);
-  void OnTargetOnline(std::string_view vendor_id, command::TimePoint now);
+  void OnTargetOnline(std::string_view device_id, command::TimePoint now);
   bool WaitForDatabaseIdle(std::chrono::milliseconds timeout);
   [[nodiscard]] std::size_t ActiveCommandCount() const;
   void SetDiagnosticSinkForTesting(DiagnosticSink diagnostic);
@@ -95,7 +95,7 @@ class CommandService {
     command::TimePoint remembered_at;
   };
   struct EarlyDeviceAck {
-    std::string vendor_id;
+    std::string device_id;
     std::string payload;
     command::TimePoint received_at;
   };
@@ -103,7 +103,7 @@ class CommandService {
   void Handle(mqtt::InboundMessage message, command::TimePoint now);
   void Handle(CommandDatabaseResult result, command::TimePoint now);
   void Handle(mqtt::PublishCompletion completion, command::TimePoint now);
-  void HandleDeviceAck(std::string_view vendor_id, std::string_view payload,
+  void HandleDeviceAck(std::string_view device_id, std::string_view payload,
                        command::CommandType command_type,
                        command::TimePoint now);
   void ProcessTimeoutsAndRecovery(command::TimePoint now);
@@ -119,7 +119,7 @@ class CommandService {
                              const command::CommandRecord& current,
                              command::TimePoint now);
   void RememberCompletedCommand(RequestContext context, command::TimePoint now);
-  bool TryHandleLateDeviceAck(std::string_view vendor_id,
+  bool TryHandleLateDeviceAck(std::string_view device_id,
                               command::CommandType command_type,
                               std::string_view command_id,
                               std::string_view business_status,

@@ -185,7 +185,7 @@ struct RuntimeExternalBridge {
   state_event::Snapshot SnapshotFor(
       const runtime::PublishedState& published) const {
     return {
-        .vendor_id = published.record.vendor_id,
+        .device_id = published.record.device_id,
         .revision = published.record.revision,
         .school_id = published.record.school_id,
         .school_name = published.record.school_name,
@@ -198,19 +198,25 @@ struct RuntimeExternalBridge {
         .degraded = published.degraded,
         .device_type =
             std::string{protocol::ToString(published.record.DeviceType())},
+        .capabilities = published.record.capabilities,
+        .product = published.record.product,
+        .version = published.record.version,
     };
   }
 
   state_event::DirectoryEntry DirectoryEntryFor(
       const runtime::PublishedState& published) const {
     return {
-        .vendor_id = published.record.vendor_id,
+        .device_id = published.record.device_id,
         .school_name = published.record.school_name,
         .dcdw_label = published.record.dcdw_label,
         .model_version = published.record.model_version,
         .online = published.record.status == device::Status::kOnline,
         .device_type =
             std::string{protocol::ToString(published.record.DeviceType())},
+        .capabilities = published.record.capabilities,
+        .product = published.record.product,
+        .version = published.record.version,
     };
   }
 
@@ -220,7 +226,7 @@ struct RuntimeExternalBridge {
         std::chrono::system_clock::now()).dump();
     const auto result = mqtt->PublishStateEvent(
         mqtt_topic::StateEventTopic(topic_namespace,
-                                    published.record.vendor_id),
+                                    published.record.device_id),
         payload);
     if (!result) logger->Error("发布设备当前状态快照失败");
   }
@@ -340,7 +346,7 @@ struct RuntimeBundle final : std::enable_shared_from_this<RuntimeBundle> {
           if (published.record.status == device::Status::kOnline) {
             if (const auto self = weak_self.lock(); self && self->command_service) {
               self->command_service->OnTargetOnline(
-                  published.record.vendor_id, std::chrono::system_clock::now());
+                  published.record.device_id, std::chrono::system_clock::now());
             }
           }
           if (const auto bridge = weak.lock()) bridge->Publish(std::move(published));

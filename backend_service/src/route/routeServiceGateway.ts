@@ -26,7 +26,7 @@ type MqttConfig = NonNullable<AppConfig["mqtt"]>;
 
 export interface RouteServiceGateway {
   start(): Promise<void>;
-  publishCommand(vendorId: string, request: DeviceCommandRequest): Promise<void>;
+  publishCommand(deviceId: string, request: DeviceCommandRequest): Promise<void>;
   publishPx4LatencyProbe(
     deviceId: string,
     sessionId: string,
@@ -112,13 +112,13 @@ function createMqttGateway(
         throw error;
       }
     },
-    async publishCommand(vendorId, request) {
+    async publishCommand(deviceId, request) {
       if (!client || status !== "ready") {
         throw new RouteServiceUnavailableError("MQTT is unavailable");
       }
 
       const topic = request.type === "config" ? topics.configRequest : topics.controlRequest;
-      const payload = JSON.stringify(buildRouteCommandRequest(vendorId, request));
+      const payload = JSON.stringify(buildRouteCommandRequest(deviceId, request));
       await publishWithTimeout(client, topic, payload, config.publish_timeout_ms);
     },
     async publishPx4LatencyProbe(deviceId, sessionId, probeId) {
@@ -350,9 +350,9 @@ function handleMessage(
       logger.warn("Discarded invalid route_service device state", { topic });
       return;
     }
-    const topicVendorId = topic.slice(topics.statePrefix.length, -"/state".length);
-    if (topicVendorId !== parsed.data.vendor_id) {
-      logger.warn("Discarded device state with mismatched vendor_id", { topic });
+    const topicDeviceId = topic.slice(topics.statePrefix.length, -"/state".length);
+    if (topicDeviceId !== parsed.data.device_id) {
+      logger.warn("Discarded device state with mismatched device_id", { topic });
       return;
     }
     handlers.onDeviceState(parsed.data);

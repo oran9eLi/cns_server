@@ -27,12 +27,12 @@ export async function getDevices(query: DeviceListQuery): Promise<DeviceListResp
   return parseJson(`/api/devices${suffix}`, DeviceListResponseSchema.parse);
 }
 
-export async function getDevice(vendorId: string): Promise<DeviceDetailResponse> {
-  return parseJson(`/api/devices/${encodeURIComponent(vendorId)}`, DeviceDetailResponseSchema.parse);
+export async function getDevice(deviceId: string): Promise<DeviceDetailResponse> {
+  return parseJson(`/api/devices/${encodeURIComponent(deviceId)}`, DeviceDetailResponseSchema.parse);
 }
 
-export async function postCommand(vendorId: string, body: DeviceCommandRequest): Promise<CommandAcceptedResponse> {
-  return parseJson(`/api/devices/${encodeURIComponent(vendorId)}/commands`, CommandAcceptedResponseSchema.parse, {
+export async function postCommand(deviceId: string, body: DeviceCommandRequest): Promise<CommandAcceptedResponse> {
+  return parseJson(`/api/devices/${encodeURIComponent(deviceId)}/commands`, CommandAcceptedResponseSchema.parse, {
     method: "POST",
     headers: {
       "content-type": "application/json"

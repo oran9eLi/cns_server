@@ -20,7 +20,7 @@ struct CommandRecord {
   CommandType command_type{CommandType::kConfig};
   std::string source_id;
   std::string request_id;
-  std::optional<std::string> target_vendor_id;
+  std::optional<std::string> target_device_id;
   nlohmann::json request_payload;
   CommandStatus status;
   std::optional<std::string> error_code;

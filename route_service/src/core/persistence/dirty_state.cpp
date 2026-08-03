@@ -35,12 +35,12 @@ void DirtyState::Mark(DesiredDeviceWrite write) {
 
 void DirtyState::Mark(DesiredDeviceWrite write,
                       std::chrono::steady_clock::time_point marked_at) {
-  const auto vendor_id = write.record.vendor_id;
-  auto it = entries_.find(vendor_id);
+  const auto device_id = write.record.device_id;
+  auto it = entries_.find(device_id);
   const bool inserted = it == entries_.end();
   if (inserted) {
     it = entries_.emplace(
-        vendor_id, Entry{.record = std::move(write.record),
+        device_id, Entry{.record = std::move(write.record),
                          .revision = write.revision,
                          .metadata = {},
                          .status = {},
@@ -80,7 +80,7 @@ std::vector<DesiredDeviceWrite> DirtyState::TakeAllDirty() {
 }
 
 void DirtyState::Complete(const DesiredDeviceWrite& write) {
-  const auto it = entries_.find(write.record.vendor_id);
+  const auto it = entries_.find(write.record.device_id);
   if (it == entries_.end()) {
     return;
   }
@@ -100,12 +100,12 @@ void DirtyState::Complete(const DesiredDeviceWrite& write) {
 }
 
 void DirtyState::Restore(DesiredDeviceWrite write) {
-  const auto vendor_id = write.record.vendor_id;
-  auto it = entries_.find(vendor_id);
+  const auto device_id = write.record.device_id;
+  auto it = entries_.find(device_id);
   const bool inserted = it == entries_.end();
   if (inserted) {
     it = entries_.emplace(
-        vendor_id, Entry{.record = std::move(write.record),
+        device_id, Entry{.record = std::move(write.record),
                          .revision = write.revision,
                          .metadata = {},
                          .status = {},
@@ -135,8 +135,8 @@ std::vector<DesiredDeviceWrite> DirtyState::TakeMatching(
     bool immediate, std::chrono::steady_clock::time_point now,
     std::chrono::seconds interval, bool force) {
   std::vector<DesiredDeviceWrite> result;
-  for (auto& [vendor_id, entry] : entries_) {
-    static_cast<void>(vendor_id);
+  for (auto& [device_id, entry] : entries_) {
+    static_cast<void>(device_id);
     if (!HasDirty(entry)) {
       continue;
     }

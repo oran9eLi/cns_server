@@ -13,11 +13,14 @@ import {
 import type { DeviceStore } from "./deviceStore.js";
 
 type DeviceRow = {
-  vendor_id: string;
+  device_id: string;
   device_type: "cns_box" | "flight_controller";
   school_name: string | null;
   dcdw_label: string | null;
   model_version: string;
+  capabilities: string[] | null;
+  product: Record<string, JsonValue> | null;
+  version: Record<string, JsonValue> | null;
   status: "online" | "offline";
   provisioned_at: Date | string | null;
   last_seen_at: Date | string | null;
@@ -35,11 +38,14 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
       const result = await pool.query<DeviceRow>(
         `
           select
-            d.vendor_id,
+            d.device_id,
             d.device_type,
             s.school_name,
             d.dcdw_label,
             d.model_version,
+            d.capabilities,
+            d.product,
+            d.version,
             d.provisioned_at,
             state.status,
             state.last_seen_at,
@@ -48,24 +54,27 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
             false as degraded
           from devices d
           left join schools s on s.school_id = d.school_id
-          join device_latest_states state on state.vendor_id = d.vendor_id
+          join device_latest_states state on state.device_id = d.device_id
           ${where}
-          order by d.school_id asc, d.vendor_id asc
+          order by d.school_id asc, d.device_id asc
         `,
         values
       );
 
       return DeviceListResponseSchema.shape.items.parse(result.rows.map(toSummary));
     },
-    async get(vendorId) {
+    async get(deviceId) {
       const result = await pool.query<DeviceRow>(
         `
           select
-            d.vendor_id,
+            d.device_id,
             d.device_type,
             s.school_name,
             d.dcdw_label,
             d.model_version,
+            d.capabilities,
+            d.product,
+            d.version,
             d.provisioned_at,
             state.status,
             state.last_seen_at,
@@ -74,10 +83,10 @@ export function createPostgresDeviceStore(config: PoolConfig): DeviceStore {
             false as degraded
           from devices d
           left join schools s on s.school_id = d.school_id
-          join device_latest_states state on state.vendor_id = d.vendor_id
-          where d.vendor_id = $1
+          join device_latest_states state on state.device_id = d.device_id
+          where d.device_id = $1
         `,
-        [vendorId]
+        [deviceId]
       );
 
       const row = result.rows[0];
@@ -104,7 +113,7 @@ function buildListWhere(query: DeviceListQuery): { where: string; values: unknow
   if (query.keyword) {
     values.push(`%${query.keyword.toLowerCase()}%`);
     clauses.push(`(
-      lower(d.vendor_id) like $${values.length}
+      lower(d.device_id) like $${values.length}
       or lower(coalesce(d.dcdw_label, '')) like $${values.length}
       or lower(coalesce(s.school_name, '')) like $${values.length}
       or lower(d.model_version) like $${values.length}
@@ -129,12 +138,14 @@ function buildListWhere(query: DeviceListQuery): { where: string; values: unknow
 
 function toSummary(row: DeviceRow): DeviceSummary {
   return {
-    device_id: row.vendor_id,
+    device_id: row.device_id,
     device_type: row.device_type,
-    vendor_id: row.vendor_id,
     school_name: row.school_name,
     dcdw_label: row.dcdw_label,
     model_version: row.model_version,
+    capabilities: row.capabilities,
+    product: row.product,
+    version: row.version,
     status: row.status,
     last_seen_at: toDateTimeString(row.last_seen_at),
     telemetry_received_at: toDateTimeString(row.telemetry_received_at),

@@ -15,7 +15,7 @@ describe("mergePx4Telemetry", () => {
       {
         type: "px4.realtime",
         schema_version: 1,
-        device_id: "PX4U2-ABC123",
+        device_id: "PX4RID123456789ABCDE",
         sequence: 9,
         sent_at: "2026-07-30T07:00:00.123Z",
         server_received_at: "2026-07-30T07:00:00.140Z",

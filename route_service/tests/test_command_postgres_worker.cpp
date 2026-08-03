@@ -130,7 +130,7 @@ TEST_CASE("设备和命令数据库方法只由同一Run线程调用") {
                           results.push_back(std::move(result));
                         }, 4);
   cns::persistence::DesiredDeviceWrite write{};
-  write.record.vendor_id = "A1b2C3d4E5f6G7h8I9j0";
+  write.record.device_id = "A1b2C3d4E5f6G7h8I9j0";
   REQUIRE(worker.SubmitWrite(std::move(write)));
   REQUIRE(worker.SubmitCommand(1, cns::runtime::InsertCommandTask{Record()}));
   std::jthread thread([&](std::stop_token stop) { worker.Run(stop); });

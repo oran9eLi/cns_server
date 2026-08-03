@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -16,11 +17,14 @@ enum class DeviceType { kCnsBox, kFlightController };
 std::string_view ToString(DeviceType type);
 
 struct Registration {
-  std::string vendor_id;
+  std::string device_id;
   RegistrationStatus status;
-  std::optional<std::string> school_name;
-  std::optional<std::string> dcdw_label;
+  std::optional<std::string> school_name = std::nullopt;
+  std::optional<std::string> dcdw_label = std::nullopt;
   DeviceType device_type = DeviceType::kCnsBox;
+  std::optional<std::vector<std::string>> capabilities = std::nullopt;
+  std::optional<nlohmann::json> product = std::nullopt;
+  std::optional<nlohmann::json> version = std::nullopt;
 };
 
 struct Telemetry {
@@ -37,8 +41,8 @@ struct Telemetry {
 };
 
 std::expected<Registration, std::string> ParseRegistration(
-    std::string_view payload, std::string_view topic_vendor_id);
+    std::string_view payload, std::string_view topic_device_id);
 std::expected<Telemetry, std::string> ParseTelemetry(
-    std::string_view payload, std::string_view topic_vendor_id);
+    std::string_view payload, std::string_view topic_device_id);
 
 }  // namespace cns::protocol

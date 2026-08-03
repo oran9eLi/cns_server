@@ -17,33 +17,34 @@ export function createSeedDevices(): DeviceDetail[] {
 }
 
 function createPx4Device(now: string): DeviceDetail {
-  const deviceId = "PX4U2-00112233445566778899AABBCCDDEEFF0011";
+  const deviceId = "PX4RID123456789ABCDE";
   return {
     device_id: deviceId,
     device_type: "flight_controller",
-    vendor_id: deviceId,
     school_name: null,
     dcdw_label: null,
     model_version: "PX4",
+    capabilities: ["telemetry", "remote_id", "px4_official_control"],
+    product: { manufacturer_code: "26", model_code: "7" },
+    version: { hardware: "42", firmware: "1.17.3" },
     status: "online",
     last_seen_at: now,
     telemetry_received_at: now,
     degraded: false,
     provisioned_at: now,
     latest_telemetry: {
-      schema_version: 2,
+      schema_version: 3,
       device_id: deviceId,
       device_type: "flight_controller",
-      identity: {
-        uid2: "00112233445566778899AABBCCDDEEFF0011",
-        remote_id: "1581F3411C32233939383438"
-      }
+      sent_at: now,
+      telemetry: {},
+      drone_id: { basic_id: { id_type: 1, ua_type: 2 } }
     }
   };
 }
 
 function createDevice(
-  vendorId: string,
+  deviceId: string,
   dcdwLabel: string | null,
   schoolName: string,
   modelVersion: string,
@@ -51,16 +52,18 @@ function createDevice(
   lastSeenAt: string,
   degraded = false
 ): DeviceDetail {
-  const seed = Number(vendorId.slice(-2));
+  const seed = Number(deviceId.slice(-2));
   const online = status === "online";
 
   return {
-    device_id: vendorId,
+    device_id: deviceId,
     device_type: "cns_box",
-    vendor_id: vendorId,
     school_name: schoolName,
     dcdw_label: dcdwLabel,
     model_version: modelVersion,
+    capabilities: ["telemetry", "remote_id", "runtime_config"],
+    product: { manufacturer_code: "DCDW", model_code: "CNS1" },
+    version: null,
     status,
     last_seen_at: lastSeenAt,
     telemetry_received_at: online ? lastSeenAt : null,

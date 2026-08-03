@@ -72,8 +72,8 @@ React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/Web
 - 配置命令请求、设备下发和两侧 ACK 使用 QoS 2、非 retained；来源幂等键为 `(source_id, request_id)`，设备执行幂等键为服务器 UUID v4 `command_id`。
 - 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
-- 正式公网 MQTT 统一使用 TLS `8883`：树莓派按 `vendor_id` 使用独立凭据，Mosquitto 强制 ACL；云服务器 frps 只做 TCP 透传，现场 frpc 转发到回环地址的 Mosquitto，不在云端终止 MQTT TLS。
-- 2026-07-29 起接收树莓派统一 schema v2：`device_id` 同时覆盖主控箱 20 位编号与 PX4 UID 派生标识，`device_type` 区分 `cns_box` 和 `flight_controller`；旧主控箱 schema v1 继续兼容。
+- 正式公网 MQTT 统一使用 TLS `8883`：树莓派按 `device_id` 使用独立凭据，Mosquitto 强制 ACL；云服务器 frps 只做 TCP 透传，现场 frpc 转发到回环地址的 Mosquitto，不在云端终止 MQTT TLS。
+- 注册与常规遥测只接收 schema v3：主控箱和 PX4 都以 Open Drone ID Basic ID 的 `uas_id` 作为 `device_id`，`device_type` 区分 `cns_box` 和 `flight_controller`；旧 schema v1/v2 直接拒绝。
 
 完整设计见 `route_service/docs/2026-07-18-路由服务V1设计.md`。
 全局实施路线见 `route_service/docs/2026-07-18-路由服务V1实施计划.md`。

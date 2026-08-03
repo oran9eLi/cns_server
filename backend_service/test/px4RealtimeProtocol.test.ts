@@ -11,7 +11,7 @@ import {
 describe("PX4 realtime protocol", () => {
   const frame = {
     schema_version: 1,
-    device_id: "PX4U2-ABC123",
+    device_id: "PX4RID123456789ABCDE",
     sequence: 42,
     sent_at: "2026-07-30T07:00:00.123Z",
     telemetry: {
@@ -42,7 +42,7 @@ describe("PX4 realtime protocol", () => {
   it("accepts correlated latency probes and ACK events", () => {
     const probe = {
       schema_version: 1,
-      device_id: "PX4U2-ABC123",
+      device_id: "PX4RID123456789ABCDE",
       session_id: "session_test",
       probe_id: "00000000-0000-4000-8000-000000000001"
     };

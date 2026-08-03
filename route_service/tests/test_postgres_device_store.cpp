@@ -31,7 +31,7 @@ std::string StoreSource() {
 
 struct DatabaseRowsGuard {
   pqxx::connection& connection;
-  std::string vendor;
+  std::string device_id;
   std::string school;
   std::string conflict_school;
 
@@ -39,11 +39,11 @@ struct DatabaseRowsGuard {
     try {
       pqxx::work transaction{connection};
       transaction.exec("DELETE FROM command_sources WHERE source_id = $1",
-                       pqxx::params{vendor});
-      transaction.exec("DELETE FROM device_latest_states WHERE vendor_id = $1",
-                       pqxx::params{vendor});
-      transaction.exec("DELETE FROM devices WHERE vendor_id = $1",
-                       pqxx::params{vendor});
+                       pqxx::params{device_id});
+      transaction.exec("DELETE FROM device_latest_states WHERE device_id = $1",
+                       pqxx::params{device_id});
+      transaction.exec("DELETE FROM devices WHERE device_id = $1",
+                       pqxx::params{device_id});
       transaction.exec(
           "DELETE FROM schools WHERE school_name IN ($1, $2) "
           "AND NOT EXISTS (SELECT 1 FROM devices "
@@ -176,10 +176,15 @@ TEST_CASE("建档在单个工作事务写入四张表且不重新启用冲突来
   CHECK(source.find("INSERT INTO command_sources") != std::string::npos);
   CHECK(provision.find("enabled = true") == std::string::npos);
   CHECK(source.find("ON CONFLICT (source_id) DO NOTHING") != std::string::npos);
-  CHECK(source.find("pqxx::params{request.registration.vendor_id, school_id,\n"
+  CHECK(provision.find(
+            "(device_id, school_id, dcdw_label, model_version, device_type,\n"
+            "         capabilities, product, version)") != std::string::npos);
+  CHECK(provision.find("$6::jsonb, $7::jsonb, $8::jsonb") !=
+        std::string::npos);
+  CHECK(source.find("pqxx::params{request.registration.device_id, school_id,\n"
                     "                        request.registration.dcdw_label,") !=
         std::string::npos);
-  CHECK(source.find("SELECT d.vendor_id, COALESCE(d.school_id, 0)") !=
+  CHECK(source.find("SELECT d.device_id, COALESCE(d.school_id, 0)") !=
         std::string::npos);
   CHECK(source.find("LEFT JOIN schools AS s ON s.school_id = d.school_id") !=
         std::string::npos);
@@ -187,7 +192,7 @@ TEST_CASE("建档在单个工作事务写入四张表且不重新启用冲突来
   const auto device = source.find("INSERT INTO devices", school);
   const auto state = source.find("INSERT INTO device_latest_states", device);
   const auto source_insert = source.find("INSERT INTO command_sources", state);
-  const auto actual = source.find("SELECT d.vendor_id", source_insert);
+  const auto actual = source.find("SELECT d.device_id", source_insert);
   const auto commit = source.find("transaction.commit()", actual);
   CHECK(school < device);
   CHECK(device < state);
@@ -219,6 +224,9 @@ TEST_CASE("状态写入参数化并由数据库转换JSONB和时间") {
         std::string::npos);
   CHECK(source.find("duration<double>") == std::string::npos);
   CHECK(source.find("dump()") != std::string::npos);
+  CHECK(source.find("capabilities = $3::jsonb") != std::string::npos);
+  CHECK(source.find("product = $4::jsonb") != std::string::npos);
+  CHECK(source.find("version = $5::jsonb") != std::string::npos);
 }
 
 TEST_CASE("最新状态更新只在状态或遥测标志置位时执行") {
@@ -277,15 +285,15 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
   std::ostringstream vendor_builder;
   vendor_builder << "t5" << std::hex << std::setw(18) << std::setfill('0')
                  << token;
-  const std::string vendor = vendor_builder.str();
-  REQUIRE(vendor.size() == 20);
-  const std::string school = "codex-task5-school-" + vendor;
+  const std::string device_id = vendor_builder.str();
+  REQUIRE(device_id.size() == 20);
+  const std::string school = "codex-task5-school-" + device_id;
   const std::string conflict_school = school + "-conflict";
   {
     pqxx::read_transaction transaction{cleanup_connection};
     REQUIRE(transaction
-                .exec("SELECT count(*) FROM devices WHERE vendor_id = $1",
-                      pqxx::params{vendor})
+                .exec("SELECT count(*) FROM devices WHERE device_id = $1",
+                      pqxx::params{device_id})
                 .one_field()
                 .as<int>() == 0);
     REQUIRE(
@@ -295,14 +303,14 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
             .one_field()
             .as<int>() == 0);
   }
-  DatabaseRowsGuard cleanup{cleanup_connection, vendor, school,
+  DatabaseRowsGuard cleanup{cleanup_connection, device_id, school,
                             conflict_school};
 
   const auto first_time = cns::postgres::FromUnixMicroseconds(1'234'567);
   REQUIRE(first_time.has_value());
 
   const auto first = (*store)->ProvisionDevice({
-      .registration = {vendor, cns::protocol::RegistrationStatus::kOnline,
+      .registration = {device_id, cns::protocol::RegistrationStatus::kOnline,
                        school, std::nullopt},
       .received_at = *first_time});
   REQUIRE(first.has_value());
@@ -331,8 +339,8 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
   REQUIRE(loaded.has_value());
   const auto loaded_record = std::find_if(
       loaded->begin(), loaded->end(),
-      [&vendor](const cns::device::DeviceRecord& record) {
-        return record.vendor_id == vendor;
+      [&device_id](const cns::device::DeviceRecord& record) {
+        return record.device_id == device_id;
       });
   REQUIRE(loaded_record != loaded->end());
   REQUIRE(loaded_record->latest_telemetry.has_value());
@@ -351,13 +359,13 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
     pqxx::work transaction{cleanup_connection};
     transaction.exec(
         "UPDATE command_sources SET enabled = false WHERE source_id = $1",
-        pqxx::params{vendor});
+        pqxx::params{device_id});
     transaction.commit();
   }
   const auto conflict_time = cns::postgres::FromUnixMicroseconds(9'999'999);
   REQUIRE(conflict_time.has_value());
   const auto conflict = (*store)->ProvisionDevice({
-      .registration = {vendor, cns::protocol::RegistrationStatus::kOffline,
+      .registration = {device_id, cns::protocol::RegistrationStatus::kOffline,
                        conflict_school, "should-not-replace"},
       .received_at = *conflict_time});
   REQUIRE(conflict.has_value());
@@ -369,7 +377,7 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
     CHECK_FALSE(
         verify
             .exec("SELECT enabled FROM command_sources WHERE source_id = $1",
-                  pqxx::params{vendor})
+                  pqxx::params{device_id})
             .one_field()
             .as<bool>());
   }
@@ -377,8 +385,8 @@ TEST_CASE("显式启用时真实数据库支持无角色号及冲突实值") {
     pqxx::work transaction{cleanup_connection};
     transaction.exec(
         "UPDATE device_latest_states SET latest_telemetry = $2::jsonb "
-        "WHERE vendor_id = $1",
-        pqxx::params{vendor, "[\"secret-load-payload\"]"});
+        "WHERE device_id = $1",
+        pqxx::params{device_id, "[\"secret-load-payload\"]"});
     transaction.commit();
   }
   const auto invalid_load = (*store)->LoadDevices();

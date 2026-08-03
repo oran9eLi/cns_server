@@ -12,7 +12,7 @@ export const initialDevices: DeviceDetail[] = [
   device("CNS00000000000000007", "华东无人系统学院", "DCDW-103", "online", false, 6),
   device("CNS00000000000000008", "华东无人系统学院", null, "offline", true, 7),
   device(
-    "PX4U2-00112233445566778899AABBCCDDEEFF0011",
+    "PX4RID123456789ABCDE",
     null,
     null,
     "online",
@@ -23,7 +23,7 @@ export const initialDevices: DeviceDetail[] = [
 ];
 
 function device(
-  vendor_id: string,
+  deviceId: string,
   school_name: string | null,
   dcdw_label: string | null,
   status: "online" | "offline",
@@ -33,14 +33,22 @@ function device(
 ): DeviceDetail {
   const online = status === "online";
   return {
-    device_id: vendor_id,
+    device_id: deviceId,
     device_type,
-    vendor_id,
     school_name,
     dcdw_label,
     model_version: device_type === "flight_controller"
       ? "PX4"
       : index % 2 === 0 ? "CNS v1.0" : "CNS v1.1",
+    capabilities: device_type === "flight_controller"
+      ? ["telemetry", "remote_id", "px4_official_control"]
+      : ["telemetry", "remote_id", "runtime_config"],
+    product: device_type === "flight_controller"
+      ? { manufacturer_code: "26", model_code: "7" }
+      : { manufacturer_code: "DCDW", model_code: "CNS1" },
+    version: device_type === "flight_controller"
+      ? { hardware: "42", firmware: "1.17.3" }
+      : null,
     status,
     last_seen_at: online ? now : new Date(Date.parse(now) - (index + 2) * 900000).toISOString(),
     telemetry_received_at: online ? now : null,
@@ -48,18 +56,12 @@ function device(
     provisioned_at: new Date(Date.parse(now) - (index + 8) * 86400000).toISOString(),
     latest_telemetry: online
       ? {
-          identity: {
-            vendor_id,
-            dcdw_label,
-            school_name,
-            ...(device_type === "flight_controller"
-              ? {
-                  uid2: "00112233445566778899AABBCCDDEEFF0011",
-                  remote_id: "1581F3411C32233939383438"
-                }
-              : {})
-          },
-          attitude: {
+          schema_version: 3,
+          device_id: deviceId,
+          device_type,
+          sent_at: now,
+          telemetry: {
+            attitude: {
             roll_deg: round((index - 3) * 1.7),
             pitch_deg: round((index % 3) * 2.1 - 1.6),
             yaw_deg: round(42 + index * 17.4)
@@ -117,16 +119,15 @@ function device(
             { level: "info", message: "环境模块正常", occurred_at: now },
             { level: "info", message: "存储模块正常", occurred_at: now }
           ],
-          runtime_config: {
-            telemetry_publish_interval_ms: 2000
+            runtime_config: {
+              telemetry_publish_interval_ms: 2000
+            }
+          },
+          drone_id: {
+            basic_id: { id_type: 1, ua_type: 2 }
           }
         }
-      : index === 5
-        ? {
-            identity: { vendor_id, dcdw_label, school_name },
-            link: { rssi_dbm: -86 }
-          }
-        : null
+      : null
   };
 }
 
@@ -140,12 +141,13 @@ export function nudgeTelemetry(device: DeviceDetail, tick: number): DeviceDetail
   }
 
   const telemetry = structuredClone(device.latest_telemetry) as Record<string, JsonValue>;
-  const attitude = telemetry.attitude as Record<string, number> | undefined;
-  const gps = telemetry.gps as Record<string, number> | undefined;
-  const globalPosition = telemetry.global_position as Record<string, number> | undefined;
-  const environment = telemetry.environment as Record<string, number> | undefined;
-  const link = telemetry.link as Record<string, number> | undefined;
-  const motors = telemetry.motors as { pwm?: number[] } | undefined;
+  const payload = telemetry.telemetry as Record<string, JsonValue> | undefined;
+  const attitude = payload?.attitude as Record<string, number> | undefined;
+  const gps = payload?.gps as Record<string, number> | undefined;
+  const globalPosition = payload?.global_position as Record<string, number> | undefined;
+  const environment = payload?.environment as Record<string, number> | undefined;
+  const link = payload?.link as Record<string, number> | undefined;
+  const motors = payload?.motors as { pwm?: number[] } | undefined;
 
   if (attitude) {
     attitude.roll_deg = round((attitude.roll_deg ?? 0) + Math.sin(tick / 3) * 0.3);
@@ -174,6 +176,7 @@ export function nudgeTelemetry(device: DeviceDetail, tick: number): DeviceDetail
   }
 
   const receivedAt = new Date().toISOString();
+  telemetry.sent_at = receivedAt;
   return {
     ...device,
     last_seen_at: receivedAt,

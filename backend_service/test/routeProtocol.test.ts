@@ -21,7 +21,7 @@ describe("route_service protocol adapter", () => {
     })).toEqual({
       schema_version: 1,
       request_id: "00000000-0000-4000-8000-000000000001",
-      target: { vendor_id: "CNS00000000000000001" },
+      target: { device_id: "CNS00000000000000001" },
       command: "set_motor_pwm",
       parameters: { pwm_us: [1000, 1100, 1200, 1300] }
     });
@@ -35,10 +35,12 @@ describe("route_service protocol adapter", () => {
       revision: 12,
       device_id: "CNS00000000000000001",
       device_type: "cns_box",
-      vendor_id: "CNS00000000000000001",
       school_name: "东创航空实训中心",
       dcdw_label: "DCDW-001",
       model_version: "CNS v1.0",
+      capabilities: ["telemetry", "runtime_config"],
+      product: { manufacturer_code: "DCDW", model_code: "CNS1" },
+      version: { firmware: "3.0.0" },
       status: "online",
       last_seen_at: "2026-07-21T05:00:00.000Z",
       telemetry_received_at: "2026-07-21T05:00:00.000Z",
@@ -65,19 +67,23 @@ describe("route_service protocol adapter", () => {
         {
           device_id: "CNS00000000000000001",
           device_type: "cns_box",
-          vendor_id: "CNS00000000000000001",
           school_name: "东创航空实训中心",
           dcdw_label: "DCDW-001",
           model_version: "CNS v1.0",
+          capabilities: ["telemetry"],
+          product: { manufacturer_code: "DCDW", model_code: "CNS1" },
+          version: null,
           status: "online"
         },
         {
-          device_id: "PX4U2-00112233445566778899AABBCCDDEEFF0011",
+          device_id: "PX4RID123456789ABCDE",
           device_type: "flight_controller",
-          vendor_id: "PX4U2-00112233445566778899AABBCCDDEEFF0011",
           school_name: null,
           dcdw_label: null,
           model_version: "PX4",
+          capabilities: ["telemetry", "px4_official_control"],
+          product: { manufacturer_code: "26", model_code: "7" },
+          version: { hardware: "42", firmware: "1.17.3" },
           status: "offline"
         }
       ]
@@ -98,7 +104,7 @@ describe("route_service protocol adapter", () => {
 
     expect(toCommandUpdatedEvent(ack, {
       sessionId: "session_test",
-      vendorId: "CNS00000000000000001",
+      deviceId: "CNS00000000000000001",
       commandType: "control",
       command: "takeoff"
     })).toMatchObject({
@@ -107,5 +113,32 @@ describe("route_service protocol adapter", () => {
     });
     expect(isTerminalRouteStatus("succeeded")).toBe(true);
     expect(isTerminalRouteStatus("in_progress")).toBe(false);
+  });
+
+  it("rejects removed vendor_id fields", () => {
+    const state = {
+      schema_version: 1,
+      event_type: "device_state",
+      event_at: "2026-07-21T05:00:00.000Z",
+      revision: 1,
+      device_id: "CNS00000000000000001",
+      device_type: "cns_box",
+      school_name: "SEU",
+      dcdw_label: null,
+      model_version: "CNS v1.0",
+      capabilities: null,
+      product: null,
+      version: null,
+      status: "offline",
+      last_seen_at: null,
+      telemetry_received_at: null,
+      latest_telemetry: null,
+      change_reason: "snapshot_replay",
+      degraded: false
+    } as const;
+    expect(RouteDeviceStateMessageSchema.safeParse({
+      ...state,
+      vendor_id: state.device_id
+    }).success).toBe(false);
   });
 });

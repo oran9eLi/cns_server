@@ -64,7 +64,7 @@ TEST_CASE("飞控topic严格区分来源请求和设备ACK") {
 
 TEST_CASE("四种飞控命令严格解析参数并保留幂等载荷") {
   const auto pwm = ParseValid(
-      R"({"schema_version":1,"request_id":"r1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1000,1500,2000,1501]}})");
+      R"({"schema_version":1,"request_id":"r1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1000,1500,2000,1501]}})");
   CHECK(pwm.command == ControlCommand::kSetMotorPwm);
   REQUIRE(pwm.parameters.pwm_us.has_value());
   CHECK(*pwm.parameters.pwm_us ==
@@ -78,7 +78,7 @@ TEST_CASE("四种飞控命令严格解析参数并保留幂等载荷") {
             {"land", ControlCommand::kLand}}}) {
     const auto request = ParseValid(
         std::string{"{\"schema_version\":1,\"request_id\":\"r-"} +
-        std::string{name} + "\",\"target\":{\"vendor_id\":\"" + kVendor +
+        std::string{name} + "\",\"target\":{\"device_id\":\"" + kVendor +
         "\"},\"command\":\"" + std::string{name} +
         "\",\"parameters\":{}}");
     CHECK(request.command == command);
@@ -88,19 +88,19 @@ TEST_CASE("四种飞控命令严格解析参数并保留幂等载荷") {
 
 TEST_CASE("飞控命令拒绝非法PWM无参数命令附加字段和未知命令") {
   for (const auto payload : {
-           R"({"schema_version":1,"request_id":"r1","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[999,1500,1500,1500]}})",
-           R"({"schema_version":1,"request_id":"r2","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500,2001]}})",
-           R"({"schema_version":1,"request_id":"r3","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500]}})",
-           R"({"schema_version":1,"request_id":"r4","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500,1500,1500]}})",
-           R"({"schema_version":1,"request_id":"r5","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[true,1500,1500,1500]}})",
-           R"({"schema_version":1,"request_id":"r6","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500.0,1500,1500,1500]}})",
-           R"({"schema_version":1,"request_id":"r7","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":["1500",1500,1500,1500]}})",
-           R"({"schema_version":1,"request_id":"r8","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500,1500],"extra":1}})",
-           R"({"schema_version":1,"request_id":"r9","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"takeoff","parameters":{"height":10}})"}) {
+           R"({"schema_version":1,"request_id":"r1","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[999,1500,1500,1500]}})",
+           R"({"schema_version":1,"request_id":"r2","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500,2001]}})",
+           R"({"schema_version":1,"request_id":"r3","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500]}})",
+           R"({"schema_version":1,"request_id":"r4","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500,1500,1500]}})",
+           R"({"schema_version":1,"request_id":"r5","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[true,1500,1500,1500]}})",
+           R"({"schema_version":1,"request_id":"r6","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500.0,1500,1500,1500]}})",
+           R"({"schema_version":1,"request_id":"r7","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":["1500",1500,1500,1500]}})",
+           R"({"schema_version":1,"request_id":"r8","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"set_motor_pwm","parameters":{"pwm_us":[1500,1500,1500,1500],"extra":1}})",
+           R"({"schema_version":1,"request_id":"r9","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"takeoff","parameters":{"height":10}})"}) {
     CHECK(ParseRejected(payload).error.code == "invalid_parameters");
   }
   CHECK(ParseRejected(
-            R"({"schema_version":1,"request_id":"r10","target":{"vendor_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"hover","parameters":{}})")
+            R"({"schema_version":1,"request_id":"r10","target":{"device_id":"A1b2C3d4E5f6G7h8I9j0"},"command":"hover","parameters":{}})")
             .error.code == "unsupported_command");
 }
 

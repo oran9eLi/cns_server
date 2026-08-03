@@ -9,7 +9,7 @@ namespace cns::mqtt_topic {
 enum class DeviceMessageKind { kRegistration, kTelemetry };
 
 struct ParsedDeviceTopic {
-  std::string vendor_id;
+  std::string device_id;
   DeviceMessageKind kind;
 };
 
@@ -19,8 +19,7 @@ std::string RegistrationFilter(std::string_view topic_namespace);
 std::string TelemetryFilter(std::string_view topic_namespace);
 std::string DeviceDirectoryTopic(std::string_view topic_namespace);
 std::string StateEventTopic(std::string_view topic_namespace,
-                            std::string_view vendor_id);
-bool IsValidVendorId(std::string_view vendor_id);
+                            std::string_view device_id);
 bool IsValidDeviceId(std::string_view device_id);
 
 }  // namespace cns::mqtt_topic

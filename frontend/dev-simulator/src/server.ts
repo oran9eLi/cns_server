@@ -57,7 +57,7 @@ app.get("/api/devices", async (request) => {
   if (query.keyword) {
     const keyword = query.keyword.toLowerCase();
     items = items.filter((device) =>
-      [device.device_id, device.vendor_id, device.school_name ?? "",
+      [device.device_id, device.school_name ?? "",
         device.dcdw_label ?? ""].some((value) =>
         value.toLowerCase().includes(keyword)
       )
@@ -76,9 +76,9 @@ app.get("/api/devices", async (request) => {
   };
 });
 
-app.get("/api/devices/:vendor_id", async (request, reply) => {
-  const { vendor_id } = request.params as { vendor_id: string };
-  const item = devices.find((device) => device.vendor_id === vendor_id);
+app.get("/api/devices/:device_id", async (request, reply) => {
+  const { device_id } = request.params as { device_id: string };
+  const item = devices.find((device) => device.device_id === device_id);
   if (!item) {
     return reply.code(404).send({
       error: {
@@ -94,9 +94,9 @@ app.get("/api/devices/:vendor_id", async (request, reply) => {
   };
 });
 
-app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
-  const { vendor_id } = request.params as { vendor_id: string };
-  const item = devices.find((device) => device.vendor_id === vendor_id);
+app.post("/api/devices/:device_id/commands", async (request, reply) => {
+  const { device_id } = request.params as { device_id: string };
+  const item = devices.find((device) => device.device_id === device_id);
   if (!item) {
     return reply.code(404).send({ error: { code: "not_found", message: "未找到设备" } });
   }
@@ -140,7 +140,7 @@ app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
         schema_version: SCHEMA_VERSION,
         client_request_id: parsed.data.client_request_id,
         command_id: commandId,
-        vendor_id,
+        device_id,
         command_type: commandType,
         command: commandName,
         status,
@@ -154,7 +154,7 @@ app.post("/api/devices/:vendor_id/commands", async (request, reply) => {
   return reply.code(202).send({
     schema_version: SCHEMA_VERSION,
     accepted: true,
-    vendor_id,
+    device_id,
     client_request_id: parsed.data.client_request_id,
     server_time: new Date().toISOString()
   });
@@ -207,9 +207,11 @@ function broadcastDevice(device: DeviceDetail) {
     schema_version: SCHEMA_VERSION,
     device_id: device.device_id,
     device_type: device.device_type,
-    vendor_id: device.vendor_id,
     school_name: device.school_name,
     dcdw_label: device.dcdw_label,
+    capabilities: device.capabilities,
+    product: device.product,
+    version: device.version,
     status: device.status,
     event_at: new Date().toISOString(),
     last_seen_at: device.last_seen_at,

@@ -16,10 +16,10 @@ constexpr std::string_view kVendorB = "Z9y8X7w6V5u4T3s2R1q0";
 constexpr std::string_view kVendorC = "M1n2B3v4C5x6Z7l8K9j0";
 const auto kNow = std::chrono::sys_days{std::chrono::year{2026}/7/20} + 12h;
 
-DeviceRecord Record(std::string_view vendor, std::int64_t school_id = 1,
+DeviceRecord Record(std::string_view device_id, std::int64_t school_id = 1,
                     std::optional<std::string> label = std::nullopt,
                     Status status = Status::kOffline) {
-  return DeviceRecord{.vendor_id = std::string{vendor},
+  return DeviceRecord{.device_id = std::string{device_id},
                       .school_id = school_id,
                       .school_name = school_id == 1 ? "SEU" : "Other",
                       .dcdw_label = std::move(label),
@@ -33,7 +33,7 @@ DeviceRecord Record(std::string_view vendor, std::int64_t school_id = 1,
 
 }  // namespace
 
-TEST_CASE("加载拒绝重复 vendor 且不留下部分目录") {
+TEST_CASE("加载拒绝重复 device_id 且不留下部分目录") {
   DeviceRegistry registry;
   CHECK_FALSE(registry.Load({Record(kVendorA), Record(kVendorA)}));
   CHECK(registry.Find(kVendorA) == nullptr);
@@ -52,8 +52,8 @@ TEST_CASE("按学校编号和学校名角色号使用索引查询") {
   DeviceRegistry registry;
   REQUIRE(registry.Load(
       {Record(kVendorA, 1, "DCDW-001"), Record(kVendorB, 2, "DCDW-002")}));
-  CHECK(registry.FindBySchoolAndLabel(1, "DCDW-001")->vendor_id == kVendorA);
-  CHECK(registry.FindBySchoolNameAndLabel("Other", "DCDW-002")->vendor_id ==
+  CHECK(registry.FindBySchoolAndLabel(1, "DCDW-001")->device_id == kVendorA);
+  CHECK(registry.FindBySchoolNameAndLabel("Other", "DCDW-002")->device_id ==
         kVendorB);
   CHECK(registry.FindBySchoolAndLabel(1, "missing") == nullptr);
   CHECK(registry.FindBySchoolNameAndLabel("missing", "DCDW-001") == nullptr);
@@ -89,7 +89,7 @@ TEST_CASE("同校多个空角色和不同学校相同角色均可共存") {
   CHECK(registry.Find(kVendorC));
 }
 
-TEST_CASE("在线设备快照只返回在线记录并按vendor_id排序") {
+TEST_CASE("在线设备快照只返回在线记录并按device_id排序") {
   DeviceRegistry registry;
   REQUIRE(registry.Load(
       {Record(kVendorB, 1, std::nullopt, Status::kOnline),
@@ -99,11 +99,11 @@ TEST_CASE("在线设备快照只返回在线记录并按vendor_id排序") {
   const auto online = registry.ListOnlineDevices();
 
   REQUIRE(online.size() == 2);
-  CHECK(online[0].vendor_id == kVendorC);
-  CHECK(online[1].vendor_id == kVendorB);
+  CHECK(online[0].device_id == kVendorC);
+  CHECK(online[1].device_id == kVendorB);
 }
 
-TEST_CASE("全量设备快照返回在线和离线记录并按vendor_id排序") {
+TEST_CASE("全量设备快照返回在线和离线记录并按device_id排序") {
   DeviceRegistry registry;
   REQUIRE(registry.Load(
       {Record(kVendorB, 1, std::nullopt, Status::kOnline),
@@ -113,9 +113,9 @@ TEST_CASE("全量设备快照返回在线和离线记录并按vendor_id排序") 
   const auto all = registry.ListDevices();
 
   REQUIRE(all.size() == 3);
-  CHECK(all[0].vendor_id == kVendorA);
-  CHECK(all[1].vendor_id == kVendorC);
-  CHECK(all[2].vendor_id == kVendorB);
+  CHECK(all[0].device_id == kVendorA);
+  CHECK(all[1].device_id == kVendorC);
+  CHECK(all[2].device_id == kVendorB);
 }
 
 TEST_CASE("启动加载保留 last_seen 并按原时间立即修正超时状态") {
@@ -153,6 +153,37 @@ TEST_CASE("registration 上下线且每次变化递增 revision") {
   CHECK(down->record.last_seen_at == kNow);
   CHECK(down->record.dcdw_label == "DCDW-001");
   CHECK(down->record.revision == 9);
+}
+
+TEST_CASE("registration 只用已提供的 v3 元数据更新设备") {
+  DeviceRegistry registry;
+  REQUIRE(registry.Load({Record(kVendorA)}));
+  const cns::protocol::Registration online{
+      .device_id = std::string{kVendorA},
+      .status = cns::protocol::RegistrationStatus::kOnline,
+      .school_name = "SEU",
+      .device_type = cns::protocol::DeviceType::kCnsBox,
+      .capabilities = std::vector<std::string>{"telemetry", "runtime_config"},
+      .product = nlohmann::json{{"manufacturer_code", "DCDW"},
+                                {"model_code", "CNS1"}},
+      .version = nlohmann::json{{"firmware", "3.0.0"}},
+  };
+  const auto updated = registry.ApplyRegistration(online, kNow);
+  REQUIRE(updated);
+  CHECK(updated->record.capabilities == online.capabilities);
+  CHECK(updated->record.product == online.product);
+  CHECK(updated->record.version == online.version);
+
+  const cns::protocol::Registration offline{
+      .device_id = std::string{kVendorA},
+      .status = cns::protocol::RegistrationStatus::kOffline,
+      .device_type = cns::protocol::DeviceType::kCnsBox,
+  };
+  const auto preserved = registry.ApplyRegistration(offline, kNow + 1s);
+  REQUIRE(preserved);
+  CHECK(preserved->record.capabilities == online.capabilities);
+  CHECK(preserved->record.product == online.product);
+  CHECK(preserved->record.version == online.version);
 }
 
 TEST_CASE("学校不迁移且冲突角色号只拒绝字段") {
@@ -193,7 +224,11 @@ TEST_CASE("registration 换角色后释放旧索引供另一设备使用") {
 
 TEST_CASE("telemetry 只补空角色号并保留完整 payload") {
   DeviceRegistry registry;
-  REQUIRE(registry.Load({Record(kVendorA)}));
+  auto record = Record(kVendorA);
+  record.capabilities = std::vector<std::string>{"telemetry", "remote_id"};
+  record.product = nlohmann::json{{"model_code", "CNS1"}};
+  record.version = nlohmann::json{{"firmware", "3.0.0"}};
+  REQUIRE(registry.Load({record}));
   const nlohmann::json first_payload{{"sensor", 42}, {"unknown", "kept"}};
   auto first = registry.ApplyTelemetry(kVendorA,
       cns::protocol::Telemetry{first_payload, "DCDW-001"}, kNow);
@@ -205,6 +240,9 @@ TEST_CASE("telemetry 只补空角色号并保留完整 payload") {
   CHECK(first->record.telemetry_received_at == kNow);
   CHECK(first->record.last_seen_at == kNow);
   CHECK(first->record.revision == 8);
+  CHECK(first->record.capabilities == record.capabilities);
+  CHECK(first->record.product == record.product);
+  CHECK(first->record.version == record.version);
 
   const nlohmann::json second_payload{{"sensor", 43}};
   auto second = registry.ApplyTelemetry(kVendorA,
@@ -288,7 +326,7 @@ TEST_CASE("更新设备 A 不使设备 B 的 Find 指针失效") {
       cns::protocol::Telemetry{nlohmann::json{{"sensor", 42}}, std::nullopt},
       kNow));
   CHECK(registry.Find(kVendorB) == device_b);
-  CHECK(device_b->vendor_id == kVendorB);
+  CHECK(device_b->device_id == kVendorB);
 }
 
 TEST_CASE("telemetry 角色号冲突只拒绝补全") {

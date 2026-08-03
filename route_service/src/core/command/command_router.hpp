@@ -15,7 +15,7 @@ namespace cns::command {
 struct CommandSource {
   std::string source_id;
   SourceKind kind;
-  std::optional<std::string> device_vendor_id;
+  std::optional<std::string> device_id;
   bool enabled;
 };
 
@@ -29,7 +29,7 @@ class SourceCatalog {
 };
 
 struct ResolvedTarget {
-  std::string vendor_id;
+  std::string device_id;
   std::string school_name;
   std::optional<std::string> dcdw_label;
 };

@@ -7,13 +7,13 @@ import type {
 
 export interface DeviceStore {
   list(query: DeviceListQuery): Promise<DeviceSummary[]>;
-  get(vendorId: string): Promise<DeviceDetail | null>;
+  get(deviceId: string): Promise<DeviceDetail | null>;
   dependencyStatus(): Promise<DependencyStatus>;
   close(): Promise<void>;
 }
 
 export function createInMemoryDeviceStore(initialDevices: DeviceDetail[]): DeviceStore {
-  const devices = new Map(initialDevices.map((device) => [device.vendor_id, structuredClone(device)]));
+  const devices = new Map(initialDevices.map((device) => [device.device_id, structuredClone(device)]));
 
   return {
     async list(query) {
@@ -21,8 +21,8 @@ export function createInMemoryDeviceStore(initialDevices: DeviceDetail[]): Devic
         .filter((device) => matchesQuery(device, query))
         .map(toSummary);
     },
-    async get(vendorId) {
-      const device = devices.get(vendorId);
+    async get(deviceId) {
+      const device = devices.get(deviceId);
       return device ? structuredClone(device) : null;
     },
     async dependencyStatus() {
@@ -42,7 +42,6 @@ function matchesQuery(device: DeviceDetail, query: DeviceListQuery): boolean {
   const keyword = query.keyword.toLowerCase();
   return [
     device.device_id,
-    device.vendor_id,
     device.device_type,
     device.school_name ?? "",
     device.dcdw_label ?? "",
@@ -54,10 +53,12 @@ function toSummary(device: DeviceDetail): DeviceSummary {
   return {
     device_id: device.device_id,
     device_type: device.device_type,
-    vendor_id: device.vendor_id,
     school_name: device.school_name,
     dcdw_label: device.dcdw_label,
     model_version: device.model_version,
+    capabilities: device.capabilities,
+    product: device.product,
+    version: device.version,
     status: device.status,
     last_seen_at: device.last_seen_at,
     telemetry_received_at: device.telemetry_received_at,

@@ -289,7 +289,7 @@ TEST_CASE("里程碑四联调脚本限定依赖与清理边界") {
   CHECK(script.find("set -euo pipefail") != std::string::npos);
   for (const auto* parameter : {"--config", "--migrations", "--broker-host",
                                 "--broker-port", "--binary", "--database-url",
-                                "--source-id", "--vendor-id", "--control-timeout",
+                                "--source-id", "--device-id", "--control-timeout",
                                 "--check-only"}) {
     CAPTURE(parameter);
     CHECK(script.find(parameter) != std::string::npos);
@@ -397,6 +397,49 @@ TEST_CASE("005 扩展通用设备标识、设备类型并允许 PX4 暂不绑定
         std::string::npos);
   CHECK(sql.find("^[a-za-z0-9._:-]+$") != std::string::npos);
   CHECK(sql.find("drop table") == std::string::npos);
+  CHECK(sql.find("truncate") == std::string::npos);
+}
+
+TEST_CASE("006 删除旧 PX4 测试数据并统一数据库设备标识") {
+  const auto scanned =
+      ScanSupportedSql(ReadMigration("006_统一设备标识为device_id.sql"));
+  const auto sql = Normalize(scanned.text);
+
+  const auto delete_commands =
+      sql.find("delete from commands where target_vendor_id in (");
+  const auto delete_states = sql.find(
+      "delete from device_latest_states where vendor_id like 'px4u1-%' or "
+      "vendor_id like 'px4u2-%'");
+  const auto delete_devices = sql.find(
+      "delete from devices where vendor_id like 'px4u1-%' or vendor_id like "
+      "'px4u2-%'");
+  REQUIRE(delete_commands != std::string::npos);
+  REQUIRE(delete_states != std::string::npos);
+  REQUIRE(delete_devices != std::string::npos);
+  CHECK(delete_commands < delete_devices);
+  CHECK(delete_states < delete_devices);
+  CHECK(sql.find("select vendor_id from devices") != std::string::npos);
+  CHECK(sql.find("source_id in (") != std::string::npos);
+
+  for (const auto* rename : {
+           "alter table devices rename column vendor_id to device_id",
+           "alter table device_latest_states rename column vendor_id to device_id",
+           "alter table command_sources rename column device_vendor_id to device_id",
+           "alter table commands rename column target_vendor_id to target_device_id"}) {
+    CAPTURE(rename);
+    CHECK(sql.find(rename) != std::string::npos);
+  }
+  CHECK(sql.find("add column capabilities jsonb") != std::string::npos);
+  CHECK(sql.find("add column product jsonb") != std::string::npos);
+  CHECK(sql.find("add column version jsonb") != std::string::npos);
+  for (const auto* column : {"device_id", "target_device_id"}) {
+    CAPTURE(column);
+    CHECK(sql.find(std::string{"alter column "} + column +
+                   " type varchar(20)") != std::string::npos);
+  }
+  CHECK(sql.find("references devices(device_id)") != std::string::npos);
+  CHECK(sql.find("create table") == std::string::npos);
+  CHECK(sql.find("backup") == std::string::npos);
   CHECK(sql.find("truncate") == std::string::npos);
 }
 

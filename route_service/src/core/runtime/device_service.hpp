@@ -27,7 +27,7 @@ struct DatabaseResult {
     kProvisioned, kWriteCompleted, kUnavailable, kRecovered, kPermanentFailure
   };
   Kind kind;
-  std::string vendor_id;
+  std::string device_id;
   std::uint64_t revision;
   std::optional<device::DeviceRecord> provisioned;
   std::string error;
@@ -78,7 +78,7 @@ class DeviceService {
   void ProcessReady(TimePoint system_now = std::chrono::system_clock::now());
   [[nodiscard]] std::size_t PendingRegistrationCount() const;
   [[nodiscard]] bool IsDatabaseUnavailable() const noexcept;
-  [[nodiscard]] bool IsDeviceDegraded(std::string_view vendor_id) const;
+  [[nodiscard]] bool IsDeviceDegraded(std::string_view device_id) const;
 
  private:
   struct PendingRegistration {

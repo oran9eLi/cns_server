@@ -14,8 +14,8 @@ constexpr auto kOfflineScan = std::chrono::seconds{1};
 std::string DescribeDeviceForLog(const device::DeviceRecord& record) {
   std::string text = record.school_name + "/";
   text += record.dcdw_label ? *record.dcdw_label : "未编号";
-  text += " vendor_id=";
-  text += record.vendor_id;
+  text += " device_id=";
+  text += record.device_id;
   return text;
 }
 
@@ -25,7 +25,7 @@ persistence::DesiredDeviceWrite WriteFor(device::Mutation mutation,
   const auto revision = mutation.record.revision;
   return {.record = std::move(mutation.record),
           .revision = revision,
-          .write_metadata = true,
+          .write_metadata = !telemetry,
           .write_status = !telemetry || mutation.status_changed,
           .write_telemetry = telemetry,
           .urgency = urgency};
@@ -245,8 +245,8 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     Handle(std::move(*result));
   }
   if (ConsumeCancelDatabaseWorkRequest()) {
-    for (auto& [vendor, candidate] : pending_) {
-      static_cast<void>(vendor);
+    for (auto& [device_id, candidate] : pending_) {
+      static_cast<void>(device_id);
       candidate.submitted = false;
     }
     submitted_.clear();
@@ -258,8 +258,8 @@ void DeviceService::ProcessReady(TimePoint system_now) {
     if (auto message = mqtt_queue_.WaitPop()) Handle(std::move(*message));
   }
   if (!database_unavailable_) {
-    for (auto& [vendor, candidate] : pending_) {
-      static_cast<void>(vendor);
+    for (auto& [device_id, candidate] : pending_) {
+      static_cast<void>(device_id);
       if (!candidate.submitted) {
         try {
           candidate.submitted = provision_(candidate.registration,
@@ -293,23 +293,23 @@ void DeviceService::ProcessReady(TimePoint system_now) {
 
 std::size_t DeviceService::PendingRegistrationCount() const { return pending_.size(); }
 bool DeviceService::IsDatabaseUnavailable() const noexcept { return database_unavailable_; }
-bool DeviceService::IsDeviceDegraded(std::string_view vendor_id) const {
-  return database_unavailable_ || degraded_.contains(std::string{vendor_id});
+bool DeviceService::IsDeviceDegraded(std::string_view device_id) const {
+  return database_unavailable_ || degraded_.contains(std::string{device_id});
 }
 
 void DeviceService::Handle(DatabaseResult result) {
   if (result.kind == DatabaseResult::Kind::kUnavailable) {
     database_unavailable_ = true;
-    if (const auto* record = registry_.Find(result.vendor_id)) {
-      degraded_[result.vendor_id] = std::max(record->revision, result.revision);
-      const auto reason = last_reason_.contains(result.vendor_id)
-          ? last_reason_.at(result.vendor_id)
+    if (const auto* record = registry_.Find(result.device_id)) {
+      degraded_[result.device_id] = std::max(record->revision, result.revision);
+      const auto reason = last_reason_.contains(result.device_id)
+          ? last_reason_.at(result.device_id)
           : state_event::ChangeReason::kTelemetry;
       Publish({*record, reason, true});
     }
     std::ptrdiff_t completed = 0;
-    for (const auto& [vendor, candidate] : pending_) {
-      static_cast<void>(vendor);
+    for (const auto& [device_id, candidate] : pending_) {
+      static_cast<void>(device_id);
       if (candidate.submitted) ++completed;
     }
     pending_.clear();
@@ -318,15 +318,15 @@ void DeviceService::Handle(DatabaseResult result) {
     return;
   }
   if (result.kind == DatabaseResult::Kind::kPermanentFailure) {
-    if (const auto pending = pending_.find(result.vendor_id);
+    if (const auto pending = pending_.find(result.device_id);
         pending != pending_.end()) {
       if (pending->second.submitted) AdjustOutstandingDatabaseWork(-1);
       pending_.erase(pending);
     }
-    if (result.vendor_id.empty()) {
+    if (result.device_id.empty()) {
       std::ptrdiff_t completed = 0;
-      for (const auto& [vendor, candidate] : pending_) {
-        static_cast<void>(vendor);
+      for (const auto& [device_id, candidate] : pending_) {
+        static_cast<void>(device_id);
         if (candidate.submitted) ++completed;
       }
       pending_.clear();
@@ -335,15 +335,15 @@ void DeviceService::Handle(DatabaseResult result) {
       pending_status_logs_.clear();
       if (completed != 0) AdjustOutstandingDatabaseWork(-completed);
     } else {
-      if (submitted_.erase(result.vendor_id) != 0) {
+      if (submitted_.erase(result.device_id) != 0) {
         AdjustOutstandingDatabaseWork(-1);
       }
-      pending_status_logs_.erase(result.vendor_id);
+      pending_status_logs_.erase(result.device_id);
     }
-    if (const auto* record = registry_.Find(result.vendor_id)) {
-      degraded_[result.vendor_id] = std::max(record->revision, result.revision);
-      const auto reason = last_reason_.contains(result.vendor_id)
-          ? last_reason_.at(result.vendor_id)
+    if (const auto* record = registry_.Find(result.device_id)) {
+      degraded_[result.device_id] = std::max(record->revision, result.revision);
+      const auto reason = last_reason_.contains(result.device_id)
+          ? last_reason_.at(result.device_id)
           : state_event::ChangeReason::kTelemetry;
       Publish({*record, reason, true});
     }
@@ -352,8 +352,8 @@ void DeviceService::Handle(DatabaseResult result) {
   }
   if (result.kind == DatabaseResult::Kind::kRecovered) {
     database_unavailable_ = false;
-    for (const auto& [vendor, revision] : degraded_) {
-      const auto* record = registry_.Find(vendor);
+    for (const auto& [device_id, revision] : degraded_) {
+      const auto* record = registry_.Find(device_id);
       if (!record) continue;
       persistence::DesiredDeviceWrite write{*record, record->revision, true, true,
                                              record->latest_telemetry.has_value(),
@@ -364,7 +364,7 @@ void DeviceService::Handle(DatabaseResult result) {
     return;
   }
   if (result.kind == DatabaseResult::Kind::kProvisioned && result.provisioned) {
-    auto candidate = pending_.find(result.vendor_id);
+    auto candidate = pending_.find(result.device_id);
     if (candidate == pending_.end()) return;
     const bool provision_was_outstanding = candidate->second.submitted;
     if (!registry_.AddProvisioned(std::move(*result.provisioned))) {
@@ -381,9 +381,9 @@ void DeviceService::Handle(DatabaseResult result) {
     return;
   }
   if (result.kind == DatabaseResult::Kind::kWriteCompleted) {
-    const auto it = submitted_.find(result.vendor_id);
+    const auto it = submitted_.find(result.device_id);
     if (it != submitted_.end() && result.revision >= it->second.revision) {
-      const auto status_log = pending_status_logs_.find(result.vendor_id);
+      const auto status_log = pending_status_logs_.find(result.device_id);
       if (status_log != pending_status_logs_.end() &&
           result.revision >= status_log->second.revision &&
           it->second.write_status) {
@@ -398,10 +398,10 @@ void DeviceService::Handle(DatabaseResult result) {
       submitted_.erase(it);
       AdjustOutstandingDatabaseWork(-1);
     }
-    const auto degraded = degraded_.find(result.vendor_id);
+    const auto degraded = degraded_.find(result.device_id);
     if (degraded != degraded_.end() && result.revision >= degraded->second) {
       degraded_.erase(degraded);
-      if (const auto* record = registry_.Find(result.vendor_id)) {
+      if (const auto* record = registry_.Find(result.device_id)) {
         Publish({*record, state_event::ChangeReason::kDatabaseRecovered, false});
       }
     }
@@ -412,13 +412,13 @@ void DeviceService::Handle(mqtt::InboundMessage message) {
   const auto topic = mqtt_topic::ParseDeviceTopic(topic_namespace_, message.topic);
   if (!topic) return;
   if (topic->kind == mqtt_topic::DeviceMessageKind::kRegistration) {
-    auto registration = protocol::ParseRegistration(message.payload, topic->vendor_id);
+    auto registration = protocol::ParseRegistration(message.payload, topic->device_id);
     if (!registration) return;
-    if (!registry_.Find(topic->vendor_id)) {
+    if (!registry_.Find(topic->device_id)) {
       if (!database_unavailable_) {
-        const auto existing = pending_.find(topic->vendor_id);
+        const auto existing = pending_.find(topic->device_id);
         if (existing == pending_.end()) {
-          pending_.emplace(topic->vendor_id,
+          pending_.emplace(topic->device_id,
                            PendingRegistration{std::move(*registration),
                                                message.received_at, false});
         } else {
@@ -433,9 +433,9 @@ void DeviceService::Handle(mqtt::InboundMessage message) {
     }
     return;
   }
-  auto telemetry = protocol::ParseTelemetry(message.payload, topic->vendor_id);
+  auto telemetry = protocol::ParseTelemetry(message.payload, topic->device_id);
   if (!telemetry) return;
-  if (auto mutation = registry_.ApplyTelemetry(topic->vendor_id, std::move(*telemetry),
+  if (auto mutation = registry_.ApplyTelemetry(topic->device_id, std::move(*telemetry),
                                                 message.received_at)) {
     Mark(std::move(*mutation));
   }
@@ -444,9 +444,9 @@ void DeviceService::Handle(mqtt::InboundMessage message) {
 void DeviceService::Mark(device::Mutation mutation) {
   const auto reason = mutation.reason;
   const auto record = mutation.record;
-  last_reason_[record.vendor_id] = reason;
+  last_reason_[record.device_id] = reason;
   if (mutation.status_changed) {
-    pending_status_logs_[record.vendor_id] =
+    pending_status_logs_[record.device_id] =
         persistence::DesiredDeviceWrite{record, record.revision, false, true,
                                         false, persistence::Urgency::kImmediate};
   }
@@ -454,10 +454,10 @@ void DeviceService::Mark(device::Mutation mutation) {
   dirty_.Mark(WriteFor(std::move(mutation), telemetry
       ? persistence::Urgency::kTelemetryBatch : persistence::Urgency::kImmediate),
       steady_now_());
-  if (database_unavailable_ || degraded_.contains(record.vendor_id)) {
-    degraded_[record.vendor_id] = record.revision;
+  if (database_unavailable_ || degraded_.contains(record.device_id)) {
+    degraded_[record.device_id] = record.revision;
   }
-  Publish({record, reason, IsDeviceDegraded(record.vendor_id)});
+  Publish({record, reason, IsDeviceDegraded(record.device_id)});
 }
 
 void DeviceService::DispatchWrites() {
@@ -484,14 +484,14 @@ void DeviceService::DispatchWrites() {
 }
 
 bool DeviceService::SubmitWrite(persistence::DesiredDeviceWrite write) {
-  const auto vendor = write.record.vendor_id;
+  const auto device_id = write.record.device_id;
   try {
     if (!write_(write)) {
       dirty_.Restore(std::move(write));
-      if (const auto* record = registry_.Find(vendor)) {
-        degraded_[vendor] = record->revision;
-        const auto reason = last_reason_.contains(vendor)
-            ? last_reason_.at(vendor) : state_event::ChangeReason::kTelemetry;
+      if (const auto* record = registry_.Find(device_id)) {
+        degraded_[device_id] = record->revision;
+        const auto reason = last_reason_.contains(device_id)
+            ? last_reason_.at(device_id) : state_event::ChangeReason::kTelemetry;
         Publish({*record, reason, true});
       }
       Diagnose("数据库写入提交端口已关闭");
@@ -499,27 +499,27 @@ bool DeviceService::SubmitWrite(persistence::DesiredDeviceWrite write) {
     }
   } catch (const std::exception&) {
     dirty_.Restore(std::move(write));
-    if (const auto* record = registry_.Find(vendor)) {
-      degraded_[vendor] = record->revision;
-      const auto reason = last_reason_.contains(vendor)
-          ? last_reason_.at(vendor) : state_event::ChangeReason::kTelemetry;
+    if (const auto* record = registry_.Find(device_id)) {
+      degraded_[device_id] = record->revision;
+      const auto reason = last_reason_.contains(device_id)
+          ? last_reason_.at(device_id) : state_event::ChangeReason::kTelemetry;
       Publish({*record, reason, true});
     }
     Diagnose("数据库写入提交回调异常");
     return false;
   } catch (...) {
     dirty_.Restore(std::move(write));
-    if (const auto* record = registry_.Find(vendor)) {
-      degraded_[vendor] = record->revision;
-      const auto reason = last_reason_.contains(vendor)
-          ? last_reason_.at(vendor) : state_event::ChangeReason::kTelemetry;
+    if (const auto* record = registry_.Find(device_id)) {
+      degraded_[device_id] = record->revision;
+      const auto reason = last_reason_.contains(device_id)
+          ? last_reason_.at(device_id) : state_event::ChangeReason::kTelemetry;
       Publish({*record, reason, true});
     }
     Diagnose("数据库写入提交回调发生未知异常");
     return false;
   }
-  if (!submitted_.contains(vendor)) AdjustOutstandingDatabaseWork(1);
-  submitted_[vendor] = std::move(write);
+  if (!submitted_.contains(device_id)) AdjustOutstandingDatabaseWork(1);
+  submitted_[device_id] = std::move(write);
   return true;
 }
 
@@ -534,7 +534,7 @@ void DeviceService::PublishCurrentSnapshot() noexcept {
   try {
     std::vector<PublishedState> states;
     for (auto& record : registry_.ListDevices()) {
-      const bool degraded = IsDeviceDegraded(record.vendor_id);
+      const bool degraded = IsDeviceDegraded(record.device_id);
       states.push_back({std::move(record),
                         state_event::ChangeReason::kSnapshotReplay,
                         degraded});
