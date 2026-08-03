@@ -443,6 +443,20 @@ TEST_CASE("006 删除旧 PX4 测试数据并统一数据库设备标识") {
   CHECK(sql.find("truncate") == std::string::npos);
 }
 
+TEST_CASE("007 清空非 v3 历史慢速遥测") {
+  const auto sql = Normalize(
+      ScanSupportedSql(ReadMigration("007_清空旧版测试遥测.sql")).text);
+  CHECK(sql.find("update device_latest_states") != std::string::npos);
+  CHECK(sql.find("set latest_telemetry = null") != std::string::npos);
+  CHECK(sql.find("telemetry_received_at = null") != std::string::npos);
+  CHECK(sql.find("latest_telemetry is not null") != std::string::npos);
+  CHECK(sql.find("latest_telemetry ? 'schema_version'") != std::string::npos);
+  CHECK(sql.find("latest_telemetry->>'schema_version' <> '3'") !=
+        std::string::npos);
+  CHECK(sql.find("delete from devices") == std::string::npos);
+  CHECK(sql.find("truncate") == std::string::npos);
+}
+
 TEST_CASE("字符串中的建表文本不作为 DDL") {
   CHECK(ParseTables("SELECT 'create table fake (fake_id integer)';").empty());
 }
