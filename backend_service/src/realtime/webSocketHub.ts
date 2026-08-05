@@ -8,8 +8,12 @@ import {
   SessionReadyEventSchema,
   WEBSOCKET_PATH,
   type BackendWebSocketEvent,
-  type Px4RealtimeEvent
+  type DeviceRealtimeEvent
 } from "@cns/backend-protocol";
+import {
+  TelemetryInterestRegistry,
+  type TelemetryInterestChanged
+} from "./telemetryInterestRegistry.js";
 
 type WebSocketPeer = {
   bufferedAmount?: number;
@@ -27,14 +31,14 @@ export interface WebSocketHub {
   hasSession(sessionId: string): boolean;
   sendToSession(sessionId: string, event: BackendWebSocketEvent): void;
   broadcast(event: BackendWebSocketEvent): void;
-  broadcastPx4(deviceId: string, event: Px4RealtimeEvent): void;
+  broadcastTelemetry(deviceId: string, event: DeviceRealtimeEvent): void;
 }
 
-export function createWebSocketHub(): WebSocketHub {
-  const sessions = new Map<string, {
-    socket: WebSocketPeer;
-    px4DeviceIds: Set<string>;
-  }>();
+export function createWebSocketHub(
+  onTelemetryInterestChanged: TelemetryInterestChanged = () => undefined
+): WebSocketHub {
+  const sessions = new Map<string, WebSocketPeer>();
+  const interests = new TelemetryInterestRegistry(onTelemetryInterestChanged);
 
   return {
     async register(app) {
@@ -43,11 +47,7 @@ export function createWebSocketHub(): WebSocketHub {
       app.get(WEBSOCKET_PATH, { websocket: true }, (connection) => {
         const socket = getSocket(connection as WebSocketConnection);
         const sessionId = `session_${randomUUID()}`;
-        const session = {
-          socket,
-          px4DeviceIds: new Set<string>()
-        };
-        sessions.set(sessionId, session);
+        sessions.set(sessionId, socket);
 
         send(socket, SessionReadyEventSchema.parse({
           type: "session.ready",
@@ -57,15 +57,16 @@ export function createWebSocketHub(): WebSocketHub {
         }));
 
         socket.on?.("close", () => {
+          interests.removeSession(sessionId);
           sessions.delete(sessionId);
         });
         socket.on?.("message", (payload) => {
           const message = parseClientMessage(payload);
           if (!message) return;
-          if (message.type === "px4.subscribe") {
-            session.px4DeviceIds.add(message.device_id);
+          if (message.type === "telemetry.subscribe") {
+            interests.subscribe(sessionId, message.device_id);
           } else {
-            session.px4DeviceIds.delete(message.device_id);
+            interests.unsubscribe(sessionId, message.device_id);
           }
         });
       });
@@ -76,20 +77,20 @@ export function createWebSocketHub(): WebSocketHub {
     sendToSession(sessionId, event) {
       const session = sessions.get(sessionId);
       if (session) {
-        send(session.socket, event);
+        send(session, event);
       }
     },
     broadcast(event) {
-      for (const session of sessions.values()) {
-        send(session.socket, event);
+      for (const socket of sessions.values()) {
+        send(socket, event);
       }
     },
-    broadcastPx4(deviceId, event) {
-      for (const session of sessions.values()) {
-        if (!session.px4DeviceIds.has(deviceId)) continue;
+    broadcastTelemetry(deviceId, event) {
+      for (const [sessionId, socket] of sessions) {
+        if (!interests.isInterested(sessionId, deviceId)) continue;
         // 实时流不排队：浏览器处理不过来时丢弃旧帧，避免延迟越积越高。
-        if ((session.socket.bufferedAmount ?? 0) > 256 * 1024) continue;
-        send(session.socket, event);
+        if ((socket.bufferedAmount ?? 0) > 256 * 1024) continue;
+        send(socket, event);
       }
     }
   };

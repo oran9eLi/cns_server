@@ -9,7 +9,10 @@ import { createDeviceStore } from "./devices/createDeviceStore.js";
 import { registerDeviceRoutes } from "./devices/deviceRoutes.js";
 import { registerHealthRoutes } from "./health/healthRoutes.js";
 import { createLogger } from "./logging/logger.js";
-import { createWebSocketHub } from "./realtime/webSocketHub.js";
+import {
+  createWebSocketHub,
+  type WebSocketHub
+} from "./realtime/webSocketHub.js";
 import {
   isTerminalRouteStatus,
   toCommandUpdatedEvent,
@@ -22,24 +25,18 @@ export async function buildServer(config: AppConfig = AppConfigSchema.parse({}))
     logger: false
   });
   const logger = createLogger(config);
-  const realtime = createWebSocketHub();
+  let realtime: WebSocketHub;
   const devices = createDeviceStore(config);
   const commands = createCommandTracker(config.command.mapping_retention_ms);
   const routeService = createRouteServiceGateway(config.mqtt, {
     onDeviceState(message) {
       realtime.broadcast(toDeviceStateEvent(message));
     },
-    onPx4Realtime(message) {
-      realtime.broadcastPx4(message.device_id, {
-        type: "px4.realtime",
+    onDeviceRealtime(message) {
+      realtime.broadcastTelemetry(message.device_id, {
+        type: "telemetry.realtime",
         ...message,
         server_received_at: new Date().toISOString()
-      });
-    },
-    onPx4LatencyAck(message) {
-      realtime.sendToSession(message.session_id, {
-        type: "px4.latency_ack",
-        ...message
       });
     },
     onCommandAck(message) {
@@ -57,6 +54,16 @@ export async function buildServer(config: AppConfig = AppConfigSchema.parse({}))
       }
     }
   }, logger);
+
+  realtime = createWebSocketHub((deviceId, interested) => {
+    void routeService.setRealtimeInterest(deviceId, interested).catch((error) => {
+      logger.warn("实时遥测订阅收敛失败", {
+        device_id: deviceId,
+        interested,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+  });
 
   await routeService.start();
 

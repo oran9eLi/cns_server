@@ -119,37 +119,22 @@ describe("设备接口", () => {
     expect(control.json().error.code).toBe("unsupported_device_type");
   });
 
-  it("通过当前 WebSocket 会话发布 PX4 真实 RTT 探测", async () => {
-    const published: Array<[string, string, string]> = [];
-    const app = await buildDeviceTestServer(
-      { hasSession: (sessionId) => sessionId === "session_test" },
-      {
-        publishPx4LatencyProbe: async (deviceId, sessionId, probeId) => {
-          published.push([deviceId, sessionId, probeId]);
-        }
-      }
-    );
+  it("不再提供 PX4 专属 RTT 探测接口", async () => {
+    const app = await buildDeviceTestServer();
     const deviceId = "PX4RID123456789ABCDE";
-    const probeId = "00000000-0000-4000-8000-000000000004";
 
     const response = await app.inject({
       method: "POST",
       url: `/api/devices/${deviceId}/px4-latency-probes`,
       payload: {
         session_id: "session_test",
-        probe_id: probeId
+        probe_id: "00000000-0000-4000-8000-000000000004"
       }
     });
 
     await app.close();
 
-    expect(response.statusCode).toBe(202);
-    expect(response.json()).toMatchObject({
-      accepted: true,
-      device_id: deviceId,
-      probe_id: probeId
-    });
-    expect(published).toEqual([[deviceId, "session_test", probeId]]);
+    expect(response.statusCode).toBe(404);
   });
 });
 
@@ -163,6 +148,7 @@ async function buildDeviceTestServer(
     hasSession: () => true,
     sendToSession: () => undefined,
     broadcast: () => undefined,
+    broadcastTelemetry: () => undefined,
     ...overrides
   };
 
@@ -172,8 +158,8 @@ async function buildDeviceTestServer(
     realtime,
     routeService: {
       start: async () => undefined,
+      setRealtimeInterest: async () => undefined,
       publishCommand: async () => undefined,
-      publishPx4LatencyProbe: async () => undefined,
       dependencyStatus: async () => "ready",
       close: async () => undefined,
       ...routeOverrides

@@ -6,8 +6,6 @@ import {
   DeviceDetailResponseSchema,
   DeviceListQuerySchema,
   DeviceListResponseSchema,
-  Px4LatencyProbeAcceptedResponseSchema,
-  Px4LatencyProbeRequestSchema,
   SCHEMA_VERSION,
   DeviceIdSchema,
   type CommandAcceptedResponse,
@@ -143,40 +141,6 @@ export async function registerDeviceRoutes(
       client_request_id: command.data.client_request_id,
       server_time: acceptedAt
     } satisfies CommandAcceptedResponse);
-  });
-
-  app.post("/api/devices/:device_id/px4-latency-probes", async (request, reply) => {
-    const params = DeviceParamsSchema.safeParse(request.params);
-    const probe = Px4LatencyProbeRequestSchema.safeParse(request.body);
-    if (!params.success || !probe.success) {
-      return sendError(reply, 400, "invalid_parameter", "PX4链路探测参数不符合协议");
-    }
-    if (!realtime.hasSession(probe.data.session_id)) {
-      return sendError(reply, 409, "websocket_session_required", "PX4实时会话不可用");
-    }
-    if ((await routeService.dependencyStatus()) !== "ready") {
-      return sendError(reply, 503, "mqtt_unavailable", "MQTT连接暂不可用");
-    }
-
-    try {
-      await routeService.publishPx4LatencyProbe(
-        params.data.device_id,
-        probe.data.session_id,
-        probe.data.probe_id
-      );
-    } catch (error) {
-      const message = error instanceof RouteServiceUnavailableError
-        ? error.message
-        : "PX4链路探测发布失败";
-      return sendError(reply, 503, "mqtt_unavailable", message);
-    }
-
-    return reply.code(202).send(Px4LatencyProbeAcceptedResponseSchema.parse({
-      schema_version: SCHEMA_VERSION,
-      accepted: true,
-      device_id: params.data.device_id,
-      probe_id: probe.data.probe_id
-    }));
   });
 }
 
