@@ -43,6 +43,14 @@ describe("mapTelemetry", () => {
     expect(result.motors.pwm).toEqual([1000, 1001, 1002, 1003]);
   });
 
+  it("读取通用实时帧覆盖后的四路电机PWM", () => {
+    const view = mapTelemetry({
+      telemetry: { motor: { pwm_us: [1100, 1200, 1300, 1400] } }
+    });
+
+    expect(view.motors.pwm).toEqual([1100, 1200, 1300, 1400]);
+  });
+
   it("returns null values instead of inventing missing telemetry", () => {
     const result = mapTelemetry({ telemetry: { battery: { voltages: [12100] } } });
 
