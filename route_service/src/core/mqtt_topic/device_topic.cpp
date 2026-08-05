@@ -18,22 +18,23 @@ bool IsValidDeviceId(std::string_view device_id) {
 std::expected<ParsedDeviceTopic, std::string> ParseDeviceTopic(
     std::string_view topic_namespace, std::string_view topic) {
   const auto first = topic.find('/');
-  const auto second = first == std::string_view::npos
-                          ? first
-                          : topic.find('/', first + 1);
-  if (first == std::string_view::npos || second == std::string_view::npos ||
-      topic.find('/', second + 1) != std::string_view::npos ||
+  const auto device_id_end = first == std::string_view::npos
+                                 ? first
+                                 : topic.find('/', first + 1);
+  if (first == std::string_view::npos ||
+      device_id_end == std::string_view::npos ||
       topic.substr(0, first) != topic_namespace) {
     return std::unexpected("设备 topic 格式无效");
   }
-  const auto device_id = topic.substr(first + 1, second - first - 1);
+  const auto device_id =
+      topic.substr(first + 1, device_id_end - first - 1);
   if (!IsValidDeviceId(device_id)) return std::unexpected("device_id 无效");
-  const auto kind = topic.substr(second + 1);
-  if (kind == "registration") {
+  const auto suffix = topic.substr(device_id_end + 1);
+  if (suffix == "registration") {
     return ParsedDeviceTopic{std::string{device_id},
                              DeviceMessageKind::kRegistration};
   }
-  if (kind == "telemetry") {
+  if (suffix == "telemetry/snapshot/v1") {
     return ParsedDeviceTopic{std::string{device_id},
                              DeviceMessageKind::kTelemetry};
   }
@@ -45,7 +46,7 @@ std::string RegistrationFilter(std::string_view topic_namespace) {
 }
 
 std::string TelemetryFilter(std::string_view topic_namespace) {
-  return std::string{topic_namespace} + "/+/telemetry";
+  return std::string{topic_namespace} + "/+/telemetry/snapshot/v1";
 }
 
 std::string DeviceDirectoryTopic(std::string_view topic_namespace) {

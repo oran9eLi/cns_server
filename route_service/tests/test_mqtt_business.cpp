@@ -197,7 +197,8 @@ TEST_CASE("连接成功后订阅registration QoS2和telemetry QoS0") {
 
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0}});
 }
 
 TEST_CASE("已连接时registration订阅失败同步返回错误且不尝试telemetry") {
@@ -236,7 +237,8 @@ TEST_CASE("已连接时telemetry订阅失败同步返回错误") {
   CHECK(subscribed.error().find("订阅telemetry消息失败") != std::string::npos);
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0}});
 }
 
 TEST_CASE("同一连接代仅成功订阅一次且新连接代重新订阅") {
@@ -274,8 +276,10 @@ TEST_CASE("订阅失败不标记当前连接代并允许完整重试") {
 
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0},
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0},
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0}});
   CHECK(err.str().find("MQTT业务订阅失败：订阅telemetry消息") !=
         std::string::npos);
 }
@@ -299,8 +303,10 @@ TEST_CASE("连接成功后业务订阅失败可通过补订阅入口恢复") {
   REQUIRE(client->EnsureBusinessSubscriptions().has_value());
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0},
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0},
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0}});
   CHECK(out.str().find("MQTT业务订阅已恢复") != std::string::npos);
 }
 
@@ -318,7 +324,8 @@ TEST_CASE("业务订阅已恢复后补订阅入口幂等") {
 
   CHECK(injection.subscriptions ==
         std::vector<std::tuple<std::string, int>>{
-            {"cns/+/registration", 2}, {"cns/+/telemetry", 0}});
+            {"cns/+/registration", 2},
+            {"cns/+/telemetry/snapshot/v1", 0}});
 }
 
 TEST_CASE("替换handler在状态锁外析构旧capture") {
@@ -383,7 +390,8 @@ TEST_CASE("消息回调在进入时记录时间并原样转交topic和payload") 
   REQUIRE(injection.message_callback != nullptr);
   std::string payload = R"({"unparsed":true})";
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/VENDOR12345678901234/telemetry"),
+                            .topic = const_cast<char*>(
+                                "cns/VENDOR12345678901234/telemetry/snapshot/v1"),
                             .payload = payload.data(),
                             .payloadlen = static_cast<int>(payload.size()),
                             .qos = 0,
@@ -408,7 +416,7 @@ TEST_CASE("超限payload在复制前拒绝且不调用handler") {
                     [&](cns::mqtt::InboundMessage) { ++calls; }, 4)
               .has_value());
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .topic = const_cast<char*>("cns/x/telemetry/snapshot/v1"),
                             .payload = reinterpret_cast<void*>(1),
                             .payloadlen = 5,
                             .qos = 0,
@@ -433,7 +441,7 @@ TEST_CASE("空handler用于原子停止接收设备消息") {
   REQUIRE(client->ConfigureBusinessMessages({}, 64).has_value());
   std::string payload = "{}";
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .topic = const_cast<char*>("cns/x/telemetry/snapshot/v1"),
                             .payload = payload.data(),
                             .payloadlen = 2,
                             .qos = 0,
@@ -483,7 +491,7 @@ TEST_CASE("handler内Stop仅请求且由后续外部Stop实际执行") {
               .has_value());
   std::string payload = "{}";
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .topic = const_cast<char*>("cns/x/telemetry/snapshot/v1"),
                             .payload = payload.data(),
                             .payloadlen = 2,
                             .qos = 0,
@@ -518,7 +526,7 @@ TEST_CASE("并发回调重复Stop仅合并请求且外部Stop执行一次") {
               .has_value());
   std::string payload = "{}";
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .topic = const_cast<char*>("cns/x/telemetry/snapshot/v1"),
                             .payload = payload.data(),
                             .payloadlen = 2,
                             .qos = 0,
@@ -566,7 +574,7 @@ TEST_CASE("handler内释放最后client owner安全保活并禁用后续handler"
   client.reset();
   std::string payload = "{}";
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .topic = const_cast<char*>("cns/x/telemetry/snapshot/v1"),
                             .payload = payload.data(),
                             .payloadlen = 2,
                             .qos = 0,
@@ -607,7 +615,7 @@ TEST_CASE("EAI重试等待期间回调内析构先中断并回收重试线程") 
   client.reset();
   std::string payload = "{}";
   mosquitto_message message{.mid = 1,
-                            .topic = const_cast<char*>("cns/x/telemetry"),
+                            .topic = const_cast<char*>("cns/x/telemetry/snapshot/v1"),
                             .payload = payload.data(),
                             .payloadlen = 2,
                             .qos = 0,
