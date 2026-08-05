@@ -354,7 +354,7 @@ TEST_CASE("命令入口只分派命令topic且拒绝诊断按三十秒限频") {
       [&](std::string message) { diagnostics.push_back(std::move(message)); },
       [&] { return steady_now; });
 
-  CHECK_FALSE(ingress.TryPush({.topic = "cns/device/telemetry",
+  CHECK_FALSE(ingress.TryPush({.topic = "cns/device/telemetry/snapshot/v1",
                                .payload = "{}",
                                .received_at = kNow}));
   CHECK(ingress.TryPush({.topic = "cns/sources/web-console/control/request",

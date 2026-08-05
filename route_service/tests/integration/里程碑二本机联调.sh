@@ -155,20 +155,20 @@ wait_for_sql "SELECT count(*) FROM schools s JOIN devices d USING (school_id) JO
 wait_for_event registration_online
 
 echo '验证未知设备 telemetry 被拒绝……'
-mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$unknown_device/telemetry" \
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$unknown_device/telemetry/snapshot/v1" \
   -m "{\"schema_version\":3,\"device_id\":\"$unknown_device\",\"device_type\":\"cns_box\",\"sent_at\":\"2026-08-03T10:00:00Z\",\"telemetry\":{\"sequence\":0},\"drone_id\":{\"basic_id\":{\"id_type\":1,\"ua_type\":2}}}"
 sleep 1
 [[ $("${PSQL[@]}" -Atqc "SELECT count(*) FROM devices WHERE device_id='$unknown_device'") == 0 ]]
 
 echo '验证即时事件、5 秒最后值与 telemetry 非 retained……'
-mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry" \
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry/snapshot/v1" \
   -m "{\"schema_version\":3,\"device_id\":\"$device_id\",\"device_type\":\"cns_box\",\"sent_at\":\"2026-08-03T10:00:01Z\",\"telemetry\":{\"sequence\":1},\"drone_id\":{\"basic_id\":{\"id_type\":1,\"ua_type\":2}}}"
 wait_for_event telemetry
-mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry" \
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry/snapshot/v1" \
   -m "{\"schema_version\":3,\"device_id\":\"$device_id\",\"device_type\":\"cns_box\",\"sent_at\":\"2026-08-03T10:00:02Z\",\"telemetry\":{\"sequence\":2},\"drone_id\":{\"basic_id\":{\"id_type\":1,\"ua_type\":2}}}"
 sleep 7
 wait_for_sql "SELECT latest_telemetry #>> '{telemetry,sequence}' FROM device_latest_states WHERE device_id='$device_id'" 2
-if mosquitto_sub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry" -C 1 -W 2 >"$temp_dir/replayed-telemetry" 2>/dev/null; then
+if mosquitto_sub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry/snapshot/v1" -C 1 -W 2 >"$temp_dir/replayed-telemetry" 2>/dev/null; then
   echo '错误：新订阅者收到旧 telemetry，设备 topic 仍为 retained。' >&2
   exit 1
 fi
@@ -178,7 +178,7 @@ mosquitto_pub "${MQTT[@]}" -q 2 -r -t "$topic_namespace/$device_id/registration"
   -m "{\"schema_version\":3,\"device_id\":\"$device_id\",\"device_type\":\"cns_box\",\"status\":\"offline\"}"
 wait_for_event registration_offline
 wait_for_sql "SELECT status FROM device_latest_states WHERE device_id='$device_id'" offline
-mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry" \
+mosquitto_pub "${MQTT[@]}" -q 0 -t "$topic_namespace/$device_id/telemetry/snapshot/v1" \
   -m "{\"schema_version\":3,\"device_id\":\"$device_id\",\"device_type\":\"cns_box\",\"sent_at\":\"2026-08-03T10:00:03Z\",\"telemetry\":{\"sequence\":3},\"drone_id\":{\"basic_id\":{\"id_type\":1,\"ua_type\":2}}}"
 wait_for_sql "SELECT status FROM device_latest_states WHERE device_id='$device_id'" online
 

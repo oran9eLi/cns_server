@@ -185,7 +185,7 @@ TEST_CASE("关闭时强制写入不足批次间隔的最后 telemetry 并等待�
       [](cns::runtime::PublishedState) {},
       [] { return std::chrono::steady_clock::time_point{}; });
   REQUIRE(service.TryPush(Message(
-      std::string{"cns/"} + kKnown + "/telemetry",
+      std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
       TelemetryJson(kKnown, {{"sequence", 99}}))));
   service.Close();
   auto run = std::async(std::launch::async,
@@ -221,7 +221,7 @@ TEST_CASE("停机强制写入提交失败后不无限重复且保持非空闲") 
       [](cns::runtime::PublishedState) {},
       [] { return std::chrono::steady_clock::time_point{}; });
   REQUIRE(service.TryPush(Message(
-      std::string{"cns/"} + kKnown + "/telemetry",
+      std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
       TelemetryJson(kKnown, {{"sequence", 7}}))));
   service.Close();
   auto run = std::async(std::launch::async,
@@ -365,7 +365,7 @@ TEST_CASE("existing device updates immediately and telemetry waits five seconds"
   online.status = Status::kOnline;
   REQUIRE(h.registry.Load({online}));
   auto service = h.Make();
-  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
                           TelemetryJson(kKnown, {{"temperature", 20}})));
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);
   CHECK(h.writes.empty());
@@ -454,7 +454,7 @@ TEST_CASE("telemetry恢复显式离线设备时同时持久化在线状态") {
                               std::nullopt, {}});
   service.ProcessReady(cns::runtime::TimePoint{} + 1s);
 
-  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
                           TelemetryJson(kKnown, {{"temperature", 20}})));
   service.ProcessReady(cns::runtime::TimePoint{} + 2s);
   h.steady += 5s;
@@ -515,7 +515,7 @@ TEST_CASE("database failure degrades events and recovery uses revisions") {
   service.PushDatabaseResult({DatabaseResult::Kind::kUnavailable, {}, 0,
                               std::nullopt, "down"});
   service.ProcessReady();
-  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
                           TelemetryJson(kKnown, {{"temperature", 21}})));
   service.ProcessReady();
   REQUIRE(h.events.back().degraded);
@@ -540,7 +540,7 @@ TEST_CASE("first unavailable write immediately publishes degraded snapshot") {
   Harness h;
   REQUIRE(h.registry.Load({Record(kKnown)}));
   auto service = h.Make();
-  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
                           TelemetryJson(kKnown, {{"temperature", 22}})));
   service.ProcessReady(cns::runtime::TimePoint{});
   h.steady += 5s;
@@ -564,7 +564,7 @@ TEST_CASE("mutation after recovered raises degraded revision") {
   service.PushDatabaseResult({DatabaseResult::Kind::kRecovered, {}, 0,
                               std::nullopt, {}});
   service.ProcessReady();
-  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
                           TelemetryJson(kKnown, {{"temperature", 23}})));
   service.ProcessReady();
   const auto newer = h.registry.Find(kKnown)->revision;
@@ -607,7 +607,7 @@ TEST_CASE("closed write submitter retains state and publishes degraded snapshot"
   [&](cns::runtime::PublishedState event) { events.push_back(std::move(event)); },
   [&] { return now; },
   [&](std::string error) { diagnostics.push_back(std::move(error)); });
-  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry",
+  service.TryPush(Message(std::string{"cns/"} + kKnown + "/telemetry/snapshot/v1",
                           TelemetryJson(kKnown, {{"temperature", 24}})));
   service.ProcessReady(cns::runtime::TimePoint{});
   now += 5s;
