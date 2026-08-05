@@ -13,7 +13,7 @@ CNS（通信、导航、监视）实训箱的设备数据库维护与命令路�
 V1 阶段核心职责：
 
 1. **设备发现与注册**：订阅 `{namespace}/+/registration` 通配符 topic，接收 RPi 上报的 online/offline 注册消息；统一 `device_id` 支持主控箱 20 位编号和 PX4 UID 派生标识，数据库继续以兼容列名 `vendor_id` 作为主键。
-2. **设备状态维护**：online registration 和有效实时 telemetry 更新最后活跃时间；显式 offline 或默认 180 秒无活动超时将设备设为离线，缺失字段不清空旧值。
+2. **设备状态维护**：online registration 和有效快照 telemetry 更新最后活跃时间；显式 offline 或默认 180 秒无活动超时将设备设为离线，缺失字段不清空旧值。
 3. **最新遥测与身份补全**：只保存每台设备最新 JSONB 快照，不保存逐帧历史；registration 是 `dcdw_label` 主来源，遥测只在当前值为空时兜底补全。
 4. **命令路由**：登记固定命令来源，按学校名与内部编号或 `vendor_id` 寻址，执行来源权限与设备同校限制，向目标设备发布规范化配置或飞控命令。
 5. **幂等与结果回程**：持久化来源 `request_id`、服务器 `command_id` 和目标 ACK 状态，把路由失败或执行结果返回原命令来源。
@@ -27,7 +27,7 @@ V1 阶段核心职责：
 | MQTT topic | 方向 | 用途 |
 |---|---|---|
 | `{namespace}/{device_id}/registration` | RPi→本服务 | retained online/offline 注册消息；兼容主控箱 schema v1 和统一 schema v2 |
-| `{namespace}/{device_id}/telemetry` | RPi→本服务 | QoS 0、非 retained；保存主控箱或 PX4 的最新完整快照 |
+| `{namespace}/{device_id}/telemetry/snapshot/v1` | RPi→本服务 | schema v3、QoS 0、非 retained；保存主控箱或 PX4 的最新完整快照 |
 | `{namespace}/sources/{source_id}/config/request` | 命令来源→本服务 | 提交运行时配置请求 |
 | `{namespace}/sources/{source_id}/control/request` | 命令来源→本服务 | 提交飞控请求，最终由目标 RPi 转为 MAVLink |
 | `{namespace}/{vendor_id}/config/ack` | RPi→本服务 | 返回配置应用结果 |
@@ -81,7 +81,7 @@ V1 阶段核心职责：
 - **online 有 dcdw_label**：同上，额外写入 `dcdw_label` 原样字符串
 - **offline**：仅更新 `device_latest_states.status='offline'`，不触碰其他字段
 
-高频状态与稳定元数据分表。遥测默认每 5 秒合并批量写入，同一设备在周期内只写最后一份；实时状态事件立即发布，不受数据库批量周期限制。
+高频状态与稳定元数据分表。快照遥测默认每 5 秒合并批量写入，同一设备在周期内只写最后一份；规范化状态事件立即发布，不受数据库批量周期限制。`telemetry/realtime/v1` 不由本服务订阅，也不进入 PostgreSQL。
 
 运行时全量加载设备目录，当前方案面向约 1,000 台以内的规模保持简单。PostgreSQL 冷启动不可用时服务退出；运行中断线时，已登记设备继续维护内存状态并发布降级事件，未登记新设备暂不接纳，数据库线程默认每 5 秒重连并在恢复后补写。
 

@@ -15,8 +15,8 @@
 ```text
 GET  /api/health
 GET  /api/devices
-GET  /api/devices/:vendor_id
-POST /api/devices/:vendor_id/commands
+GET  /api/devices/:device_id
+POST /api/devices/:device_id/commands
 WS   /ws
 ```
 
@@ -38,11 +38,11 @@ WS   /ws
 
 响应使用 `{ "items": [...] }` 包装，为后续分页保留兼容空间。
 
-### `GET /api/devices/:vendor_id`
+### `GET /api/devices/:device_id`
 
 返回设备身份、当前状态、完整 `latest_telemetry` 和降级标识。遥测字段缺失时由前端显示 `--`，协议层不伪造默认值。
 
-### `POST /api/devices/:vendor_id/commands`
+### `POST /api/devices/:device_id/commands`
 
 命令请求必须携带当前 WebSocket 会话的 `session_id` 和浏览器生成的 `client_request_id`。浏览器重试同一次操作时必须复用原 `client_request_id`。
 
@@ -106,7 +106,7 @@ WS   /ws
 {
   "type": "device.state",
   "schema_version": 1,
-  "vendor_id": "CNS00000000000000001",
+  "device_id": "CNS00000000000000001",
   "status": "online",
   "last_seen_at": "2026-07-19T00:00:00.000Z",
   "telemetry_received_at": "2026-07-19T00:00:00.000Z",
@@ -122,7 +122,7 @@ WS   /ws
   "type": "command.updated",
   "schema_version": 1,
   "client_request_id": "00000000-0000-4000-8000-000000000003",
-  "vendor_id": "CNS00000000000000001",
+  "device_id": "CNS00000000000000001",
   "command_type": "control",
   "command": "takeoff",
   "status": "succeeded",
@@ -132,8 +132,37 @@ WS   /ws
 }
 ```
 
+设备详情页订阅和退订通用实时遥测：
+
+```json
+{ "type": "telemetry.subscribe", "device_id": "CNS00000000000000001" }
+```
+
+```json
+{ "type": "telemetry.unsubscribe", "device_id": "CNS00000000000000001" }
+```
+
+服务只向关注该设备的会话发送：
+
+```json
+{
+  "type": "telemetry.realtime",
+  "schema_version": 1,
+  "device_id": "CNS00000000000000001",
+  "sequence": 42,
+  "sent_at": "2026-08-05T01:02:03.123Z",
+  "server_received_at": "2026-08-05T01:02:03.140Z",
+  "telemetry": {
+    "motor": { "pwm_us": [1000, 1010, 1020, 1030] }
+  }
+}
+```
+
+`telemetry` 是开放 JSON 对象，主控箱和 PX4 使用同一个事件外壳。协议中没有 PX4 专属实时事件或 RTT ACK。
+
 ## 当前边界
 
 - 运行时配置字段中，当前文档只明确了 `telemetry_publish_interval_ms`。其余已确认字段进入设计后，应在 `RuntimeConfigParametersSchema` 中补成显式字段。
 - `latest_telemetry` 保持 JSON 对象，不在协议包中拆成固定遥测字段，避免前端伪造缺失值。
 - `business_status` 保留 route_service 或设备 ACK 的业务状态字符串，统一命令状态由 `status` 表达。
+- 实时事件不写入全局查询缓存；设备详情页同一绘制周期只应用最后一帧，2 秒无新帧后回退 REST 快照。

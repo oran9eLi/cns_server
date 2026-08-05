@@ -11,6 +11,7 @@
 - 不修改 route_service 代码，不写核心数据库表，不直接向设备 `/config/set` 或 `/control/set` topic 发布。
 - REST/WebSocket 只输出统一 `device_id` 和 `device_type`，不提供旧标识兼容别名；PX4 的学校可以为空。
 - PX4 展示遥测与 Remote ID，但不接受主控箱私有 control 命令。
+- 实时遥测传输不区分设备类型，不包含 PX4 专属 Topic、RTT 探测或处理分支。
 
 ## MQTT Topic
 
@@ -29,6 +30,16 @@
 {namespace}/sources/web-console/config/ack
 {namespace}/sources/web-console/control/ack
 ```
+
+浏览器进入设备详情页后，通过 WebSocket 发送
+`telemetry.subscribe(device_id)`。只有某设备至少有一个查看会话时，服务才精确订阅：
+
+```text
+{namespace}/{device_id}/telemetry/realtime/v1
+```
+
+实时帧使用 schema v1、QoS 0、非 retained，只转发给关注该设备的会话，不写数据库。
+同一设备的多个页面共享一个 MQTT 订阅，最后一个页面离开后退订；MQTT 重连只恢复仍有页面兴趣的设备。
 
 发布（QoS 2、非 retained）：
 
@@ -73,7 +84,7 @@ npm.cmd run test
 npm.cmd run build
 ```
 
-真实联调时应确认 `/api/health` 中 `database` 和 `mqtt` 都为 `ready`，然后验证设备状态事件和命令 ACK 能通过 `/ws` 到达浏览器。
+真实联调时应确认 `/api/health` 中 `database` 和 `mqtt` 都为 `ready`，然后验证设备状态事件、通用实时遥测和命令 ACK 能通过 `/ws` 到达浏览器。
 
 ## 硬件服务器部署
 

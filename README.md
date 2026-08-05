@@ -4,6 +4,11 @@ CNS（通信、导航、监视）设备的服务器端工程，与树莓派端 `
 
 本工程负责接收设备注册与遥测消息、维护权威设备数据库、执行命令寻址和路由，并在后续为设备管理前端提供服务端接口。服务器不解析 UART 或 MAVLink 二进制帧；这些工作由树莓派端完成。
 
+遥测分为两条设备无关的发布通道：`cns_rpi/{device_id}/telemetry/snapshot/v1`
+承载 schema v3 完整快照并由 `route_service` 入库；
+`cns_rpi/{device_id}/telemetry/realtime/v1` 承载 schema v1 实时帧，仅在浏览器查看对应设备时由
+`backend_service` 精确订阅并转发，不写 PostgreSQL。发布层和服务器传输层都不按主控箱或 PX4 分流。
+
 `cns_server` 采用单一 Git 仓库管理，`route_service` 与 `backend_service` 是同一仓库内的两个子项目，不分别建立嵌套 Git 仓库。分支、提交、版本和顶层文档由仓库统一维护，各子项目可以保留自己的构建、测试和部署入口。
 
 ## 子项目
@@ -70,7 +75,8 @@ React 设备管理控制页面，与 backend_service 共用浏览器侧 REST/Web
 - PostgreSQL 将稳定设备元数据与高频最新状态分表，遥测以 JSONB 保存最新快照并默认每 5 秒合并写入。
 - route_service 通过 MQTT 发布 QoS 1、retained 的全量设备目录和单设备当前状态快照；目录包含全部已入库设备及其在线状态，软件部无需读取数据库即可获得设备清单、设备资料和最新遥测。
 - 配置命令请求、设备下发和两侧 ACK 使用 QoS 2、非 retained；来源幂等键为 `(source_id, request_id)`，设备执行幂等键为服务器 UUID v4 `command_id`。
-- 设备 telemetry 调整为 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
+- 设备快照与实时 telemetry 都使用 QoS 0、`retain=false`；registration 保持 QoS 2、`retain=true` 和 retained 遗嘱。
+- route_service 只接收 `telemetry/snapshot/v1` 的 schema v3 快照；backend_service 按页面兴趣精确订阅 `telemetry/realtime/v1` 的 schema v1 实时帧。旧 `telemetry` 和 `px4/realtime/v1` 入口直接拒绝。
 - V1 面向当前不足 10 台设备稳定运行，多实例高可用、历史遥测和复杂过载机制留待后续设计。
 - 正式公网 MQTT 统一使用 TLS `8883`：树莓派按 `device_id` 使用独立凭据，Mosquitto 强制 ACL；云服务器 frps 只做 TCP 透传，现场 frpc 转发到回环地址的 Mosquitto，不在云端终止 MQTT TLS。
 - 注册与常规遥测只接收 schema v3：主控箱和 PX4 都以 Open Drone ID Basic ID 的 `uas_id` 作为 `device_id`，`device_type` 区分 `cns_box` 和 `flight_controller`；旧 schema v1/v2 直接拒绝。
