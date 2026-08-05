@@ -26,7 +26,7 @@ V1 阶段核心职责：
 
 | MQTT topic | 方向 | 用途 |
 |---|---|---|
-| `{namespace}/{device_id}/registration` | RPi→本服务 | retained online/offline 注册消息；兼容主控箱 schema v1 和统一 schema v2 |
+| `{namespace}/{device_id}/registration` | RPi→本服务 | schema v3、retained online/offline 注册消息 |
 | `{namespace}/{device_id}/telemetry/snapshot/v1` | RPi→本服务 | schema v3、QoS 0、非 retained；保存主控箱或 PX4 的最新完整快照 |
 | `{namespace}/sources/{source_id}/config/request` | 命令来源→本服务 | 提交运行时配置请求 |
 | `{namespace}/sources/{source_id}/control/request` | 命令来源→本服务 | 提交飞控请求，最终由目标 RPi 转为 MAVLink |
@@ -72,7 +72,7 @@ V1 阶段核心职责：
 | `status` | TEXT CHECK | online / offline |
 | `last_seen_at` | TIMESTAMPTZ | 最后有效活动的服务器接收时间 |
 | `latest_telemetry` | JSONB | 最新完整遥测快照 |
-| `telemetry_received_at` | TIMESTAMPTZ | 对应实时遥测的服务器接收时间 |
+| `telemetry_received_at` | TIMESTAMPTZ | 对应最新快照遥测的服务器接收时间 |
 | `updated_at` | TIMESTAMPTZ | 状态记录最后写入时间 |
 
 ### 注册消息 → 数据库映射

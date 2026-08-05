@@ -84,18 +84,20 @@ export function useDeviceRealtime(
 
     const connect = () => {
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      const connection = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      socket = connection;
 
-      socket.addEventListener("open", () => {
-        if (closed) return;
+      connection.addEventListener("open", () => {
+        if (closed || socket !== connection) return;
         setConnected(true);
-        socket?.send(JSON.stringify({
+        connection.send(JSON.stringify({
           type: "telemetry.subscribe",
           device_id: deviceId
         }));
       });
 
-      socket.addEventListener("message", (message) => {
+      connection.addEventListener("message", (message) => {
+        if (closed || socket !== connection) return;
         let payload: unknown;
         try {
           payload = JSON.parse(String(message.data));
@@ -127,8 +129,8 @@ export function useDeviceRealtime(
         }
       });
 
-      socket.addEventListener("close", () => {
-        if (closed) return;
+      connection.addEventListener("close", () => {
+        if (closed || socket !== connection) return;
         setConnected(false);
         pendingEvent.current = null;
         setEvent(null);

@@ -85,6 +85,7 @@ function createMqttGateway(
       if (!client) throw new RouteServiceUnavailableError("MQTT is unavailable");
       await unsubscribe(client, topic);
     },
+    operationTimeoutMs: config.connect_timeout_ms,
     onError(operation, topic, error) {
       logger.warn("实时遥测 MQTT 订阅收敛失败", {
         operation,
